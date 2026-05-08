@@ -1,4 +1,4 @@
-module modcdp
+module github.com/pirate/ModCDP/client/go
 
 go 1.24.7
 

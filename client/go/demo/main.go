@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
+	modcdp "github.com/pirate/ModCDP/client/go"
 	"golang.org/x/term"
-	"modcdp"
 )
 
 func optionsFor(mode, cdpURL, extensionPath string, launchOptions modcdp.LaunchOptions) modcdp.Options {

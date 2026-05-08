@@ -1,8 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
 [project]
 name = "modcdp"
-version = "0.0.0"
+version = "0.0.2"
+description = "Python client for ModCDP."
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["websocket-client>=1.8.0"]
+
+[project.urls]
+Repository = "https://github.com/pirate/ModCDP"
+
+[tool.hatch.build.targets.wheel]
+packages = ["modcdp"]
 
 [dependency-groups]
 dev = [
