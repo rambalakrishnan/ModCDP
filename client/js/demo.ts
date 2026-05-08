@@ -430,7 +430,7 @@ async function main() {
     console.log("normal event matched ->", createdTarget.targetId);
 
     const tabFromTarget = await cdp.send("Custom.TabIdFromTargetId", { targetId: createdTarget.targetId });
-    if (typeof tabFromTarget.tabId !== "number")
+    if (typeof tabFromTarget !== "number")
       throw new Error(`unexpected Custom.TabIdFromTargetId result ${JSON.stringify(tabFromTarget)}`);
     console.log("Custom.TabIdFromTargetId ->", tabFromTarget);
 
@@ -444,7 +444,7 @@ async function main() {
     }
     const foreground = foregroundEvents.find((event) => event.targetId === createdTarget.targetId);
     if (!foreground) throw new Error(`expected Custom.foregroundTargetChanged for ${createdTarget.targetId}`);
-    if (foreground.tabId !== tabFromTarget.tabId)
+    if (foreground.tabId !== tabFromTarget)
       throw new Error(`unexpected Custom.foregroundTargetChanged result ${JSON.stringify(foreground)}`);
 
     const targetFromTab = await cdp.send("Custom.targetIdFromTabId", { tabId: foreground.tabId });
