@@ -40,14 +40,14 @@ func optionsFor(mode, cdpURL, extensionPath string, launchOptions modcdp.LaunchO
 	}
 	if mode == "direct" {
 		return modcdp.Options{
-			CDPURL:        cdpURL,
-			ExtensionPath: extensionPath,
-			LaunchOptions: launchOptions,
-			Routes: routes(map[string]string{
+			Launch:    modcdp.LaunchConfig{Mode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], Options: launchOptions},
+			Upstream:  modcdp.UpstreamConfig{Mode: "ws", WSURL: cdpURL},
+			Extension: modcdp.ExtensionConfig{Mode: "auto", Path: extensionPath},
+			Client: modcdp.ClientConfig{Routes: routes(map[string]string{
 				"Mod.*":    "service_worker",
 				"Custom.*": "service_worker",
 				"*.*":      "direct_cdp",
-			}),
+			})},
 		}
 	}
 	server := &modcdp.ServerConfig{
@@ -57,14 +57,14 @@ func optionsFor(mode, cdpURL, extensionPath string, launchOptions modcdp.LaunchO
 		server.LoopbackCDPURL = cdpURL
 	}
 	return modcdp.Options{
-		CDPURL:        cdpURL,
-		ExtensionPath: extensionPath,
-		LaunchOptions: launchOptions,
-		Routes: routes(map[string]string{
+		Launch:    modcdp.LaunchConfig{Mode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], Options: launchOptions},
+		Upstream:  modcdp.UpstreamConfig{Mode: "ws", WSURL: cdpURL},
+		Extension: modcdp.ExtensionConfig{Mode: "auto", Path: extensionPath},
+		Client: modcdp.ClientConfig{Routes: routes(map[string]string{
 			"Mod.*":    "service_worker",
 			"Custom.*": "service_worker",
 			"*.*":      "service_worker",
-		}),
+		})},
 		Server: server,
 	}
 }
@@ -134,13 +134,6 @@ func main() {
 	fmt.Printf("== mode: %s%s ==\n", map[bool]string{true: "live/", false: ""}[live], mode)
 
 	chromePath := os.Getenv("CHROME_PATH")
-	if chromePath == "" {
-		if runtime.GOOS == "darwin" {
-			chromePath = "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
-		} else {
-			chromePath = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
-		}
-	}
 	// Resolve repo root from this source file so the demo runs correctly from
 	// any CWD (`go run ./client/go`, `go run .` from inside client/go, etc.).
 	_, thisFile, _, _ := runtime.Caller(0)

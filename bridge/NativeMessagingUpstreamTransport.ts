@@ -1,0 +1,292 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type { CdpCommandMessage } from "../types/modcdp.js";
+import type { BrowserLaunchOptions } from "./BrowserLauncher.js";
+import { UpstreamTransport, type UpstreamTransportConfig } from "./UpstreamTransport.js";
+
+export const DEFAULT_NATIVE_MESSAGING_HOST_NAME = "com.modcdp.bridge";
+export const DEFAULT_NATIVE_MESSAGING_WAIT_TIMEOUT_MS = 10_000;
+export const DEFAULT_MODCDP_EXTENSION_ID = "mdedooklbnfejodmnhmkdpkaedafkehf";
+
+type NativeMessagingOptions = {
+  manifest_path?: string | null;
+  manifest_paths?: string[] | null;
+  host_name?: string | null;
+  extension_id?: string | null;
+  wait_timeout_ms?: number;
+};
+
+export class NativeMessagingUpstreamTransport extends UpstreamTransport {
+  readonly mode = "nativemessaging" as const;
+  readonly endpoint_kind = "modcdp_server" as const;
+  url = "";
+  private server: any = null;
+  private socket: any = null;
+  private peer_waiters = new Set<() => void>();
+  private wait_timeout_ms: number;
+  private manifest_path: string | null;
+  private manifest_paths: string[];
+  private host_name: string;
+  private extension_id: string;
+  private user_data_dir: string | null = null;
+  private cdp_url: string | null = null;
+
+  constructor({
+    manifest_path = null,
+    manifest_paths = null,
+    host_name = DEFAULT_NATIVE_MESSAGING_HOST_NAME,
+    extension_id = DEFAULT_MODCDP_EXTENSION_ID,
+    wait_timeout_ms = DEFAULT_NATIVE_MESSAGING_WAIT_TIMEOUT_MS,
+  }: NativeMessagingOptions = {}) {
+    super();
+    this.manifest_path = manifest_path;
+    this.manifest_paths = manifest_paths ?? [];
+    this.host_name = host_name || DEFAULT_NATIVE_MESSAGING_HOST_NAME;
+    this.extension_id = extension_id || DEFAULT_MODCDP_EXTENSION_ID;
+    this.wait_timeout_ms = wait_timeout_ms;
+  }
+
+  update(config: UpstreamTransportConfig = {}) {
+    this.manifest_path = config.manifest_path ?? this.manifest_path;
+    this.manifest_paths = config.manifest_paths ?? this.manifest_paths;
+    this.user_data_dir = config.user_data_dir ?? this.user_data_dir;
+    this.cdp_url = config.ws_url ?? config.cdp_url ?? this.cdp_url;
+    if (!this.manifest_path && this.user_data_dir) this.setProfileManifestPaths(this.user_data_dir);
+    return this;
+  }
+
+  getLauncherConfig(): BrowserLaunchOptions {
+    if (!this.manifest_path && !this.user_data_dir) {
+      this.user_data_dir = mkdtempSync(path.join(tmpdir(), "modcdp-native-profile-"));
+      this.setProfileManifestPaths(this.user_data_dir);
+      return { user_data_dir: this.user_data_dir, cleanup_user_data_dir: true };
+    }
+    return this.user_data_dir ? { user_data_dir: this.user_data_dir } : {};
+  }
+
+  getServerConfig() {
+    return this.cdp_url ? { loopback_cdp_url: this.cdp_url } : {};
+  }
+
+  async connect() {
+    if (typeof process !== "object" || !process?.versions?.node) {
+      throw new Error("upstream.mode=nativemessaging requires Node.");
+    }
+    const net = await import("node:net");
+    const server = net.createServer((socket) => this.accept(socket));
+    this.server = server;
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Native messaging bridge did not bind a TCP port.");
+    this.url = `native://${this.host_name}@127.0.0.1:${address.port}`;
+    await this.installNativeHost(address.port);
+  }
+
+  send(message: CdpCommandMessage) {
+    if (!this.socket || this.socket.destroyed)
+      throw new Error(`No native messaging peer is connected for ${this.host_name}.`);
+    writeLengthPrefixedJSON(this.socket, message);
+  }
+
+  async waitForPeer() {
+    if (this.socket && !this.socket.destroyed) return;
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () =>
+          reject(new Error(`Timed out waiting ${this.wait_timeout_ms}ms for native messaging host ${this.host_name}.`)),
+        this.wait_timeout_ms,
+      );
+      this.peer_waiters.add(() => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+
+  async close() {
+    try {
+      this.socket?.destroy();
+    } catch {}
+    this.socket = null;
+    if (this.server) await new Promise<void>((resolve) => this.server.close(() => resolve()));
+    this.server = null;
+  }
+
+  private accept(socket: any) {
+    if (this.socket && this.socket !== socket) {
+      try {
+        this.socket.destroy();
+      } catch {}
+    }
+    this.socket = socket;
+    const readMessage = createLengthPrefixedJSONReader((message) => {
+      if (message?.type === "modcdp.native.hello") return;
+      this.parseAndEmitRecv(JSON.stringify(message));
+    });
+    socket.on("data", readMessage);
+    socket.on("close", () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      this.emitClose(new Error("Native messaging host disconnected"));
+    });
+    socket.on("error", () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      this.emitClose(new Error("Native messaging host error"));
+    });
+    for (const waiter of this.peer_waiters) waiter();
+    this.peer_waiters.clear();
+  }
+
+  private async installNativeHost(port: number) {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const hostDir = path.join(os.homedir(), ".modcdp", "native-messaging");
+    fs.mkdirSync(hostDir, { recursive: true });
+
+    const configPath = path.join(hostDir, `${this.host_name}.config.json`);
+    const hostScriptPath = path.join(hostDir, `${this.host_name}.mjs`);
+    const hostExecutablePath = path.join(hostDir, `${this.host_name}.sh`);
+    fs.writeFileSync(configPath, JSON.stringify({ host: "127.0.0.1", port }, null, 2));
+    fs.writeFileSync(hostScriptPath, nativeHostScript(configPath));
+    fs.writeFileSync(
+      hostExecutablePath,
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(hostScriptPath)}\n`,
+    );
+    fs.chmodSync(hostExecutablePath, 0o755);
+
+    const manifestPaths =
+      this.manifest_path || this.manifest_paths.length > 0
+        ? [...(this.manifest_path ? [this.manifest_path] : []), ...this.manifest_paths]
+        : defaultNativeMessagingManifestPaths(this.host_name, os.homedir());
+    const manifest = JSON.stringify(
+      {
+        name: this.host_name,
+        description: "ModCDP Native Messaging bridge",
+        path: hostExecutablePath,
+        type: "stdio",
+        allowed_origins: [`chrome-extension://${this.extension_id}/`],
+      },
+      null,
+      2,
+    );
+    for (const manifestPath of manifestPaths) {
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(manifestPath, manifest);
+    }
+  }
+
+  private setProfileManifestPaths(user_data_dir: string) {
+    this.manifest_path = path.join(user_data_dir, "NativeMessagingHosts", `${this.host_name}.json`);
+    this.manifest_paths = [
+      path.join(user_data_dir, "Default", "NativeMessagingHosts", `${this.host_name}.json`),
+      ...this.manifest_paths,
+    ];
+  }
+}
+
+function defaultNativeMessagingManifestPaths(host_name: string, home: string) {
+  if (process.platform === "darwin") {
+    return [
+      `${home}/Library/Application Support/Google/Chrome/NativeMessagingHosts/${host_name}.json`,
+      `${home}/Library/Application Support/Google/Chrome Canary/NativeMessagingHosts/${host_name}.json`,
+      `${home}/Library/Application Support/Google/ChromeForTesting/NativeMessagingHosts/${host_name}.json`,
+      `${home}/Library/Application Support/Google/Chrome for Testing/NativeMessagingHosts/${host_name}.json`,
+      `${home}/Library/Application Support/Google/Chrome SxS/NativeMessagingHosts/${host_name}.json`,
+      `${home}/Library/Application Support/Chromium/NativeMessagingHosts/${host_name}.json`,
+    ];
+  }
+  if (process.platform === "linux") {
+    return [
+      `${home}/.config/google-chrome/NativeMessagingHosts/${host_name}.json`,
+      `${home}/.config/google-chrome-for-testing/NativeMessagingHosts/${host_name}.json`,
+      `${home}/.config/chromium/NativeMessagingHosts/${host_name}.json`,
+      `${home}/.config/chromium-browser/NativeMessagingHosts/${host_name}.json`,
+    ];
+  }
+  throw new Error("upstream-nativemessaging-manifest is required on this platform.");
+}
+
+function writeLengthPrefixedJSON(stream: { write: (chunk: Buffer) => void }, message: unknown) {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(body.length, 0);
+  stream.write(Buffer.concat([header, body]));
+}
+
+function createLengthPrefixedJSONReader(onMessage: (message: any) => void) {
+  let buffer = Buffer.alloc(0);
+  return (chunk: Buffer) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (buffer.length >= 4) {
+      const length = buffer.readUInt32LE(0);
+      if (buffer.length < length + 4) return;
+      const body = buffer.subarray(4, 4 + length);
+      buffer = buffer.subarray(4 + length);
+      try {
+        onMessage(JSON.parse(body.toString("utf8")));
+      } catch {}
+    }
+  };
+}
+
+function nativeHostScript(configPath: string) {
+  return `
+import fs from "node:fs";
+import net from "node:net";
+
+const config = JSON.parse(fs.readFileSync(${JSON.stringify(configPath)}, "utf8"));
+const socket = net.createConnection({ host: config.host, port: config.port }, () => {
+  writeTCP({ type: "modcdp.native.hello", role: "native-host", version: 1 });
+});
+let stdinBuffer = Buffer.alloc(0);
+let socketBuffer = Buffer.alloc(0);
+
+process.stdin.on("data", (chunk) => {
+  stdinBuffer = Buffer.concat([stdinBuffer, chunk]);
+  stdinBuffer = readMessages(stdinBuffer, (message) => {
+    writeTCP(message);
+  });
+});
+socket.on("data", (chunk) => {
+  socketBuffer = Buffer.concat([socketBuffer, chunk]);
+  socketBuffer = readMessages(socketBuffer, (message) => {
+    writeNative(message);
+  });
+});
+socket.on("close", () => process.exit(0));
+socket.on("error", () => process.exit(1));
+
+function readMessages(buffer, onRecv) {
+  while (buffer.length >= 4) {
+    const length = buffer.readUInt32LE(0);
+    if (buffer.length < length + 4) return buffer;
+    const body = buffer.subarray(4, 4 + length);
+    buffer = buffer.subarray(4 + length);
+    try {
+      onRecv(JSON.parse(body.toString("utf8")));
+    } catch {}
+  }
+  return buffer;
+}
+
+function writeNative(message) {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(body.length, 0);
+  process.stdout.write(Buffer.concat([header, body]));
+}
+
+function writeTCP(message) {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(body.length, 0);
+  socket.write(Buffer.concat([header, body]));
+}
+`;
+}

@@ -104,16 +104,13 @@ export type ModCDPEvaluateParams = z.infer<typeof ModCDPEvaluateParamsSchema>;
 export const ModCDPAddCustomCommandParamsSchema = z.object({
   name: ModCDPNameSchema,
   expression: z.string().nullable().optional(),
-  paramsSchema: ModCDPPayloadSchemaSpecSchema.nullable().optional(),
   params_schema: ModCDPPayloadSchemaSpecSchema.nullable().optional(),
-  resultSchema: ModCDPPayloadSchemaSpecSchema.nullable().optional(),
   result_schema: ModCDPPayloadSchemaSpecSchema.nullable().optional(),
 });
 export type ModCDPAddCustomCommandParams = z.infer<typeof ModCDPAddCustomCommandParamsSchema>;
 
 export const ModCDPAddCustomEventObjectParamsSchema = z.object({
   name: ModCDPNameSchema,
-  eventSchema: ModCDPPayloadSchemaSpecSchema.nullable().optional(),
   event_schema: ModCDPPayloadSchemaSpecSchema.nullable().optional(),
 });
 export type ModCDPAddCustomEventObjectParams = z.infer<typeof ModCDPAddCustomEventObjectParamsSchema>;
@@ -127,13 +124,42 @@ export const ModCDPAddMiddlewareParamsSchema = z.object({
 });
 export type ModCDPAddMiddlewareParams = z.infer<typeof ModCDPAddMiddlewareParamsSchema>;
 
+export const ModCDPLaunchOptionsSchema = z.object({}).passthrough();
+export type ModCDPLaunchOptions = z.infer<typeof ModCDPLaunchOptionsSchema>;
+
+export const ModCDPUpstreamOptionsSchema = z
+  .object({
+    mode: z.enum(["ws", "pipe", "nativemessaging", "reversews", "nats"]).optional(),
+    nats_url: z.string().nullable().optional(),
+    nats_subject_prefix: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type ModCDPUpstreamOptions = z.infer<typeof ModCDPUpstreamOptionsSchema>;
+
+export const ModCDPClientOptionsSchema = z
+  .object({
+    routes: ModCDPRoutesSchema.optional(),
+  })
+  .passthrough();
+export type ModCDPClientOptions = z.infer<typeof ModCDPClientOptionsSchema>;
+
+export const ModCDPServerOptionsSchema = z
+  .object({
+    loopback_cdp_url: z.string().nullable().optional(),
+    routes: ModCDPRoutesSchema.optional(),
+    browser_token: z.string().nullable().optional(),
+    cdp_send_timeout_ms: z.number().positive().optional(),
+    loopback_execution_context_timeout_ms: z.number().positive().optional(),
+    ws_connect_error_settle_timeout_ms: z.number().positive().optional(),
+  })
+  .passthrough();
+export type ModCDPServerOptions = z.infer<typeof ModCDPServerOptionsSchema>;
+
 export const ModCDPConfigureParamsSchema = z.object({
-  loopback_cdp_url: z.string().nullable().optional(),
-  routes: ModCDPRoutesSchema.optional(),
-  browserToken: z.string().nullable().optional(),
-  cdp_send_timeout_ms: z.number().positive().optional(),
-  loopback_execution_context_timeout_ms: z.number().positive().optional(),
-  ws_connect_error_settle_timeout_ms: z.number().positive().optional(),
+  launch: ModCDPLaunchOptionsSchema.optional(),
+  upstream: ModCDPUpstreamOptionsSchema.optional(),
+  client: ModCDPClientOptionsSchema.optional(),
+  server: ModCDPServerOptionsSchema.optional(),
   custom_commands: z.array(ModCDPAddCustomCommandParamsSchema).optional(),
   custom_events: z.array(ModCDPAddCustomEventObjectParamsSchema).optional(),
   custom_middlewares: z.array(ModCDPAddMiddlewareParamsSchema).optional(),
@@ -293,7 +319,7 @@ export const CdpErrorSchema = z
   .passthrough();
 export type CdpError = z.infer<typeof CdpErrorSchema>;
 
-export const CdpCommandFrameSchema = z
+export const CdpCommandMessageSchema = z
   .object({
     id: z.number(),
     method: z.string(),
@@ -301,9 +327,9 @@ export const CdpCommandFrameSchema = z
     sessionId: z.string().optional(),
   })
   .passthrough();
-export type CdpCommandFrame = z.infer<typeof CdpCommandFrameSchema>;
+export type CdpCommandMessage = z.infer<typeof CdpCommandMessageSchema>;
 
-export const CdpResponseFrameSchema = z
+export const CdpResponseMessageSchema = z
   .object({
     id: z.number(),
     result: ProtocolResultSchema.optional(),
@@ -311,19 +337,19 @@ export const CdpResponseFrameSchema = z
     sessionId: z.string().optional(),
   })
   .passthrough();
-export type CdpResponseFrame = z.infer<typeof CdpResponseFrameSchema>;
+export type CdpResponseMessage = z.infer<typeof CdpResponseMessageSchema>;
 
-export const CdpEventFrameSchema = z
+export const CdpEventMessageSchema = z
   .object({
     method: z.string(),
     params: ProtocolEventParamsSchema.optional(),
     sessionId: z.string().optional(),
   })
   .passthrough();
-export type CdpEventFrame = z.infer<typeof CdpEventFrameSchema>;
+export type CdpEventMessage = z.infer<typeof CdpEventMessageSchema>;
 
-export const CdpFrameSchema = z.union([CdpCommandFrameSchema, CdpResponseFrameSchema, CdpEventFrameSchema]);
-export type CdpFrame = z.infer<typeof CdpFrameSchema>;
+export const CdpMessageSchema = z.union([CdpCommandMessageSchema, CdpResponseMessageSchema, CdpEventMessageSchema]);
+export type CdpMessage = z.infer<typeof CdpMessageSchema>;
 
 export const TranslatedStepSchema = z
   .object({
@@ -367,9 +393,11 @@ export type ProxyPending = z.infer<typeof ProxyPendingSchema>;
 export const ProxyUpstreamStateSchema = z
   .object({
     url: z.string(),
-    launched: z.custom<Awaited<ReturnType<typeof import("../bridge/launcher.js").launchChrome>>>().nullable(),
+    launched: z
+      .custom<Awaited<ReturnType<import("../bridge/BrowserLauncher.js").BrowserLauncher["launch"]>>>()
+      .nullable(),
     launchPromise: z
-      .promise(z.custom<Awaited<ReturnType<typeof import("../bridge/launcher.js").launchChrome>>>())
+      .promise(z.custom<Awaited<ReturnType<import("../bridge/BrowserLauncher.js").BrowserLauncher["launch"]>>>())
       .nullable()
       .optional(),
   })
@@ -416,6 +444,10 @@ export const Mod = {
   AddCustomEventObjectParams: ModCDPAddCustomEventObjectParamsSchema,
   AddCustomEventParams: ModCDPAddCustomEventParamsSchema,
   AddMiddlewareParams: ModCDPAddMiddlewareParamsSchema,
+  LaunchOptions: ModCDPLaunchOptionsSchema,
+  UpstreamOptions: ModCDPUpstreamOptionsSchema,
+  ClientOptions: ModCDPClientOptionsSchema,
+  ServerOptions: ModCDPServerOptionsSchema,
   ConfigureParams: ModCDPConfigureParamsSchema,
   PingParams: ModCDPPingParamsSchema,
   PongEvent: ModCDPPongEventSchema,

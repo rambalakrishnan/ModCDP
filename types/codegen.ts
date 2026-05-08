@@ -134,13 +134,11 @@ const aliases = [
   `export type CdpEventAlias<Payload, Name extends string> = z.ZodType<Payload> & CdpNamedValue<Name, "event">;`,
   `export type CdpAliasSend = (method: string, params?: unknown) => Promise<unknown>;`,
   `export type CdpAliasHooks = {`,
-  `  onCustomCommand?: (name: string, paramsSchema?: z.ZodType | null, resultSchema?: z.ZodType | null) => void;`,
-  `  onCustomEvent?: (name: string, eventSchema?: z.ZodType | null) => void;`,
+  `  onCustomCommand?: (name: string, params_schema?: z.ZodType | null, result_schema?: z.ZodType | null) => void;`,
+  `  onCustomEvent?: (name: string, event_schema?: z.ZodType | null) => void;`,
   `};`,
   `export type ModCustomCommandOptions<TParamsSchema = unknown, TResultSchema = unknown> = {`,
-  `  paramsSchema?: TParamsSchema | null;`,
   `  params_schema?: TParamsSchema | null;`,
-  `  resultSchema?: TResultSchema | null;`,
   `  result_schema?: TResultSchema | null;`,
   `  expression?: string | null;`,
   `};`,
@@ -181,7 +179,7 @@ for (const base of modcdpCommands) {
   }
   if (base === "AddCustomEvent") {
     aliases.push(
-      `    addCustomEvent<TName extends string, TEventSchema>(name: TName, options?: { eventSchema?: TEventSchema | null; event_schema?: TEventSchema | null }): Promise<cdp.types.ts.Mod.AddCustomEventResponse>;`,
+      `    addCustomEvent<TName extends string, TEventSchema>(name: TName, options?: { event_schema?: TEventSchema | null }): Promise<cdp.types.ts.Mod.AddCustomEventResponse>;`,
     );
   }
   aliases.push(
@@ -235,13 +233,13 @@ for (const base of modcdpCommands) {
     base === "AddCustomCommand"
       ? [
           `      ${methodName}: async (params_or_name?: unknown, options: Record<string, unknown> = {}) => {`,
-          `        const input = typeof params_or_name === "string" ? { name: params_or_name, expression: options.expression ?? null, paramsSchema: options.paramsSchema ?? options.params_schema ?? null, resultSchema: options.resultSchema ?? options.result_schema ?? null } : params_or_name;`,
+          `        const input = typeof params_or_name === "string" ? { name: params_or_name, expression: options.expression ?? null, params_schema: options.params_schema ?? null, result_schema: options.result_schema ?? null } : params_or_name;`,
           `        const parsed = Mod.${base}Params.parse(input ?? {});`,
         ]
       : base === "AddCustomEvent"
         ? [
             `      ${methodName}: async (params_or_name?: unknown, options: Record<string, unknown> = {}) => {`,
-            `        const input = typeof params_or_name === "string" ? { name: params_or_name, eventSchema: options.eventSchema ?? options.event_schema ?? null } : params_or_name;`,
+            `        const input = typeof params_or_name === "string" ? { name: params_or_name, event_schema: options.event_schema ?? null } : params_or_name;`,
             `        const parsed = Mod.${base}Params.parse(input ?? {});`,
           ]
         : [
@@ -251,10 +249,10 @@ for (const base of modcdpCommands) {
   if (base === "AddCustomCommand") {
     lines.push(
       `        const name = normalizeModCDPName(parsed.name);`,
-      `        const paramsSchema = normalizeModCDPPayloadSchema(parsed.paramsSchema ?? parsed.params_schema);`,
-      `        const resultSchema = normalizeModCDPPayloadSchema(parsed.resultSchema ?? parsed.result_schema);`,
-      `        const response = Mod.${base}Response.parse(await send(${JSON.stringify(commandName)}, { ...parsed, name, paramsSchema: null, resultSchema: null }));`,
-      `        hooks.onCustomCommand?.(name, paramsSchema, resultSchema);`,
+      `        const params_schema = normalizeModCDPPayloadSchema(parsed.params_schema);`,
+      `        const result_schema = normalizeModCDPPayloadSchema(parsed.result_schema);`,
+      `        const response = Mod.${base}Response.parse(await send(${JSON.stringify(commandName)}, { ...parsed, name, params_schema: null, result_schema: null }));`,
+      `        hooks.onCustomCommand?.(name, params_schema, result_schema);`,
       `        return response;`,
     );
   } else if (base === "AddCustomEvent") {
@@ -262,16 +260,16 @@ for (const base of modcdpCommands) {
       `        const directSchema = Mod.ZodType.safeParse(parsed);`,
       `        if (directSchema.success) {`,
       `          const name = normalizeModCDPName(directSchema.data);`,
-      `          const eventSchema = normalizeModCDPPayloadSchema(directSchema.data);`,
-      `          const response = Mod.${base}Response.parse(await send(${JSON.stringify(commandName)}, { name, eventSchema: null }));`,
-      `          hooks.onCustomEvent?.(name, eventSchema);`,
+      `          const event_schema = normalizeModCDPPayloadSchema(directSchema.data);`,
+      `          const response = Mod.${base}Response.parse(await send(${JSON.stringify(commandName)}, { name, event_schema: null }));`,
+      `          hooks.onCustomEvent?.(name, event_schema);`,
       `          return response;`,
       `        }`,
       `        const objectParams = Mod.AddCustomEventObjectParams.parse(parsed);`,
       `        const name = normalizeModCDPName(objectParams.name);`,
-      `        const eventSchema = normalizeModCDPPayloadSchema(objectParams.eventSchema ?? objectParams.event_schema);`,
-      `        const response = Mod.${base}Response.parse(await send(${JSON.stringify(commandName)}, { ...objectParams, name, eventSchema: null }));`,
-      `        hooks.onCustomEvent?.(name, eventSchema);`,
+      `        const event_schema = normalizeModCDPPayloadSchema(objectParams.event_schema);`,
+      `        const response = Mod.${base}Response.parse(await send(${JSON.stringify(commandName)}, { ...objectParams, name, event_schema: null }));`,
+      `        hooks.onCustomEvent?.(name, event_schema);`,
       `        return response;`,
     );
   } else if (base === "AddMiddleware") {

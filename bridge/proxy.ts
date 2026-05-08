@@ -10,7 +10,7 @@
 //     Custom.* outbound and Runtime.bindingCalled inbound; forward everything
 //     else unchanged.
 //   - Keep mirrored upstream events private by default so vanilla CDP clients
-//     only see native upstream CDP frames. Set forwardMirroredUpstreamEvents to
+//     only see native upstream CDP messages. Set forwardMirroredUpstreamEvents to
 //     true when debugging the service-worker mirror path itself.
 //
 // Run as a CLI:
@@ -36,16 +36,16 @@ import {
   unwrapEventIfNeeded,
 } from "./translate.js";
 import type {
-  CdpCommandFrame,
-  CdpEventFrame,
-  CdpResponseFrame,
-  CdpFrame,
+  CdpCommandMessage,
+  CdpEventMessage,
+  CdpResponseMessage,
+  CdpMessage,
   ProxyConnectionState,
 } from "../types/modcdp.js";
 import {
-  CdpCommandFrameSchema,
-  CdpEventFrameSchema,
-  CdpResponseFrameSchema,
+  CdpCommandMessageSchema,
+  CdpEventMessageSchema,
+  CdpResponseMessageSchema,
   ModCDPAddCustomCommandParamsSchema,
   ModCDPAddCustomEventObjectParamsSchema,
   ModCDPAddMiddlewareParamsSchema,
@@ -78,26 +78,42 @@ const isWsUrl = (url) => /^wss?:\/\//i.test(url);
 export async function startProxy({
   host = DEFAULT_HOST,
   port = DEFAULT_PORT,
-  upstream = DEFAULT_UPSTREAM,
-  reverse = null,
-  extensionPath = DEFAULT_EXTENSION_PATH,
+  launch = { mode: "remote" },
+  upstream = { mode: "ws", ws_url: DEFAULT_UPSTREAM },
+  extension = { mode: "auto", path: DEFAULT_EXTENSION_PATH },
+  clientRoutes = undefined,
+  server: serverOptions = {},
   forwardMirroredUpstreamEvents = false,
   upstreamMonitorIntervalMs = DEFAULT_UPSTREAM_MONITOR_INTERVAL_MS,
   reverseWaitTimeoutMs = DEFAULT_REVERSE_WAIT_TIMEOUT_MS,
 }: {
   host?: string;
   port?: number;
-  upstream?: string;
-  reverse?: string | null;
-  extensionPath?: string;
+  launch?: { mode?: string; executable_path?: string | null; user_data_dir?: string | null };
+  upstream?: {
+    mode?: string;
+    ws_url?: string | null;
+    nats_url?: string | null;
+    reversews_bind?: string | null;
+    nativemessaging_manifest?: string | null;
+  };
+  extension?: { mode?: string; path?: string | null };
+  clientRoutes?: Record<string, string> | undefined;
+  server?: Record<string, unknown> | null;
   forwardMirroredUpstreamEvents?: boolean;
   upstreamMonitorIntervalMs?: number;
   reverseWaitTimeoutMs?: number;
 } = {}) {
   const { WebSocket, WebSocketServer } = await loadWsForProxy();
-  const reverseOptions = reverse ? parseHostPort(reverse, DEFAULT_HOST, 29292) : null;
+  const upstreamMode = upstream.mode ?? "ws";
+  const upstreamWsUrl = upstream.ws_url ?? DEFAULT_UPSTREAM;
+  const reverseOptions =
+    upstreamMode === "reversews"
+      ? parseHostPort(upstream.reversews_bind ?? "127.0.0.1:29292", DEFAULT_HOST, 29292)
+      : null;
   const reversePeer = reverseOptions ? createReversePeerState(reverseWaitTimeoutMs) : null;
-  const server = http.createServer(async (req, res) => {
+  const servesLocalDiscovery = Boolean(reversePeer) || upstreamMode === "nativemessaging";
+  const httpServer = http.createServer(async (req, res) => {
     try {
       const requestUrl = req.url === "/json/version/" ? "/json/version" : req.url;
       if (requestUrl === "/json/version") {
@@ -105,7 +121,7 @@ export async function startProxy({
         res.end(JSON.stringify({ webSocketDebuggerUrl: `ws://${req.headers.host}/devtools/browser/proxy` }));
         return;
       }
-      if (reversePeer) {
+      if (servesLocalDiscovery) {
         if (requestUrl === "/json" || requestUrl === "/json/list" || requestUrl === "/json/list/") {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(
@@ -113,7 +129,7 @@ export async function startProxy({
               {
                 id: "proxy",
                 type: "browser",
-                title: "ModCDP Reverse Proxy",
+                title: upstreamMode === "nativemessaging" ? "ModCDP Native Messaging Proxy" : "ModCDP Reverse Proxy",
                 webSocketDebuggerUrl: `ws://${req.headers.host}/devtools/browser/proxy`,
               },
             ]),
@@ -124,12 +140,12 @@ export async function startProxy({
         res.end("Not found.");
         return;
       }
-      if (isWsUrl(upstream)) {
+      if (isWsUrl(upstreamWsUrl)) {
         res.writeHead(404);
         res.end("HTTP discovery is unavailable for a ws:// upstream.");
         return;
       }
-      const upstreamRes = await fetch(`${upstream}${requestUrl}`);
+      const upstreamRes = await fetch(`${upstreamWsUrl}${requestUrl}`);
       const text = await upstreamRes.text();
       const contentType = upstreamRes.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
@@ -149,7 +165,7 @@ export async function startProxy({
 
   let stopUpstreamMonitor: (() => void) | null = null;
   let reverseWss: InstanceType<typeof WebSocketServer> | null = null;
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({ server: httpServer });
   let closing = false;
   let closePromise: Promise<void> | null = null;
   const close = async () => {
@@ -170,13 +186,13 @@ export async function startProxy({
       }
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       if (reverseWss) await new Promise<void>((resolve) => reverseWss?.close(() => resolve()));
-      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (httpServer.listening) await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     })();
     return closePromise;
   };
   wss.on("connection", (client, req) => {
     log("client connected", req.url);
-    // attach a synchronous early-buffer immediately so we don't lose frames
+    // attach a synchronous early-buffer immediately so we don't lose messages
     // sent before bootstrap (e.g. Playwright's first commands).
     const earlyBuffer = [];
     const earlyHandler = (buf) => earlyBuffer.push(buf);
@@ -190,9 +206,27 @@ export async function startProxy({
       });
       return;
     }
+    if (upstreamMode === "nativemessaging") {
+      handleModCDPServerConnection(client, earlyBuffer, earlyHandler, {
+        launch,
+        upstream: { ...upstream, mode: upstreamMode, ws_url: upstreamWsUrl },
+        extension,
+        clientRoutes,
+        server: serverOptions,
+      }).catch((err) => {
+        log("modcdp server connection failed:", err.message);
+        try {
+          client.close(1011, err.message.slice(0, 120));
+        } catch {}
+      });
+      return;
+    }
     handleConnection(client, earlyBuffer, earlyHandler, {
-      upstream,
-      extensionPath,
+      launch,
+      upstream: { ...upstream, mode: upstreamMode, ws_url: upstreamWsUrl },
+      extension,
+      clientRoutes,
+      server: serverOptions,
       forwardMirroredUpstreamEvents,
       onUpstreamClosed: () => {
         void close().catch((error) => log("proxy close failed:", errorMessage(error)));
@@ -214,10 +248,10 @@ export async function startProxy({
     reverseWss.on("error", (error) => log("reverse listener error:", errorMessage(error)));
   }
 
-  await new Promise<void>((resolve) => server.listen(port, host, () => resolve()));
-  if (!reversePeer) {
+  await new Promise<void>((resolve) => httpServer.listen(port, host, () => resolve()));
+  if (!reversePeer && upstreamMode !== "nativemessaging" && !isWsUrl(upstreamWsUrl)) {
     stopUpstreamMonitor = monitorUpstream(
-      upstream,
+      upstreamWsUrl,
       upstreamMonitorIntervalMs,
       () => {
         void close().catch((error) => log("proxy close failed:", errorMessage(error)));
@@ -228,12 +262,14 @@ export async function startProxy({
   log(
     reverseOptions
       ? `listening on ws://${host}:${port}/  (reverse: ws://${reverseOptions.host}:${reverseOptions.port})`
-      : `listening on ws://${host}:${port}/  (upstream: ${upstream})`,
+      : upstreamMode === "nativemessaging"
+        ? `listening on ws://${host}:${port}/  (upstream: nativemessaging)`
+        : `listening on ws://${host}:${port}/  (upstream: ${upstreamMode}:${upstreamWsUrl})`,
   );
 
   return {
     url: `http://${host}:${port}`,
-    wsUrl: `ws://${host}:${port}`,
+    ws_url: `ws://${host}:${port}`,
     close,
   };
 }
@@ -292,12 +328,7 @@ function monitorUpstream(
     onClosed();
   };
 
-  if (isWsUrl(upstream)) {
-    socket = new WebSocketCtor(upstream);
-    socket.addEventListener("close", upstreamClosed);
-    socket.addEventListener("error", upstreamClosed);
-    return close;
-  }
+  if (isWsUrl(upstream)) return close;
 
   const check = async () => {
     try {
@@ -455,10 +486,10 @@ async function handleReverseConnection(
   };
 
   const onReverseMessage = (event) => {
-    let msg: CdpResponseFrame | CdpEventFrame;
+    let msg: CdpResponseMessage | CdpEventMessage;
     try {
       const parsed = JSON.parse(String(event.data));
-      msg = "id" in parsed ? CdpResponseFrameSchema.parse(parsed) : CdpEventFrameSchema.parse(parsed);
+      msg = "id" in parsed ? CdpResponseMessageSchema.parse(parsed) : CdpEventMessageSchema.parse(parsed);
     } catch (e) {
       log("reverse parse error", e.message);
       return;
@@ -501,9 +532,9 @@ async function handleReverseConnection(
 }
 
 function handleReverseClientMessage(state: ReverseConnectionState, buf: RawData) {
-  let msg: CdpCommandFrame;
+  let msg: CdpCommandMessage;
   try {
-    msg = CdpCommandFrameSchema.parse(JSON.parse(String(buf)));
+    msg = CdpCommandMessageSchema.parse(JSON.parse(String(buf)));
   } catch (e) {
     log("client parse error", e.message);
     return;
@@ -511,18 +542,18 @@ function handleReverseClientMessage(state: ReverseConnectionState, buf: RawData)
   dbg("client->reverse", msg.id ?? "", msg.method, msg.sessionId ?? "");
   const upId = state.nextReverseId++;
   state.pending.set(upId, { clientId: msg.id, clientSessionId: msg.sessionId || null });
-  const out: CdpCommandFrame = { id: upId, method: msg.method, params: msg.params ?? {} };
+  const out: CdpCommandMessage = { id: upId, method: msg.method, params: msg.params ?? {} };
   if (msg.sessionId) out.sessionId = msg.sessionId;
   state.reverse.send(JSON.stringify(out));
 }
 
-function handleReverseUpstreamMessage(state: ReverseConnectionState, msg: CdpResponseFrame | CdpEventFrame) {
+function handleReverseUpstreamMessage(state: ReverseConnectionState, msg: CdpResponseMessage | CdpEventMessage) {
   if ("id" in msg && typeof msg.id === "number") {
-    const response = CdpResponseFrameSchema.parse(msg);
+    const response = CdpResponseMessageSchema.parse(msg);
     const pending = state.pending.get(response.id);
     if (!pending) return;
     state.pending.delete(response.id);
-    const out: CdpResponseFrame = response.error
+    const out: CdpResponseMessage = response.error
       ? { id: pending.clientId, error: response.error }
       : { id: pending.clientId, result: response.result ?? {} };
     if (pending.clientSessionId) out.sessionId = pending.clientSessionId;
@@ -530,7 +561,7 @@ function handleReverseUpstreamMessage(state: ReverseConnectionState, msg: CdpRes
     return;
   }
 
-  const event = CdpEventFrameSchema.parse(msg);
+  const event = CdpEventMessageSchema.parse(msg);
   const eventSessionId =
     event.params &&
     typeof event.params === "object" &&
@@ -550,7 +581,7 @@ function handleReverseUpstreamMessage(state: ReverseConnectionState, msg: CdpRes
   }
 }
 
-function sendReverseToClient(state: ReverseConnectionState, obj: CdpFrame) {
+function sendReverseToClient(state: ReverseConnectionState, obj: CdpMessage) {
   if (DEBUG)
     dbg("client<-reverse", "id" in obj ? obj.id : "", "method" in obj ? obj.method : "(response)", obj.sessionId ?? "");
   state.client.send(JSON.stringify(obj));
@@ -561,26 +592,42 @@ async function handleConnection(
   earlyBuffer: RawData[],
   earlyHandler: (buf: RawData) => void,
   {
+    launch,
     upstream,
-    extensionPath,
+    extension,
+    clientRoutes,
+    server,
     forwardMirroredUpstreamEvents,
     onUpstreamClosed,
   }: {
-    upstream: string;
-    extensionPath: string;
+    launch: { mode?: string; executable_path?: string | null; user_data_dir?: string | null };
+    upstream: { mode?: string; ws_url?: string | null };
+    extension: { mode?: string; path?: string | null };
+    clientRoutes?: Record<string, string> | undefined;
+    server?: Record<string, unknown> | null;
     forwardMirroredUpstreamEvents: boolean;
     onUpstreamClosed: () => void;
   },
 ) {
   const cdp = new ModCDPClient({
-    cdp_url: upstream,
-    extension_path: extensionPath,
+    launch: {
+      mode: launch.mode as "local" | "remote" | "bb" | "none",
+      executable_path: launch.executable_path,
+      user_data_dir: launch.user_data_dir,
+    },
+    upstream: { mode: "ws", ws_url: upstream.ws_url },
+    extension: {
+      mode: (extension.mode ?? "auto") as "auto" | "discover" | "inject" | "borrow" | "none",
+      path: extension.path ?? DEFAULT_EXTENSION_PATH,
+      service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+      trust_service_worker_target: true,
+    },
+    client: clientRoutes ? { routes: clientRoutes } : {},
+    server: server as any,
     hydrate_aliases: false,
-    service_worker_url_suffixes: ["/service_worker.js"],
-    trust_service_worker_target: true,
   });
   await cdp.connect();
-  const upstream_socket = cdp.ws as unknown as WebSocket | null;
+  const upstream_socket = (cdp.transport as unknown as { ws?: WebSocket } | null)?.ws ?? null;
   if (!upstream_socket) throw new Error("ModCDPClient connected without an upstream websocket.");
 
   // per-connection state
@@ -605,10 +652,10 @@ async function handleConnection(
   if (cdp.ext_target_id) state.hiddenTargetIds.add(cdp.ext_target_id);
 
   upstream_socket.addEventListener("message", (event) => {
-    let msg: CdpResponseFrame | CdpEventFrame;
+    let msg: CdpResponseMessage | CdpEventMessage;
     try {
       const parsed = JSON.parse(String(event.data));
-      msg = "id" in parsed ? CdpResponseFrameSchema.parse(parsed) : CdpEventFrameSchema.parse(parsed);
+      msg = "id" in parsed ? CdpResponseMessageSchema.parse(parsed) : CdpEventMessageSchema.parse(parsed);
     } catch (e) {
       log("upstream parse error", e.message);
       return;
@@ -657,10 +704,96 @@ async function handleConnection(
   state.queuedFromClient = [];
 }
 
+async function handleModCDPServerConnection(
+  client: WebSocket,
+  earlyBuffer: RawData[],
+  earlyHandler: (buf: RawData) => void,
+  {
+    launch,
+    upstream,
+    extension,
+    clientRoutes,
+    server,
+  }: {
+    launch: { mode?: string; executable_path?: string | null; user_data_dir?: string | null };
+    upstream: {
+      mode?: string;
+      ws_url?: string | null;
+      nativemessaging_manifest?: string | null;
+    };
+    extension: { mode?: string; path?: string | null };
+    clientRoutes?: Record<string, string> | undefined;
+    server?: Record<string, unknown> | null;
+  },
+) {
+  const cdp = new ModCDPClient({
+    launch: {
+      mode: (launch.mode ?? "none") as "local" | "remote" | "bb" | "none",
+      executable_path: launch.executable_path,
+      user_data_dir: launch.user_data_dir,
+    },
+    upstream: {
+      mode: upstream.mode as "nativemessaging",
+      ws_url: upstream.ws_url,
+      nativemessaging_manifest: upstream.nativemessaging_manifest,
+    },
+    extension: {
+      mode: (extension.mode ?? "none") as "auto" | "discover" | "inject" | "borrow" | "none",
+      path: extension.path ?? DEFAULT_EXTENSION_PATH,
+      service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+      trust_service_worker_target: true,
+    },
+    client: clientRoutes ? { routes: clientRoutes } : {},
+    server: server as any,
+    hydrate_aliases: false,
+  });
+  await cdp.connect();
+
+  cdp.on("*", (eventName, payload, sessionId) => {
+    const event: CdpEventMessage = { method: String(eventName), params: (payload ?? {}) as Record<string, unknown> };
+    if (typeof sessionId === "string" && sessionId) event.sessionId = sessionId;
+    sendRawClientMessage(client, event);
+  });
+
+  client.off("message", earlyHandler);
+  const handle = (buf: RawData) => {
+    let msg: CdpCommandMessage;
+    try {
+      msg = CdpCommandMessageSchema.parse(JSON.parse(String(buf)));
+    } catch (e) {
+      log("client parse error", e.message);
+      return;
+    }
+    void cdp
+      .sendRaw(msg.method, msg.params ?? {}, msg.sessionId ?? null)
+      .then((result) =>
+        sendRawClientMessage(client, {
+          id: msg.id,
+          result: result ?? {},
+          ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+        }),
+      )
+      .catch((error) =>
+        sendRawClientMessage(client, {
+          id: msg.id,
+          error: { code: -32000, message: errorMessage(error) },
+          ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+        }),
+      );
+  };
+  client.on("message", handle);
+  for (const buf of earlyBuffer) handle(buf);
+  client.on("close", () => void cdp.close().catch(() => {}));
+}
+
+function sendRawClientMessage(client: WebSocket, obj: unknown) {
+  client.send(JSON.stringify(obj));
+}
+
 function handleClientMessage(state: ProxyConnectionState, buf: RawData) {
-  let msg: CdpCommandFrame;
+  let msg: CdpCommandMessage;
   try {
-    msg = CdpCommandFrameSchema.parse(JSON.parse(String(buf)));
+    msg = CdpCommandMessageSchema.parse(JSON.parse(String(buf)));
   } catch (e) {
     log("client parse error", e.message);
     return;
@@ -710,15 +843,15 @@ function handleClientMessage(state: ProxyConnectionState, buf: RawData) {
   // passthrough
   const upId = state.nextUpstreamId++;
   state.pending.set(upId, { kind: "passthrough", clientId: id, clientSessionId: sessionId || null });
-  const out: CdpCommandFrame = { id: upId, method, params };
+  const out: CdpCommandMessage = { id: upId, method, params };
   if (sessionId) out.sessionId = sessionId;
   state.upstream.send(JSON.stringify(out));
 }
 
-function handleUpstreamMessage(state: ProxyConnectionState, msg: CdpResponseFrame | CdpEventFrame) {
+function handleUpstreamMessage(state: ProxyConnectionState, msg: CdpResponseMessage | CdpEventMessage) {
   // response
   if ("id" in msg && typeof msg.id === "number") {
-    const response = CdpResponseFrameSchema.parse(msg);
+    const response = CdpResponseMessageSchema.parse(msg);
     const p = state.pending.get(response.id);
     if (!p) return;
     state.pending.delete(response.id);
@@ -729,8 +862,8 @@ function handleUpstreamMessage(state: ProxyConnectionState, msg: CdpResponseFram
       return;
     }
 
-    const replyToClient = (extra: Omit<CdpResponseFrame, "id">) => {
-      const out: CdpResponseFrame = { id: p.clientId ?? 0, ...extra };
+    const replyToClient = (extra: Omit<CdpResponseMessage, "id">) => {
+      const out: CdpResponseMessage = { id: p.clientId ?? 0, ...extra };
       if (p.clientSessionId) out.sessionId = p.clientSessionId;
       sendToClient(state, out);
     };
@@ -749,7 +882,7 @@ function handleUpstreamMessage(state: ProxyConnectionState, msg: CdpResponseFram
     return;
   }
 
-  const event = CdpEventFrameSchema.parse(msg);
+  const event = CdpEventMessageSchema.parse(msg);
 
   if (event.method === "Target.attachedToTarget") {
     const attached = TargetEvents["Target.attachedToTarget"].parse(event.params || {});
@@ -847,7 +980,7 @@ function handleUpstreamMessage(state: ProxyConnectionState, msg: CdpResponseFram
   sendToClient(state, event);
 }
 
-function sendToClient(state: ProxyConnectionState, obj: CdpFrame) {
+function sendToClient(state: ProxyConnectionState, obj: CdpMessage) {
   if (DEBUG)
     dbg("client<-", "id" in obj ? obj.id : "", "method" in obj ? obj.method : "(response)", obj.sessionId ?? "");
   state.client.send(JSON.stringify(obj));
@@ -856,22 +989,79 @@ function sendToClient(state: ProxyConnectionState, obj: CdpFrame) {
 // --- CLI -------------------------------------------------------------------
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const argv = Object.fromEntries(
-    process.argv
-      .slice(2)
-      .flatMap((arg, i, all) =>
-        arg.startsWith("--") ? [[arg.slice(2), all[i + 1]?.startsWith("--") ? "true" : (all[i + 1] ?? "true")]] : [],
-      ),
-  );
+  const argv = parseProxyArgs(process.argv.slice(2));
   const listen = argv.listen ? parseHostPort(String(argv.listen), DEFAULT_HOST, DEFAULT_PORT) : null;
   const host = listen?.host ?? DEFAULT_HOST;
   const port = listen?.port ?? Number(argv.port || DEFAULT_PORT);
-  const upstream = argv.upstream || DEFAULT_UPSTREAM;
-  const reverse = typeof argv.reverse === "string" && argv.reverse !== "true" ? argv.reverse : null;
-  const extensionPath = argv.extension ? path.resolve(argv.extension) : DEFAULT_EXTENSION_PATH;
+  const extensionPath =
+    typeof argv["extension-path"] === "string" && argv["extension-path"] !== "true"
+      ? path.resolve(argv["extension-path"])
+      : DEFAULT_EXTENSION_PATH;
   const forwardMirroredUpstreamEvents = argv["forward-mirrored-upstream-events"] === "true";
-  startProxy({ host, port, upstream, reverse, extensionPath, forwardMirroredUpstreamEvents }).catch((e) => {
+  startProxy({
+    host,
+    port,
+    launch: {
+      mode: String(argv.launch || "remote"),
+      executable_path:
+        typeof argv["launch-executable-path"] === "string" && argv["launch-executable-path"] !== "true"
+          ? String(argv["launch-executable-path"])
+          : null,
+      user_data_dir:
+        typeof argv["launch-user-data-dir"] === "string" && argv["launch-user-data-dir"] !== "true"
+          ? String(argv["launch-user-data-dir"])
+          : null,
+    },
+    upstream: {
+      mode: String(argv.upstream || "ws"),
+      ws_url:
+        typeof argv["upstream-ws-url"] === "string" && argv["upstream-ws-url"] !== "true"
+          ? String(argv["upstream-ws-url"])
+          : DEFAULT_UPSTREAM,
+      nats_url:
+        typeof argv["upstream-nats-url"] === "string" && argv["upstream-nats-url"] !== "true"
+          ? String(argv["upstream-nats-url"])
+          : null,
+      reversews_bind:
+        typeof argv["upstream-reversews-bind"] === "string" && argv["upstream-reversews-bind"] !== "true"
+          ? String(argv["upstream-reversews-bind"])
+          : "127.0.0.1:29292",
+      nativemessaging_manifest:
+        typeof argv["upstream-nativemessaging-manifest"] === "string" &&
+        argv["upstream-nativemessaging-manifest"] !== "true"
+          ? String(argv["upstream-nativemessaging-manifest"])
+          : null,
+    },
+    extension: { mode: String(argv.extension || "auto"), path: extensionPath },
+    clientRoutes:
+      typeof argv["client-routes"] === "string" && argv["client-routes"] !== "true"
+        ? JSON.parse(argv["client-routes"])
+        : undefined,
+    server:
+      typeof argv["server-routes"] === "string" && argv["server-routes"] !== "true"
+        ? { routes: JSON.parse(argv["server-routes"]) }
+        : {},
+    forwardMirroredUpstreamEvents,
+  }).catch((e) => {
     console.error(e);
     process.exitCode = 1;
   });
+}
+
+function parseProxyArgs(args: string[]) {
+  const result: Record<string, string> = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith("--")) continue;
+    const raw = arg.slice(2);
+    const equals = raw.indexOf("=");
+    if (equals >= 0) {
+      result[raw.slice(0, equals)] = raw.slice(equals + 1);
+      continue;
+    }
+    const next = args[i + 1];
+    result[raw] = next && !next.startsWith("--") ? next : "true";
+    if (next && !next.startsWith("--")) i += 1;
+  }
+  return result;
 }

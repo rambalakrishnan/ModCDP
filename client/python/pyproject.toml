@@ -21,7 +21,4 @@ artifacts = ["modcdp/extension.zip"]
 artifacts = ["modcdp/extension.zip"]
 
 [dependency-groups]
-dev = [
-    "pyright>=1.1.409",
-    "ty>=0.0.34",
-]
+dev = ["pyright>=1.1.409", "ty>=0.0.34"]

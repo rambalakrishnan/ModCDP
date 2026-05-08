@@ -34,14 +34,13 @@ You can send `Mod.*`, `Custom.*`, etc. through standard Playwright/Puppeteer/oth
 import { ModCDPClient } from "modcdp";
 import { z } from "zod";
 
-// In stock Google Chrome, visit chrome://inspect/#remote-debugging first to
-// expose the current browser at localhost:9222. Passing cdp_url is optional
-// when that endpoint is live.
-const cdp_url = "http://127.0.0.1:9222"; // ws://... URLs work too
+const upstream_ws_url = "http://127.0.0.1:9222"; // ws://... URLs work too
 const cdp = new ModCDPClient({
-  cdp_url,
-  routes: { "Target.getTargets": "service_worker" },
-  server: { loopback_cdp_url: cdp_url, routes: { "*.*": "loopback_cdp" } },
+  launch: { mode: "remote" },
+  upstream: { mode: "ws", ws_url: upstream_ws_url },
+  extension: { mode: "auto" },
+  client: { routes: { "Target.getTargets": "service_worker" } },
+  server: { loopback_cdp_url: upstream_ws_url, routes: { "*.*": "loopback_cdp" } },
 });
 await cdp.connect();
 
@@ -57,8 +56,8 @@ const tab = await cdp.Mod.evaluate({
 // ✨ register and use custom CDP commands
 await cdp.Mod.addCustomCommand({
   name: "Custom.tabIdFromTargetId",
-  paramsSchema: { targetId: cdp.types.zod.Target.TargetID },
-  resultSchema: { tabId: z.number().nullable() },
+  params_schema: { targetId: cdp.types.zod.Target.TargetID },
+  result_schema: { tabId: z.number().nullable() },
   expression: `async ({ targetId }) => ({
     tabId: (await chrome.debugger.getTargets()).find(t => t.id === targetId)?.tabId ?? null
   })`,
@@ -128,7 +127,7 @@ pnpm run demo:go
 Upgrade any vanilla CDP client like Stagehand, Playwright, or Puppeteer transparently with support for `Mod.*` / `Custom.*` commands and events.
 
 ```sh
-pnpm run proxy -- --upstream http://127.0.0.1:9222 --port 9223
+pnpm run proxy -- --upstream=ws --upstream-ws-url=http://127.0.0.1:9222 --port 9223
 # const browser = await playwright.chromium.connectOverCDP("http://127.0.0.1:9223")
 # const session = await browser.contexts()[0].newCDPSession(page)
 # await session.send("Mod.evaluate", { expression: "1 + 1" }) // -> 2
@@ -140,11 +139,11 @@ pnpm run proxy -- --upstream http://127.0.0.1:9222 --port 9223
 Use reverse mode when the browser does not expose a public CDP websocket to the final client, but the ModCDP extension can open a websocket back to a local proxy. The proxy still serves a normal-looking CDP endpoint to Playwright, Puppeteer, Stagehand, or any other CDP client:
 
 ```sh
-pnpm run proxy -- --reverse 127.0.0.1:29292 --listen 127.0.0.1:9223
+pnpm run proxy -- --upstream=reversews --upstream-reversews-bind=127.0.0.1:29292 --listen 127.0.0.1:9223
 # const browser = await playwright.chromium.connectOverCDP("http://127.0.0.1:9223")
 ```
 
-The extension currently has `ws://127.0.0.1:29292` baked in and retries every 2s forever. Once it connects, it self-identifies as a ModCDP extension service worker and the proxy uses that reverse websocket as its upstream. `Mod.*`, expression-backed `Custom.*` commands, custom event fanout, middleware, and normal CDP commands all stay routed through `globalThis.ModCDP.handleCommand(...)` in the service worker.
+Reverse mode is opt-in. The default extension does not dial a reverse websocket; loopback remains the default route. A reverse-specific launcher/test should call `globalThis.ModCDP.startReverseBridge("ws://127.0.0.1:29292", { reconnect_interval_ms: 2000 })`. Once it connects, it self-identifies as a ModCDP extension service worker and the proxy uses that reverse websocket as its upstream. `Mod.*`, expression-backed `Custom.*` commands, custom event fanout, middleware, and normal CDP commands all stay routed through `globalThis.ModCDP.handleCommand(...)` in the service worker.
 
 Reverse mode is intentionally scoped to one local browser and one reverse extension connection per proxy process. The browser may still have other extensions installed; ModCDP does not require `--disable-extensions-except`.
 
@@ -158,7 +157,7 @@ Reverse mode is intentionally scoped to one local browser and one reverse extens
 | `--debugger`  | client → SW → `chrome.debugger.sendCommand` against the active tab | The browser exposes no remote CDP port and you only have extension permissions. |
 | `--direct`    | client → sends non-ModCDP commands to browser CDP directly         | You already have a CDP endpoint and don't need extension interception.          |
 
-Pass via `routes: { "*.*": "direct_cdp" | "service_worker" }` on the client and `server: { routes: { "*.*": "loopback_cdp" | "chrome_debugger" } }` for the SW side. The demos default to `--loopback` (the most powerful mode).
+Pass via `client: { routes: { "*.*": "direct_cdp" | "service_worker" } }` and `server: { routes: { "*.*": "loopback_cdp" | "chrome_debugger" } }`. The demos default to `--loopback` (the most powerful mode).
 
 ## Repository layout
 
@@ -168,8 +167,18 @@ extension/                MV3 extension; service worker registers ModCDPServer
   service_worker.ts
   ModCDPServer.ts
 bridge/
+  BrowserLauncher.ts
+  LocalBrowserLauncher.ts
+  RemoteBrowserLauncher.ts
+  BrowserbaseBrowserLauncher.ts
+  NoopBrowserLauncher.ts
+  UpstreamTransport.ts
+  WebSocketUpstreamTransport.ts
+  PipeUpstreamTransport.ts
+  ReverseWebSocketUpstreamTransport.ts
+  NativeMessagingUpstreamTransport.ts
+  NatsUpstreamTransport.ts
   translate.ts           Pure stateless wrap/unwrap (used by both Node + SW)
-  launcher.ts            Find chrome/chromium binary, spawn with CDP enabled
   injector.ts            Discover existing SW or Extensions.loadUnpacked it
   proxy.ts               Local CDP proxy (upgrades any vanilla CDP client)
 client/
@@ -181,7 +190,7 @@ dist/                     Built JS output used by the extension and Node CLI scr
 
 ## Requirements
 
-- Stock Google Chrome can be used without relaunch flags: visit `chrome://inspect/#remote-debugging` to expose the current browser at `http://127.0.0.1:9222`, and load/install the ModCDP extension in that profile. Pass that endpoint as `cdp_url`, or set `scan_for_existing_localhost_9222: true` to let the JS client probe it before auto-launching a test browser.
+- Stock Google Chrome can be used without relaunch flags: visit `chrome://inspect/#remote-debugging` to expose the current browser at `http://127.0.0.1:9222`, and load/install the ModCDP extension in that profile. Pass that endpoint as `upstream: { mode: "ws", ws_url: "http://127.0.0.1:9222" }`.
 - Automated/test browsers can still preload the extension with `--load-extension=<path>`. `Extensions.loadUnpacked` is used as a fallback when the connected browser exposes it over CDP.
 - Node ≥ 22, Python ≥ 3.11 with `websocket-client`, Go ≥ 1.24 with `gobwas/ws`.
 
@@ -192,12 +201,12 @@ dist/                     Built JS output used by the extension and Node CLI scr
 
 ### Connect
 
-1. Open a raw CDP websocket to the browser. If no `cdp_url` is supplied, the JS client auto-launches a test browser. Set `scan_for_existing_localhost_9222: true` to opt into trying the live stock-Chrome endpoint at `http://127.0.0.1:9222` before auto-launching.
+1. Select a `launch` class and an `upstream` transport. `launch.mode="local"` starts a local browser, `launch.mode="remote"` uses the supplied `upstream.ws_url`, and `launch.mode="none"` leaves browser lifecycle outside ModCDP.
 2. `bridge/injector.js` either discovers an existing ModCDP service worker target or installs the extension via `Extensions.loadUnpacked` when the connected browser permits it.
 3. Attach a session to that SW target and `Runtime.enable` on it.
 4. Call `globalThis.ModCDP.configure(...)` to push the resolved loopback websocket and any explicit server route overrides into the SW. The clients do this automatically by default.
 
-Reverse proxy mode flips the bootstrap direction: `bridge/proxy.js --reverse` listens for the extension on `127.0.0.1:29292`, while still serving downstream clients from `--listen`. The extension service worker continuously dials the baked reverse endpoint, sends a `modcdp.reverse.hello` frame, and then accepts CDP-shaped command frames from the proxy. The proxy maps downstream request IDs to reverse request IDs and forwards reverse events back to the downstream CDP client.
+Reverse proxy mode flips the bootstrap direction: `bridge/proxy.js --upstream=reversews --upstream-reversews-bind=127.0.0.1:29292` listens for the extension, while still serving downstream clients from `--listen`. Reverse-specific launchers start the extension-side dialer with `globalThis.ModCDP.startReverseBridge(...)`; the service worker sends a `modcdp.reverse.hello` message and then accepts CDP-shaped command messages from the proxy. The proxy maps downstream request IDs to reverse request IDs and forwards reverse events back to the downstream CDP client.
 
 ### Send
 
@@ -213,7 +222,7 @@ In reverse mode, expression-backed commands cannot use `new Function` directly b
 
 When SW handlers `cdp.emit('Custom.X', payload)`, the SW invokes `globalThis.__ModCDP_custom_event__(JSON.stringify({ event, data, cdpSessionId }))`. CDP delivers `Runtime.bindingCalled` on the ext session; the client (or proxy) decodes the payload and re-dispatches it as a normal `cdp.on('Custom.X', ...)` event.
 
-In reverse mode, the same `publishEvent(...)` path also sends CDP-shaped event frames over the reverse websocket, so custom events and mirrored upstream events fan out through the standalone proxy to the downstream client.
+In reverse mode, the same `publishEvent(...)` path also sends CDP-shaped event messages over the reverse websocket, so custom events and mirrored upstream events fan out through the standalone proxy to the downstream client.
 
 ### Why this works
 
@@ -246,7 +255,7 @@ const serverRoutes = { "Mod.*": "service_worker", "Custom.*": "service_worker", 
 
 Route resolution is **deterministic across all three language clients**: exact-method match → longest-prefix wildcard → `*.*` fallback. This avoids map-iteration nondeterminism (Go) and key-insertion-order shadowing (JS/Python).
 
-When `auto` discovery is enabled, the SW only trusts `127.0.0.1:9222` after verifying a per-connection `browserToken` round-trip — it won't accidentally connect to a different browser that happens to have the same extension installed.
+When `auto` discovery is enabled, the SW only trusts `127.0.0.1:9222` after verifying a per-connection `browser_token` round-trip — it won't accidentally connect to a different browser that happens to have the same extension installed.
 
 </details>
 
@@ -412,7 +421,7 @@ flowchart LR
 
 - `chrome.debugger` — used as the server-side fallback, but doesn't expose other connected CDP clients or the raw protocol stream.
 - Extension WebSocket → pass the actual `ws://.../devtools/browser/...` CDP endpoint directly; HTTP `/json/*` discovery is only a compatibility fallback for `http://host:port` shorthand.
-- Listening to another CDP client's traffic — separate clients don't see each other's frames.
+- Listening to another CDP client's traffic — separate clients don't see each other's messages.
 - WebMCP — page-visible/tool-oriented, unsuitable when page JS must not detect the control plane.
 - `Extensions.*` storage mailbox — slower and more brittle than the SW target.
 - A separate local CDP proxy process — clean, but unnecessary for the default flow; the proxy here is opt-in (only used when "upgrading" a vanilla CDP client).

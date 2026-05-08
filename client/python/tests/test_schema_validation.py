@@ -29,7 +29,7 @@ class SchemaValidationTests(unittest.TestCase):
                 sent.append((method, dict(params or {}), session_id, validate_custom_schema))
                 return AwaitableDict({"targetId": "target-1"})
 
-        client = RecordingClient(routes={"Custom.*": "direct_cdp"})
+        client = RecordingClient(client={"routes": {"Custom.*": "direct_cdp"}})
 
         result = client.Target.createTarget(url="https://example.com", session_id="session-1")
         raw_result = client.send("Target.createTarget", {"url": "https://example.com"})
@@ -127,7 +127,7 @@ class SchemaValidationTests(unittest.TestCase):
                 self.last_wrapped = wrapped
                 return {"success": True}
 
-        client = RecordingClient(routes={"Custom.*": "direct_cdp"})
+        client = RecordingClient(client={"routes": {"Custom.*": "direct_cdp"}})
 
         async def run() -> None:
             registered = await client.Mod.addCustomCommand(

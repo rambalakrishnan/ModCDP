@@ -11,7 +11,7 @@ JsonObject: TypeAlias = dict[str, JsonValue]
 ProtocolParams: TypeAlias = Mapping[str, JsonValue]
 ProtocolResult: TypeAlias = dict[str, JsonValue]
 ProtocolPayload: TypeAlias = dict[str, JsonValue]
-FrameParams: TypeAlias = Mapping[str, object]
+MessageParams: TypeAlias = Mapping[str, object]
 ModCDPRoutes: TypeAlias = dict[str, str]
 
 
@@ -107,7 +107,7 @@ class _TranslatedStepRequired(TypedDict):
 
 
 class TranslatedStep(_TranslatedStepRequired, total=False):
-    params: FrameParams
+    params: MessageParams
     unwrap: Literal["evaluate"]
 
 
@@ -121,10 +121,10 @@ class CdpError(TypedDict, total=False):
     message: str
 
 
-class CdpFrame(TypedDict, total=False):
+class CdpMessage(TypedDict, total=False):
     id: int
     method: str
-    params: FrameParams
+    params: MessageParams
     sessionId: str
     result: ProtocolResult
     error: CdpError
@@ -159,7 +159,7 @@ class UnwrappedModCDPEvent(TypedDict):
 
 
 Handler: TypeAlias = Callable[[Any], Any]
-PendingEntry: TypeAlias = tuple[str, Queue[CdpFrame]]
+PendingEntry: TypeAlias = tuple[str, Queue[CdpMessage]]
 
 
 class WebSocketLike(Protocol):

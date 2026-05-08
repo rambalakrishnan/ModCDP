@@ -1,0 +1,85 @@
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+import { LocalBrowserLauncher } from "../bridge/LocalBrowserLauncher.js";
+import {
+  CdpSocket,
+  expectCdpBrowserSurface,
+  expectHttpEndpointDown,
+  PipeCdpSocket,
+} from "./helpers.BrowserLauncher.js";
+
+const LIVE_BROWSER_TIMEOUT_MS = 60_000;
+
+describe("LocalBrowserLauncher", () => {
+  it(
+    "launches a real browser over a chosen CDP port and honors launch options",
+    { timeout: LIVE_BROWSER_TIMEOUT_MS },
+    async () => {
+      const userDataDir = await mkdtemp(path.join(tmpdir(), "modcdp-local-profile-"));
+      const port = await LocalBrowserLauncher.freePort();
+      const chrome = await new LocalBrowserLauncher({
+        headless: true,
+        sandbox: process.platform !== "linux",
+        chrome_ready_timeout_ms: 45_000,
+        chrome_ready_poll_interval_ms: 50,
+      }).launch({
+        port,
+        user_data_dir: userDataDir,
+        extra_args: ["--window-size=900,700"],
+        stdio: "ignore",
+      });
+      let cdp: CdpSocket | null = null;
+
+      try {
+        expect(chrome.port).toBe(port);
+        expect(chrome.cdp_url).toBe(`http://127.0.0.1:${port}`);
+        expect(chrome.ws_url).toEqual(expect.stringMatching(new RegExp(`^ws://127\\.0\\.0\\.1:${port}/`)));
+        expect(chrome.profile_dir).toBe(userDataDir);
+        await expect(stat(userDataDir)).resolves.toBeTruthy();
+        cdp = await CdpSocket.connect(chrome.ws_url!);
+        await expectCdpBrowserSurface(cdp);
+      } finally {
+        await cdp?.close();
+        await chrome.close();
+        await chrome.close();
+        await expectHttpEndpointDown(`http://127.0.0.1:${port}`);
+        await expect(stat(userDataDir)).resolves.toBeTruthy();
+        await rm(userDataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    "launches a real browser over remote-debugging-pipe and speaks CDP over the returned pipes",
+    { timeout: LIVE_BROWSER_TIMEOUT_MS },
+    async () => {
+      const chrome = await new LocalBrowserLauncher().launch({
+        headless: true,
+        sandbox: process.platform !== "linux",
+        remote_debugging: "pipe",
+        chrome_ready_timeout_ms: 45_000,
+      });
+      const profile_dir = chrome.profile_dir;
+
+      try {
+        expect(chrome.port).toBeUndefined();
+        expect(chrome.cdp_url).toEqual(expect.stringMatching(/^pipe:\/\/\d+/));
+        expect(chrome.ws_url).toBeNull();
+        expect(chrome.pipe_read).toBeTruthy();
+        expect(chrome.pipe_write).toBeTruthy();
+        const pipeCdp = new PipeCdpSocket(chrome.pipe_read!, chrome.pipe_write!);
+        await expectCdpBrowserSurface(pipeCdp);
+      } finally {
+        await chrome.close();
+        await chrome.close();
+      }
+
+      if (profile_dir) {
+        await expect(stat(profile_dir)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    },
+  );
+});

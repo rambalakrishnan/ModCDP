@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { launchChrome } from "../bridge/launcher.js";
+import { LocalBrowserLauncher } from "../bridge/LocalBrowserLauncher.js";
 import { ModCDPClient } from "../client/js/ModCDPClient.js";
 import { commands, events } from "../types/zod.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_PATH = path.resolve(HERE, "..", "extension");
+const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 const DEFAULT_ROUTED_OVERRIDES_TEST_TIMEOUT_MS = 45_000;
 
 function hasTargetInfo(value: unknown): value is { targetInfo: Record<string, unknown> } {
@@ -73,32 +73,39 @@ test(
   "service-worker routed standard CDP commands and events can be transformed",
   { timeout: DEFAULT_ROUTED_OVERRIDES_TEST_TIMEOUT_MS },
   async () => {
-    const chrome = await launchChrome({
+    const chrome = await new LocalBrowserLauncher().launch({
       headless: process.platform === "linux",
       sandbox: process.platform !== "linux",
       extra_args: [`--load-extension=${EXTENSION_PATH}`],
     });
     const cdp = new ModCDPClient({
-      cdp_url: chrome.cdpUrl,
-      service_worker_url_suffixes: ["/service_worker.js"],
-      trust_service_worker_target: true,
-      routes: {
-        "Target.getTargets": "service_worker",
-        "Target.createTarget": "service_worker",
-        "Target.setDiscoverTargets": "service_worker",
+      launch: { mode: "remote" },
+      upstream: { mode: "ws", ws_url: chrome.cdp_url },
+      extension: {
+        mode: "auto",
+        path: EXTENSION_PATH,
+        service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+        trust_service_worker_target: true,
+      },
+      client: {
+        routes: {
+          "Target.getTargets": "service_worker",
+          "Target.createTarget": "service_worker",
+          "Target.setDiscoverTargets": "service_worker",
+        },
       },
       server: {
-        loopback_cdp_url: chrome.cdpUrl,
+        loopback_cdp_url: chrome.cdp_url,
         routes: { "*.*": "loopback_cdp" },
       },
     });
 
     try {
       await cdp.connect();
-      assert.equal(cdp.cdp_url, chrome.wsUrl);
-      assert.equal(cdp.server.loopback_cdp_url, chrome.wsUrl);
+      assert.equal(cdp.cdp_url, chrome.ws_url);
+      assert.equal(cdp.server.loopback_cdp_url, chrome.ws_url);
 
-      const rawTargets = commands["Target.getTargets"].result.parse(await cdp._sendFrame("Target.getTargets"));
+      const rawTargets = commands["Target.getTargets"].result.parse(await cdp._sendMessage("Target.getTargets"));
       assert.ok(rawTargets.targetInfos?.length > 0, "expected raw Target.getTargets targetInfos");
       assert.equal(
         rawTargets.targetInfos.some((targetInfo) => Object.hasOwn(targetInfo, "tabId")),

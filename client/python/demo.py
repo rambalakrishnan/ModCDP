@@ -32,11 +32,6 @@ LIVE_DEVTOOLS_ACTIVE_PORTS = [
     Path.home() / ".config" / "google-chrome" / "DevToolsActivePort",
     Path.home() / ".config" / "chromium" / "DevToolsActivePort",
 ]
-CHROME = os.environ.get("CHROME_PATH") or (
-    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
-    if sys.platform == "darwin"
-    else "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
-)
 
 
 def expect_object(value: object, label: str) -> ProtocolPayload:
@@ -63,10 +58,10 @@ def client_options_for(mode, cdp_url, launch_options=None):
     }
     if mode == "direct":
         return {
-            "cdp_url": cdp_url,
-            "extension_path": str(EXTENSION_PATH),
-            "launch_options": launch_options or {},
-            "routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp", **direct_normal_event_routes},
+            "launch": {"mode": "remote" if cdp_url else "local", "options": launch_options or {}},
+            "upstream": {"mode": "ws", "ws_url": cdp_url},
+            "extension": {"mode": "auto", "path": str(EXTENSION_PATH)},
+            "client": {"routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp", **direct_normal_event_routes}},
         }
     server = {
         "routes": server_routes_for(mode),
@@ -74,10 +69,10 @@ def client_options_for(mode, cdp_url, launch_options=None):
     if cdp_url and mode == "loopback":
         server["loopback_cdp_url"] = cdp_url
     return {
-        "cdp_url": cdp_url,
-        "extension_path": str(EXTENSION_PATH),
-        "launch_options": launch_options or {},
-        "routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "service_worker", **direct_normal_event_routes},
+        "launch": {"mode": "remote" if cdp_url else "local", "options": launch_options or {}},
+        "upstream": {"mode": "ws", "ws_url": cdp_url},
+        "extension": {"mode": "auto", "path": str(EXTENSION_PATH)},
+        "client": {"routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "service_worker", **direct_normal_event_routes}},
         "server": server,
     }
 
@@ -115,11 +110,12 @@ def main():
         else:
             cdp_url = None
             launch_options = {
-                "executable_path": CHROME,
                 "headless": sys.platform.startswith("linux"),
                 "sandbox": not sys.platform.startswith("linux"),
                 "extra_args": [f"--load-extension={EXTENSION_PATH}"],
             }
+            if os.environ.get("CHROME_PATH"):
+                launch_options["executable_path"] = os.environ["CHROME_PATH"]
 
         cdp = ModCDPClient(**client_options_for(mode, cdp_url, launch_options))
         foreground_events = []

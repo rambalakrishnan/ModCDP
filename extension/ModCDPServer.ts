@@ -8,8 +8,8 @@
 
 import type { cdp } from "../types/cdp.js";
 import type {
-  CdpCommandFrame,
-  CdpEventFrame,
+  CdpCommandMessage,
+  CdpEventMessage,
   CdpDebuggeeCommandParams,
   ModCDPConfigureParams,
   ModCDPCustomCommandRegistration,
@@ -26,6 +26,10 @@ export const DEFAULT_CDP_SEND_TIMEOUT_MS = 10_000;
 export const DEFAULT_LOOPBACK_EXECUTION_CONTEXT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS = 250;
 export const DEFAULT_REVERSE_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
+export const DEFAULT_NATIVE_BRIDGE_HOST_NAME = "com.modcdp.bridge";
+export const DEFAULT_NATIVE_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
+export const DEFAULT_NATS_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
+export const DEFAULT_NATS_BRIDGE_SUBJECT_PREFIX = "modcdp.default";
 
 type MiddlewarePhase = "request" | "response" | "event";
 type ModCDPGlobalScope = typeof globalThis &
@@ -43,6 +47,10 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
   const DEFAULT_LOOPBACK_EXECUTION_CONTEXT_TIMEOUT_MS = 10_000;
   const DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS = 250;
   const DEFAULT_REVERSE_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
+  const DEFAULT_NATIVE_BRIDGE_HOST_NAME = "com.modcdp.bridge";
+  const DEFAULT_NATIVE_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
+  const DEFAULT_NATS_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
+  const DEFAULT_NATS_BRIDGE_SUBJECT_PREFIX = "modcdp.default";
   if (
     globalScope.ModCDP?.__ModCDPServerVersion === MODCDP_SERVER_VERSION &&
     globalScope.ModCDP?.handleCommand &&
@@ -89,13 +97,33 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     }
     let emittedThroughReverseBridge = false;
     if (reverseBridgeSocket?.readyState === WebSocket.OPEN) {
-      const frame: CdpEventFrame = {
+      const message: CdpEventMessage = {
         method: eventName,
-        params: (payload ?? {}) as CdpEventFrame["params"],
+        params: (payload ?? {}) as CdpEventMessage["params"],
       };
-      if (cdpSessionId) frame.sessionId = cdpSessionId;
-      reverseBridgeSocket.send(JSON.stringify(frame));
+      if (cdpSessionId) message.sessionId = cdpSessionId;
+      reverseBridgeSocket.send(JSON.stringify(message));
       emittedThroughReverseBridge = true;
+    }
+    let emittedThroughNativeBridge = false;
+    if (nativeBridgePort) {
+      const message: CdpEventMessage = {
+        method: eventName,
+        params: (payload ?? {}) as CdpEventMessage["params"],
+      };
+      if (cdpSessionId) message.sessionId = cdpSessionId;
+      nativeBridgePort.postMessage(message);
+      emittedThroughNativeBridge = true;
+    }
+    let emittedThroughNatsBridge = false;
+    if (nats_bridge_socket?.readyState === WebSocket.OPEN) {
+      const message: CdpEventMessage = {
+        method: eventName,
+        params: (payload ?? {}) as CdpEventMessage["params"],
+      };
+      if (cdpSessionId) message.sessionId = cdpSessionId;
+      publishNats(`${nats_bridge_subject_prefix}.browser_to_client`, { type: "modcdp.nats.message", message });
+      emittedThroughNatsBridge = true;
     }
 
     const isCustomEvent = registryMatch(eventBindings, eventName) != null;
@@ -113,7 +141,10 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
         emittedThroughBinding = true;
       }
     }
-    return emittedThroughBinding || emittedThroughReverseBridge
+    return emittedThroughBinding ||
+      emittedThroughReverseBridge ||
+      emittedThroughNativeBridge ||
+      emittedThroughNatsBridge
       ? { event: eventName, emitted: true }
       : { event: eventName, emitted: false, reason: "binding_not_installed" };
   }
@@ -148,6 +179,16 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
   let reverseBridgeUrl: string | null = null;
   let reverseBridgeReconnectIntervalMs = DEFAULT_REVERSE_BRIDGE_RECONNECT_INTERVAL_MS;
   let reverseBridgeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let nativeBridgePort: chrome.runtime.Port | null = null;
+  let nativeBridgeHostName: string | null = null;
+  let nativeBridgeReconnectIntervalMs = DEFAULT_NATIVE_BRIDGE_RECONNECT_INTERVAL_MS;
+  let nativeBridgeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let nats_bridge_socket: WebSocket | null = null;
+  let nats_bridge_url: string | null = null;
+  let nats_bridge_subject_prefix = DEFAULT_NATS_BRIDGE_SUBJECT_PREFIX;
+  let nats_bridge_reconnect_interval_ms = DEFAULT_NATS_BRIDGE_RECONNECT_INTERVAL_MS;
+  let nats_bridge_reconnect_timer: ReturnType<typeof setTimeout> | null = null;
+  let nats_bridge_buffer = "";
   let selfDebuggee: chrome.debugger.Debuggee | null = null;
   const offscreenKeepAlivePortName = "ModCDPOffscreenKeepAlive";
   const offscreenKeepAlivePath = "offscreen/keepalive.html";
@@ -286,23 +327,56 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     }, delayMs);
   }
 
+  function stopReverseBridge(reason = "stopped") {
+    const reverse_proxy_url = reverseBridgeUrl;
+    reverseBridgeUrl = null;
+    if (reverseBridgeReconnectTimer) {
+      clearTimeout(reverseBridgeReconnectTimer);
+      reverseBridgeReconnectTimer = null;
+    }
+    const socket = reverseBridgeSocket;
+    reverseBridgeSocket = null;
+    if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
+      socket.close(1000, reason);
+    }
+    return { reverse_proxy_url, stopped: true, reason };
+  }
+
+  function scheduleNativeBridgeReconnect(delayMs: number) {
+    if (!nativeBridgeHostName) return;
+    if (nativeBridgeReconnectTimer) return;
+    nativeBridgeReconnectTimer = setTimeout(() => {
+      nativeBridgeReconnectTimer = null;
+      connectNativeBridge(nativeBridgeHostName);
+    }, delayMs);
+  }
+
+  function scheduleNatsBridgeReconnect(delayMs: number) {
+    if (!nats_bridge_url) return;
+    if (nats_bridge_reconnect_timer) return;
+    nats_bridge_reconnect_timer = setTimeout(() => {
+      nats_bridge_reconnect_timer = null;
+      void connectNatsBridge(nats_bridge_url).catch(() => {});
+    }, delayMs);
+  }
+
   async function handleReverseBridgeMessage(ws: WebSocket, data: unknown) {
-    let frame: CdpCommandFrame;
+    let message: CdpCommandMessage;
     try {
       const parsed = JSON.parse(typeof data === "string" ? data : String(data));
       if (typeof parsed?.id !== "number" || typeof parsed?.method !== "string") return;
-      frame = parsed as CdpCommandFrame;
+      message = parsed as CdpCommandMessage;
     } catch {
       return;
     }
 
     try {
-      const result = await ModCDPServer.handleCommand(frame.method, frame.params ?? {}, frame.sessionId ?? null);
-      ws.send(JSON.stringify({ id: frame.id, result }));
+      const result = await ModCDPServer.handleCommand(message.method, message.params ?? {}, message.sessionId ?? null);
+      ws.send(JSON.stringify({ id: message.id, result }));
     } catch (error) {
       ws.send(
         JSON.stringify({
-          id: frame.id,
+          id: message.id,
           error: {
             code: -32000,
             message: errorMessage(error),
@@ -312,8 +386,84 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     }
   }
 
+  async function handleNativeBridgeMessage(port: chrome.runtime.Port, data: unknown) {
+    let message: CdpCommandMessage;
+    try {
+      if (
+        typeof (data as CdpCommandMessage)?.id !== "number" ||
+        typeof (data as CdpCommandMessage)?.method !== "string"
+      )
+        return;
+      message = data as CdpCommandMessage;
+    } catch {
+      return;
+    }
+
+    try {
+      const result = await ModCDPServer.handleCommand(message.method, message.params ?? {}, message.sessionId ?? null);
+      port.postMessage({ id: message.id, result });
+    } catch (error) {
+      port.postMessage({
+        id: message.id,
+        error: {
+          code: -32000,
+          message: errorMessage(error),
+        },
+      });
+    }
+  }
+
+  async function handleNatsBridgePayload(payload: string) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    if (record?.type === "modcdp.nats.hello") {
+      publishNats(`${nats_bridge_subject_prefix}.browser_to_client`, {
+        type: "modcdp.nats.hello",
+        role: "extension-service-worker",
+        version: 1,
+        extensionId: globalScope.chrome?.runtime?.id ?? null,
+      });
+      return;
+    }
+    const candidate = record?.type === "modcdp.nats.message" ? record.message : parsed;
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      typeof (candidate as CdpCommandMessage).id !== "number" ||
+      typeof (candidate as CdpCommandMessage).method !== "string"
+    )
+      return;
+    const message = candidate as CdpCommandMessage;
+    try {
+      const result = await ModCDPServer.handleCommand(message.method, message.params ?? {}, message.sessionId ?? null);
+      publishNats(`${nats_bridge_subject_prefix}.browser_to_client`, {
+        type: "modcdp.nats.message",
+        message: { id: message.id, result },
+      });
+    } catch (error) {
+      publishNats(`${nats_bridge_subject_prefix}.browser_to_client`, {
+        type: "modcdp.nats.message",
+        message: {
+          id: message.id,
+          error: {
+            code: -32000,
+            message: errorMessage(error),
+          },
+        },
+      });
+    }
+  }
+
   async function connectReverseBridge(endpoint: string) {
-    if (reverseBridgeSocket?.readyState === WebSocket.OPEN || reverseBridgeSocket?.readyState === WebSocket.CONNECTING) {
+    if (
+      reverseBridgeSocket?.readyState === WebSocket.OPEN ||
+      reverseBridgeSocket?.readyState === WebSocket.CONNECTING
+    ) {
       return { reverse_proxy_url: endpoint, connected: reverseBridgeSocket.readyState === WebSocket.OPEN };
     }
 
@@ -344,6 +494,129 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     return { reverse_proxy_url: endpoint, connected: false };
   }
 
+  function connectNativeBridge(hostName: string) {
+    const chromeApi = globalScope.chrome;
+    if (!chromeApi?.runtime?.connectNative) {
+      scheduleNativeBridgeReconnect(nativeBridgeReconnectIntervalMs);
+      return { native_host_name: hostName, connected: false, reason: "native_messaging_unavailable" };
+    }
+    if (nativeBridgePort) return { native_host_name: hostName, connected: true };
+    try {
+      ModCDPServer.native_bridge_attempts += 1;
+      ModCDPServer.native_bridge_last_error = null;
+      const port = chromeApi.runtime.connectNative(hostName);
+      nativeBridgePort = port;
+      ModCDPServer.native_bridge_connected = true;
+      startOffscreenKeepAlive();
+      port.postMessage({
+        type: "modcdp.native.hello",
+        role: "extension-service-worker",
+        version: 1,
+        extensionId: globalScope.chrome?.runtime?.id ?? null,
+      });
+      port.onMessage.addListener((message) => {
+        void handleNativeBridgeMessage(port, message);
+      });
+      port.onDisconnect.addListener(() => {
+        if (nativeBridgePort === port) nativeBridgePort = null;
+        ModCDPServer.native_bridge_connected = false;
+        ModCDPServer.native_bridge_last_error =
+          chromeApi.runtime.lastError?.message ?? "Native messaging port disconnected.";
+        scheduleNativeBridgeReconnect(nativeBridgeReconnectIntervalMs);
+      });
+      return { native_host_name: hostName, connected: true };
+    } catch (error) {
+      nativeBridgePort = null;
+      ModCDPServer.native_bridge_connected = false;
+      ModCDPServer.native_bridge_last_error = errorMessage(error);
+      scheduleNativeBridgeReconnect(nativeBridgeReconnectIntervalMs);
+      return { native_host_name: hostName, connected: false, reason: errorMessage(error) };
+    }
+  }
+
+  async function connectNatsBridge(endpoint: string) {
+    if (!/^wss?:\/\//i.test(endpoint)) {
+      throw new Error(`nats bridge endpoint must be a ws:// or wss:// URL for extension transport, got ${endpoint}.`);
+    }
+    if (nats_bridge_socket?.readyState === WebSocket.OPEN || nats_bridge_socket?.readyState === WebSocket.CONNECTING) {
+      return {
+        nats_url: endpoint,
+        subject_prefix: nats_bridge_subject_prefix,
+        connected: nats_bridge_socket.readyState === WebSocket.OPEN,
+      };
+    }
+    const ws = new WebSocket(endpoint);
+    nats_bridge_socket = ws;
+    nats_bridge_buffer = "";
+    ws.addEventListener("open", () => {
+      startOffscreenKeepAlive();
+      writeNats(`CONNECT ${JSON.stringify(natsConnectOptions())}\r\nPING\r\n`);
+      writeNats(`SUB ${nats_bridge_subject_prefix}.client_to_browser 1\r\n`);
+      publishNats(`${nats_bridge_subject_prefix}.browser_to_client`, {
+        type: "modcdp.nats.hello",
+        role: "extension-service-worker",
+        version: 1,
+        extensionId: globalScope.chrome?.runtime?.id ?? null,
+      });
+    });
+    ws.addEventListener("message", (event) => {
+      void readNatsWebSocketData(event.data);
+    });
+    ws.addEventListener("error", () => {
+      if (nats_bridge_socket === ws) nats_bridge_socket = null;
+      scheduleNatsBridgeReconnect(nats_bridge_reconnect_interval_ms);
+    });
+    ws.addEventListener("close", () => {
+      if (nats_bridge_socket === ws) nats_bridge_socket = null;
+      scheduleNatsBridgeReconnect(nats_bridge_reconnect_interval_ms);
+    });
+    return { nats_url: endpoint, subject_prefix: nats_bridge_subject_prefix, connected: false };
+  }
+
+  function writeNats(data: string) {
+    if (nats_bridge_socket?.readyState === WebSocket.OPEN) nats_bridge_socket.send(data);
+  }
+
+  function publishNats(subject: string, message: unknown) {
+    const body = JSON.stringify(message);
+    writeNats(`PUB ${subject} ${new TextEncoder().encode(body).byteLength}\r\n${body}\r\n`);
+  }
+
+  async function readNatsWebSocketData(data: unknown) {
+    if (typeof data === "string") nats_bridge_buffer += data;
+    else if (data instanceof ArrayBuffer) nats_bridge_buffer += new TextDecoder().decode(data);
+    else if (ArrayBuffer.isView(data)) nats_bridge_buffer += new TextDecoder().decode(data);
+    else if (typeof Blob !== "undefined" && data instanceof Blob) nats_bridge_buffer += await data.text();
+    else return;
+    nats_bridge_buffer = consumeNatsProtocol(nats_bridge_buffer);
+  }
+
+  function consumeNatsProtocol(buffer: string) {
+    for (;;) {
+      const lineEnd = buffer.indexOf("\r\n");
+      if (lineEnd < 0) return buffer;
+      const line = buffer.slice(0, lineEnd);
+      const upper = line.toUpperCase();
+      if (upper.startsWith("MSG ")) {
+        const parts = line.split(/\s+/);
+        const size = Number(parts[parts.length - 1]);
+        const payloadStart = lineEnd + 2;
+        const payloadEnd = payloadStart + size;
+        if (!Number.isInteger(size) || buffer.length < payloadEnd + 2) return buffer;
+        const payload = buffer.slice(payloadStart, payloadEnd);
+        buffer = buffer.slice(payloadEnd + 2);
+        void handleNatsBridgePayload(payload);
+        continue;
+      }
+      buffer = buffer.slice(lineEnd + 2);
+      if (upper === "PING") writeNats("PONG\r\n");
+    }
+  }
+
+  function natsConnectOptions() {
+    return { verbose: false, pedantic: false, lang: "modcdp-extension", version: "1", protocol: 1 };
+  }
+
   function debuggerSendCommand(
     debuggee: chrome.debugger.Debuggee,
     method: string,
@@ -365,7 +638,7 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     if (!chromeApi?.debugger?.getTargets || !chromeApi?.debugger?.attach) {
       throw new Error("chrome.debugger is unavailable for reverse expression evaluation.");
     }
-    const serviceWorkerUrl = chromeApi.runtime.getURL("service_worker.js");
+    const serviceWorkerUrl = chromeApi.runtime.getURL("modcdp/service_worker.js");
     const targets = await chromeApi.debugger.getTargets();
     const target = targets.find((candidate) => candidate.url === serviceWorkerUrl);
     if (!target?.id) throw new Error(`Could not find ModCDP service worker debugger target ${serviceWorkerUrl}.`);
@@ -627,7 +900,10 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     __ModCDPServerVersion: MODCDP_SERVER_VERSION,
     routes: { ...defaultRoutes },
     loopback_cdp_url: null as string | null,
-    browserToken: null as string | null,
+    browser_token: null as string | null,
+    native_bridge_attempts: 0,
+    native_bridge_last_error: null as string | null,
+    native_bridge_connected: false,
     cdp_send_timeout_ms: DEFAULT_CDP_SEND_TIMEOUT_MS,
     loopback_execution_context_timeout_ms: DEFAULT_LOOPBACK_EXECUTION_CONTEXT_TIMEOUT_MS,
     ws_connect_error_settle_timeout_ms: DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS,
@@ -653,6 +929,39 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
       });
       return { reverse_proxy_url: endpoint, reconnect_interval_ms, connecting: true };
     },
+    stopReverseBridge,
+    startNativeBridge(
+      hostName = DEFAULT_NATIVE_BRIDGE_HOST_NAME,
+      {
+        reconnect_interval_ms = DEFAULT_NATIVE_BRIDGE_RECONNECT_INTERVAL_MS,
+      }: {
+        reconnect_interval_ms?: number;
+      } = {},
+    ) {
+      nativeBridgeHostName = hostName;
+      nativeBridgeReconnectIntervalMs = reconnect_interval_ms;
+      return connectNativeBridge(hostName);
+    },
+    startNatsBridge(
+      endpoint: string,
+      {
+        subject_prefix = DEFAULT_NATS_BRIDGE_SUBJECT_PREFIX,
+        reconnect_interval_ms = DEFAULT_NATS_BRIDGE_RECONNECT_INTERVAL_MS,
+      }: {
+        subject_prefix?: string;
+        reconnect_interval_ms?: number;
+      } = {},
+    ) {
+      if (!subject_prefix || /[\s*>]/.test(subject_prefix))
+        throw new Error(`Invalid NATS subject prefix ${subject_prefix}`);
+      nats_bridge_url = endpoint;
+      nats_bridge_subject_prefix = subject_prefix;
+      nats_bridge_reconnect_interval_ms = reconnect_interval_ms;
+      void connectNatsBridge(endpoint).catch(() => {
+        scheduleNatsBridgeReconnect(nats_bridge_reconnect_interval_ms);
+      });
+      return { nats_url: endpoint, subject_prefix, reconnect_interval_ms, connecting: true };
+    },
     ensureOffscreenKeepAlive,
 
     async loadTypes() {
@@ -666,22 +975,27 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     },
 
     async configure(params: ModCDPConfigureParams = {}) {
+      const upstream = params.upstream ?? {};
+      const server = params.server ?? {};
       const {
         loopback_cdp_url = this.loopback_cdp_url,
         routes,
-        browserToken = this.browserToken,
+        browser_token = this.browser_token,
         cdp_send_timeout_ms = this.cdp_send_timeout_ms,
         loopback_execution_context_timeout_ms = this.loopback_execution_context_timeout_ms,
         ws_connect_error_settle_timeout_ms = this.ws_connect_error_settle_timeout_ms,
-        custom_commands = [],
-        custom_events = [],
-        custom_middlewares = [],
-      } = params;
+      } = server;
+      const { custom_commands = [], custom_events = [], custom_middlewares = [] } = params;
       this.loopback_cdp_url = await resolveCDPEndpoint(loopback_cdp_url);
-      this.browserToken = browserToken;
+      this.browser_token = browser_token;
       this.cdp_send_timeout_ms = cdp_send_timeout_ms;
       this.loopback_execution_context_timeout_ms = loopback_execution_context_timeout_ms;
       this.ws_connect_error_settle_timeout_ms = ws_connect_error_settle_timeout_ms;
+      if (upstream.mode === "nats" && upstream.nats_url) {
+        this.startNatsBridge(upstream.nats_url, {
+          subject_prefix: upstream.nats_subject_prefix ?? DEFAULT_NATS_BRIDGE_SUBJECT_PREFIX,
+        });
+      }
       if (routes) this.routes = { ...defaultRoutes, ...routes };
       else {
         this.routes = { ...defaultRoutes };
@@ -696,8 +1010,8 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
 
     addCustomCommand({
       name,
-      paramsSchema = null,
-      resultSchema = null,
+      params_schema = null,
+      result_schema = null,
       expression = null,
       handler,
     }: ModCDPCustomCommandRegistration) {
@@ -709,14 +1023,14 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
         };
       }
       if (typeof handler !== "function") throw new Error(`Custom command ${name} was registered without a handler.`);
-      commandHandlers.set(name, { name, handler, paramsSchema, resultSchema, expression });
+      commandHandlers.set(name, { name, handler, params_schema, result_schema, expression });
       return { name, registered: true };
     },
 
-    addCustomEvent({ name, eventSchema = null }: ModCDPCustomEventRegistration) {
+    addCustomEvent({ name, event_schema = null }: ModCDPCustomEventRegistration) {
       name = normalizeModCDPName(name);
       if (!/^[^.]+\.[^.]+$/.test(name)) throw new Error("name must be in Domain.event form.");
-      eventBindings.set(name, { name, eventSchema });
+      eventBindings.set(name, { name, event_schema });
       return { name, registered: true };
     },
 
@@ -860,7 +1174,7 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     },
 
     async discoverLoopbackCDP(): Promise<{ loopback_cdp_url: string | null; verified: boolean; version?: unknown }> {
-      if (!this.browserToken) return { loopback_cdp_url: null as null, verified: false };
+      if (!this.browser_token) return { loopback_cdp_url: null as null, verified: false };
 
       const url = "http://127.0.0.1:9222";
       const previousLoopbackUrl = this.loopback_cdp_url;
@@ -878,7 +1192,7 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
         const worker = targetInfos.find(
           (target) =>
             target.type === "service_worker" &&
-            target.url === `chrome-extension://${chromeApi.runtime.id}/service_worker.js`,
+            target.url === `chrome-extension://${chromeApi.runtime.id}/modcdp/service_worker.js`,
         );
         if (!worker) return fail(version);
 
@@ -886,19 +1200,20 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
           targetId: worker.targetId,
           flatten: true,
         })) as cdp.types.ts.Target.AttachToTargetResult;
+        loopbackTargetSessions.set(worker.targetId, sessionId);
+        loopbackSessionTargets.set(sessionId, worker.targetId);
         const contextIdPromise = waitForLoopbackExecutionContext(sessionId);
         await callLoopbackWS("Runtime.enable", {}, sessionId);
         const executionContextId = await contextIdPromise;
         const result = (await callLoopbackWS(
           "Runtime.callFunctionOn",
           {
-            functionDeclaration: `function() { return globalThis.ModCDP?.browserToken === ${JSON.stringify(this.browserToken)}; }`,
+            functionDeclaration: `function() { return globalThis.ModCDP?.browser_token === ${JSON.stringify(this.browser_token)}; }`,
             executionContextId,
             returnByValue: true,
           },
           sessionId,
         )) as cdp.types.ts.Runtime.EvaluateResult;
-        await callLoopbackWS("Target.detachFromTarget", { sessionId }).catch(() => {});
         if (result.result?.value !== true) return fail(version);
 
         await initializeLoopbackCDP();

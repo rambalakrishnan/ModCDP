@@ -34,7 +34,7 @@ type TargetCreatedPayload = {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH =
   [path.resolve(HERE, "..", "..", "extension"), path.resolve(HERE, "..", "..", "dist", "extension")].find((candidate) =>
-    existsSync(path.join(candidate, "service_worker.js")),
+    existsSync(path.join(candidate, "modcdp/service_worker.js")),
   ) ?? path.resolve(HERE, "..", "..", "extension");
 const DEFAULT_DEMO_EVENT_TIMEOUT_MS = 10_000;
 const DEFAULT_LIVE_CDP_POLL_INTERVAL_MS = 250;
@@ -72,28 +72,39 @@ function clientOptionsFor(mode, cdp_url, launch_options = {}) {
     "Target.createTarget": "direct_cdp",
     "Target.activateTarget": "direct_cdp",
   };
+  const launch = cdp_url ? ({ mode: "remote" } as const) : ({ mode: "local", options: launch_options } as const);
+  const upstream = { mode: "ws" as const, ws_url: cdp_url };
+  const extension = {
+    mode: "auto" as const,
+    path: EXTENSION_PATH,
+    service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+  };
   if (mode === "direct") {
     return {
-      cdp_url,
-      extension_path: EXTENSION_PATH,
-      launch_options,
-      routes: {
-        "Mod.*": "service_worker",
-        "Custom.*": "service_worker",
-        "*.*": "direct_cdp",
-        ...directNormalEventRoutes,
+      launch,
+      upstream,
+      extension,
+      client: {
+        routes: {
+          "Mod.*": "service_worker",
+          "Custom.*": "service_worker",
+          "*.*": "direct_cdp",
+          ...directNormalEventRoutes,
+        },
       },
     };
   }
   return {
-    cdp_url,
-    extension_path: EXTENSION_PATH,
-    launch_options,
-    routes: {
-      "Mod.*": "service_worker",
-      "Custom.*": "service_worker",
-      "*.*": "service_worker",
-      ...directNormalEventRoutes,
+    launch,
+    upstream,
+    extension,
+    client: {
+      routes: {
+        "Mod.*": "service_worker",
+        "Custom.*": "service_worker",
+        "*.*": "service_worker",
+        ...directNormalEventRoutes,
+      },
     },
     server: {
       routes: serverRoutesFor(mode),
@@ -174,16 +185,16 @@ async function waitForLiveCdpUrl() {
 async function main() {
   const { mode, live } = parseArgs(process.argv.slice(2));
   console.log(`== mode: ${live ? "live/" : ""}${mode} ==`);
-  if (!existsSync(path.join(EXTENSION_PATH, "service_worker.js"))) {
+  if (!existsSync(path.join(EXTENSION_PATH, "modcdp/service_worker.js"))) {
     throw new Error(`Built extension not found at ${EXTENSION_PATH}. Run pnpm run build first.`);
   }
 
-  let cdpUrl;
+  let cdp_url;
   let launch_options = {};
   if (live) {
-    cdpUrl = await waitForLiveCdpUrl();
+    cdp_url = await waitForLiveCdpUrl();
   } else {
-    cdpUrl = null;
+    cdp_url = null;
     launch_options = {
       headless: process.platform === "linux",
       sandbox: process.platform !== "linux",
@@ -191,7 +202,7 @@ async function main() {
     };
   }
 
-  const cdp = new ModCDPClient(clientOptionsFor(mode, cdpUrl, launch_options));
+  const cdp = new ModCDPClient(clientOptionsFor(mode, cdp_url, launch_options));
   const foregroundEvents = [];
   const targetCreatedEvents: TargetCreatedPayload[] = [];
 
@@ -208,8 +219,10 @@ async function main() {
 
     const configureResult = assertObject(
       await cdp.Mod.configure({
-        routes: serverRoutesFor(mode),
-        ...(mode === "loopback" ? { loopback_cdp_url: cdp.cdp_url } : {}),
+        server: {
+          routes: serverRoutesFor(mode),
+          ...(mode === "loopback" ? { loopback_cdp_url: cdp.cdp_url } : {}),
+        },
       }),
       "Mod.configure",
     );
@@ -280,10 +293,10 @@ async function main() {
     const tabCommandRegistration = assertObject(
       await cdp.Mod.addCustomCommand({
         name: "Custom.TabIdFromTargetId",
-        paramsSchema: {
+        params_schema: {
           targetId: cdp.types.zod.Target.TargetID,
         },
-        resultSchema: {
+        result_schema: {
           tabId: z.number().nullable(),
         },
         expression: `async ({ targetId }) => {
@@ -300,10 +313,10 @@ async function main() {
     const targetCommandRegistration = assertObject(
       await cdp.Mod.addCustomCommand({
         name: "Custom.targetIdFromTabId",
-        paramsSchema: {
+        params_schema: {
           tabId: z.number(),
         },
-        resultSchema: {
+        result_schema: {
           targetId: cdp.types.zod.Target.TargetID.nullable(),
           tabId: z.number().optional(),
         },

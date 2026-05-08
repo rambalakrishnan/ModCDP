@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { z } from "zod";
 
 import { ModCDPClient, type ModCDPClientInstance } from "../client/js/ModCDPClient.js";
@@ -8,7 +8,7 @@ test("schema-only custom commands install flat namespace methods", async () => {
   type CustomClient = ModCDPClientInstance<{
     "Custom.doSomething": { params: { id: string }; result: boolean };
   }>;
-  const cdp = new ModCDPClient({ routes: { "Custom.*": "direct_cdp" } }) as CustomClient;
+  const cdp = new ModCDPClient({ client: { routes: { "Custom.*": "direct_cdp" } } }) as CustomClient;
   cdp._sendRaw = async () => ({ success: true });
 
   await cdp.Mod.addCustomCommand("Custom.doSomething", {

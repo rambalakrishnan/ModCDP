@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Pure stateless translation between ModCDP and raw CDP frames.
+// Pure stateless translation between ModCDP and raw CDP messages.
 // No I/O, no maps, no classes. Trivial to port to any language.
 // Used on both the Node side (proxy + client) and the extension service worker
 // side, so the binding payload format only has one definition.
@@ -107,8 +107,8 @@ export function wrapModCDPAddCustomCommand({
       function() {
         return globalThis.ModCDP.addCustomCommand({
           name: ${JSON.stringify(commandName)},
-          paramsSchema: null,
-          resultSchema: null,
+          params_schema: null,
+          result_schema: null,
           expression: ${JSON.stringify(expression)},
           handler: async (params, cdpSessionId, method) => {
             const cdp = globalThis.ModCDP.attachToSession(cdpSessionId);
@@ -132,7 +132,7 @@ export function wrapModCDPAddCustomEvent({ name }: { name: string }): cdp.types.
       function() {
         return globalThis.ModCDP.addCustomEvent({
         name: ${JSON.stringify(eventName)},
-        eventSchema: null,
+        event_schema: null,
         });
       }
     `,

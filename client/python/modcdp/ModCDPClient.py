@@ -1,19 +1,18 @@
 """ModCDPClient (Python): importable, no CLI, no demo code.
 
-Constructor parameter names mirror the JS / Go ports:
-    cdp_url           upstream CDP URL (str)
-    extension_path    extension directory (str)
-    routes            client-side routing dict
-    server            { 'loopback_cdp_url'?, 'routes'? } passed to ModCDPServer.configure
-    scan_for_existing_localhost_9222
-                      when true and cdp_url is unset, attach to localhost:9222 before autolaunching
+Constructor option groups mirror the JS / Go ports:
+    launch            browser/session creation and cleanup
+    upstream          message transport to raw CDP or a ModCDP server
+    extension         raw-CDP extension discovery/injection/borrowing
+    client.routes     client-side direct_cdp/service_worker routing
+    server            ModCDPServer.configure params
     mirror_upstream_events
                       when false, do not mirror server-side upstream CDP events back through Runtime bindings
     *_timeout_ms / *_interval_ms
                       override default CDP send, service-worker probe, event, and poll timings
 
 Public methods: connect(), send(method, params), on(event, handler), close(), _cdp.send(), _cdp.on().
-Synchronous (blocking) API; one background thread reads frames off the WS.
+Synchronous (blocking) API; one background thread reads messages off the WS.
 """
 
 import json
@@ -22,7 +21,6 @@ import inspect
 import os
 import re
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -30,7 +28,6 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import socket
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -39,10 +36,18 @@ from typing import Any, cast
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic_core import to_jsonable_python
-from websocket import create_connection
-
 from .jsonschema import type_adapter_from_json_schema
 from .cdp.surface import AwaitableDict, CDPEvent, CDPSurfaceMixin, cdp_event_name, install_cdp_surface
+from .BrowserbaseBrowserLauncher import BrowserbaseBrowserLauncher
+from .LocalBrowserLauncher import LocalBrowserLauncher
+from .NoopBrowserLauncher import NoopBrowserLauncher
+from .RemoteBrowserLauncher import RemoteBrowserLauncher
+from .NativeMessagingUpstreamTransport import NativeMessagingUpstreamTransport
+from .NatsUpstreamTransport import NatsUpstreamTransport
+from .PipeUpstreamTransport import PipeUpstreamTransport
+from .ReverseWebSocketUpstreamTransport import ReverseWebSocketUpstreamTransport
+from .UpstreamTransport import UpstreamTransport
+from .WebSocketUpstreamTransport import WebSocketUpstreamTransport
 from .translate import (
     CUSTOM_EVENT_BINDING_NAME,
     DEFAULT_CLIENT_ROUTES,
@@ -63,10 +68,10 @@ from .types import (
     ModCDPRoutes,
     ModCDPServerConfig,
     BorrowedExtensionInfo,
-    CdpFrame,
+    CdpMessage,
     ExtensionInfo,
     ExtensionProbe,
-    FrameParams,
+    MessageParams,
     Handler,
     JsonValue,
     LaunchOptions,
@@ -159,11 +164,9 @@ MODCDP_READY_EXPRESSION = (
     "globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)"
 )
 DEFAULT_SERVER = object()
-DEFAULT_LIVE_CDP_URL = "http://127.0.0.1:9222"
 DEFAULT_CDP_SEND_TIMEOUT_MS = 10_000
 DEFAULT_EVENT_WAIT_TIMEOUT_MS = 10_000
 DEFAULT_EXECUTION_CONTEXT_TIMEOUT_MS = 10_000
-DEFAULT_CHROME_READY_TIMEOUT_MS = 45_000
 DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS = 10_000
 DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS = 60_000
 DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS = 100
@@ -181,7 +184,7 @@ class _RawCDP:
         params: ProtocolParams | None = None,
         session_id: str | None = None,
     ) -> ProtocolResult:
-        return self._client._send_frame(method, params or {}, session_id=session_id, record_raw_timing=True)
+        return self._client._send_message(method, params or {}, session_id=session_id, record_raw_timing=True)
 
     def on(self, event: str, handler: Handler) -> "ModCDPClient":
         return self._client.on(event, handler)
@@ -210,19 +213,6 @@ def websocket_url_for(endpoint: str) -> str:
     if not isinstance(ws_url, str):
         raise RuntimeError(f"HTTP discovery for {endpoint} returned a non-string webSocketDebuggerUrl")
     return ws_url
-
-
-def live_websocket_url_for(endpoint: str = DEFAULT_LIVE_CDP_URL) -> str | None:
-    try:
-        return websocket_url_for(endpoint)
-    except Exception:
-        return None
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _json_object(value: JsonValue | None) -> ProtocolResult:
@@ -268,20 +258,15 @@ def modcdp_server_bootstrap_expression(extension_path: str) -> str:
 class ModCDPClient(CDPSurfaceMixin):
     def __init__(
         self,
-        cdp_url: str | None = None,
-        extension_path: str | None = None,
-        routes: Mapping[str, str] | None = None,
+        launch: Mapping[str, Any] | None = None,
+        upstream: Mapping[str, Any] | None = None,
+        extension: Mapping[str, Any] | None = None,
+        client: Mapping[str, Any] | None = None,
         server: Mapping[str, JsonValue] | None | object = DEFAULT_SERVER,
         custom_commands: Sequence[ModCDPAddCustomCommandParams] | None = None,
         custom_events: Sequence[ModCDPAddCustomEventParams] | None = None,
         custom_middlewares: Sequence[ModCDPAddMiddlewareParams] | None = None,
-        service_worker_url_includes: Sequence[str] | None = None,
-        service_worker_url_suffixes: Sequence[str] | None = None,
-        trust_service_worker_target: bool = False,
-        require_service_worker_target: bool = False,
-        service_worker_ready_expression: str | None = None,
         mirror_upstream_events: bool = True,
-        scan_for_existing_localhost_9222: bool = False,
         cdp_send_timeout_ms: int = DEFAULT_CDP_SEND_TIMEOUT_MS,
         event_wait_timeout_ms: int = DEFAULT_EVENT_WAIT_TIMEOUT_MS,
         execution_context_timeout_ms: int = DEFAULT_EXECUTION_CONTEXT_TIMEOUT_MS,
@@ -290,29 +275,42 @@ class ModCDPClient(CDPSurfaceMixin):
         service_worker_poll_interval_ms: int = DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS,
         target_session_poll_interval_ms: int = DEFAULT_TARGET_SESSION_POLL_INTERVAL_MS,
         ws_connect_error_settle_timeout_ms: int = DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS,
-        launch_options: LaunchOptions | None = None,
     ) -> None:
-        self.cdp_url: str | None = cdp_url
-        self.extension_path: str | None = extension_path or default_extension_path()
-        self.routes: ModCDPRoutes = {**DEFAULT_CLIENT_ROUTES, **dict(routes or {})}
+        self.launch = dict(launch or {})
+        self.upstream = dict(upstream or {})
+        self.extension = dict(extension or {})
+        self.client = dict(client or {})
+        self.upstream["mode"] = self.upstream.get("mode") or "ws"
+        self.upstream_endpoint_kind = "raw_cdp" if self.upstream["mode"] in ("ws", "pipe") else "modcdp_server"
+        self.launch["mode"] = self.launch.get("mode") or (
+            "none" if self.upstream_endpoint_kind == "modcdp_server" else "remote" if self.upstream.get("ws_url") else "local"
+        )
+        self.extension["mode"] = self.extension.get("mode") or (
+            "auto" if self.upstream_endpoint_kind == "raw_cdp" else "none"
+        )
+        self.cdp_url: str | None = cast(str | None, self.upstream.get("ws_url"))
+        self.extension_path: str | None = cast(str | None, self.extension.get("path")) or default_extension_path()
+        self.routes: ModCDPRoutes = {**DEFAULT_CLIENT_ROUTES, **dict(cast(Mapping[str, str], self.client.get("routes") or {}))}
         if server is DEFAULT_SERVER:
-            self.server: ModCDPServerConfig | None = {}
+            self.server: ModCDPServerConfig | None = {"routes": {"*.*": "chrome_debugger"}} if self.upstream_endpoint_kind == "modcdp_server" else {}
         elif server is None:
             self.server = None
         elif isinstance(server, Mapping):
-            self.server = cast(ModCDPServerConfig, dict(server))
+            self.server = cast(ModCDPServerConfig, {
+                **({"routes": {"*.*": "chrome_debugger"}} if self.upstream_endpoint_kind == "modcdp_server" else {}),
+                **dict(server),
+            })
         else:
             raise TypeError("server must be a mapping, None, or omitted")
         self.custom_commands: list[ModCDPAddCustomCommandParams] = list(custom_commands or [])
         self.custom_events: list[ModCDPAddCustomEventParams] = list(custom_events or [])
         self.custom_middlewares: list[ModCDPAddMiddlewareParams] = list(custom_middlewares or [])
-        self.service_worker_url_includes: list[str] = list(service_worker_url_includes or [])
-        self.service_worker_url_suffixes: list[str] = list(service_worker_url_suffixes or ["/service_worker.js", "/background.js"])
-        self.trust_service_worker_target = trust_service_worker_target
-        self.require_service_worker_target = require_service_worker_target
-        self.service_worker_ready_expression = service_worker_ready_expression
+        self.service_worker_url_includes: list[str] = list(cast(Sequence[str], self.extension.get("service_worker_url_includes") or []))
+        self.service_worker_url_suffixes: list[str] = list(cast(Sequence[str], self.extension.get("service_worker_url_suffixes") or ["/service_worker.js", "/background.js"]))
+        self.trust_service_worker_target = bool(self.extension.get("trust_service_worker_target", False))
+        self.require_service_worker_target = bool(self.extension.get("require_service_worker_target", False))
+        self.service_worker_ready_expression = cast(str | None, self.extension.get("service_worker_ready_expression"))
         self.mirror_upstream_events = mirror_upstream_events
-        self.scan_for_existing_localhost_9222 = scan_for_existing_localhost_9222
         self.cdp_send_timeout_ms = cdp_send_timeout_ms
         self.event_wait_timeout_ms = event_wait_timeout_ms
         self.execution_context_timeout_ms = execution_context_timeout_ms
@@ -326,7 +324,11 @@ class ModCDPClient(CDPSurfaceMixin):
             "loopback_execution_context_timeout_ms": execution_context_timeout_ms,
             "ws_connect_error_settle_timeout_ms": ws_connect_error_settle_timeout_ms,
         }
-        self.launch_options = cast(LaunchOptions, dict(launch_options or {}))
+        self.launch_options = cast(LaunchOptions, dict(cast(Mapping[str, Any], self.launch.get("options") or {})))
+        if self.launch.get("executable_path"):
+            self.launch_options["executable_path"] = self.launch["executable_path"]
+        if self.launch.get("user_data_dir"):
+            self.launch_options["user_data_dir"] = self.launch["user_data_dir"]
 
         self.extension_id: str | None = None
         self.ext_target_id: str | None = None
@@ -337,6 +339,7 @@ class ModCDPClient(CDPSurfaceMixin):
         self.last_raw_timing: ModCDPRawTiming | None = None
 
         self._ws: WebSocketLike | None = None
+        self.transport: UpstreamTransport | None = None
         self._next_id = 0
         self._pending: dict[int, PendingEntry] = {}
         self._handlers: dict[str, list[Handler]] = {}
@@ -354,50 +357,63 @@ class ModCDPClient(CDPSurfaceMixin):
         self.Mod = _ModDomain(self)
         self._reader_thread: threading.Thread | None = None
         self._closed = False
-        self._launched_process: subprocess.Popen[bytes] | None = None
-        self._profile_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._launched_browser: Any | None = None
         self._prepared_extension_dir: tempfile.TemporaryDirectory[str] | None = None
         self._cdp = _RawCDP(self)
         self._hydrate_custom_surface()
 
     def connect(self) -> "ModCDPClient":
         connect_started_at = int(time.time() * 1000)
+        if self.upstream.get("mode") != "ws":
+            self.transport = self._upstream_transport()
+            self.transport.connect()
+            return self
         if self.cdp_url is None:
-            self.cdp_url = live_websocket_url_for() if self.scan_for_existing_localhost_9222 else None
-            if self.cdp_url is None:
-                self._prepare_extension_path()
-                launched = self._launch_chrome()
-                self.cdp_url = launched["cdp_url"]
+            if self.launch.get("mode") != "local":
+                raise RuntimeError("upstream.mode=ws requires upstream.ws_url or launch.mode='local'.")
+            self._prepare_extension_path()
+            launched = self._browser_launcher().launch(
+                self.launch_options
+                if self.extension.get("mode") == "none" or not self.extension_path
+                else {**self.launch_options, "extra_args": [*list(self.launch_options.get("extra_args") or []), f"--load-extension={self.extension_path}"]}
+            )
+            self._launched_browser = launched
+            self.cdp_url = cast(str | None, launched["cdp_url"])
         input_cdp_url = self.cdp_url
         self.cdp_url = websocket_url_for(input_cdp_url)
+        self.upstream["ws_url"] = self.cdp_url
         if self.server is not None and "loopback_cdp_url" not in self.server:
             self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
         elif self.server and isinstance(self.server.get("loopback_cdp_url"), str):
             loopback_url = self.server["loopback_cdp_url"]
             if loopback_url == input_cdp_url or loopback_url == self.cdp_url:
                 self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
-        self._ws = cast(WebSocketLike, create_connection(self.cdp_url, timeout=self.cdp_send_timeout_ms / 1000))
+        self.transport = self._upstream_transport()
+        self.transport.connect()
+        self._ws = cast(WebSocketLike, cast(WebSocketUpstreamTransport, self.transport).ws)
         self._reader_thread = threading.Thread(target=self._reader, daemon=True)
         self._reader_thread.start()
 
-        self._send_frame("Target.setAutoAttach", {
+        self._send_message("Target.setAutoAttach", {
             "autoAttach": True,
             "waitForDebuggerOnStart": False,
             "flatten": True,
         })
-        self._send_frame("Target.setDiscoverTargets", {"discover": True})
+        self._send_message("Target.setDiscoverTargets", {"discover": True})
 
         extension_started_at = int(time.time() * 1000)
+        if self.extension.get("mode") == "none":
+            raise RuntimeError("extension.mode='none' cannot be used with a raw_cdp upstream.")
         self._prepare_extension_path()
         ext = self._ensure_extension()
         extension_completed_at = int(time.time() * 1000)
         self.extension_id = ext["extension_id"]
         self.ext_target_id = ext["target_id"]
         self.ext_session_id = ext["session_id"]
-        self._send_frame("Runtime.enable", {}, self.ext_session_id)
-        self._send_frame("Runtime.addBinding", {"name": CUSTOM_EVENT_BINDING_NAME}, self.ext_session_id)
+        self._send_message("Runtime.enable", {}, self.ext_session_id)
+        self._send_message("Runtime.addBinding", {"name": CUSTOM_EVENT_BINDING_NAME}, self.ext_session_id)
         if self.mirror_upstream_events:
-            self._send_frame("Runtime.addBinding", {"name": UPSTREAM_EVENT_BINDING_NAME}, self.ext_session_id)
+            self._send_message("Runtime.addBinding", {"name": UPSTREAM_EVENT_BINDING_NAME}, self.ext_session_id)
 
         if self.server is not None:
             custom_events: list[ModCDPAddCustomEventObjectParams] = []
@@ -501,7 +517,7 @@ class ModCDPClient(CDPSurfaceMixin):
         return AwaitableDict(result) if isinstance(result, dict) else AwaitableValue(result)
 
     def raw_send(self, method: str, params: ProtocolParams | None = None) -> ProtocolResult:
-        return self._send_frame(method, params or {}, record_raw_timing=True)
+        return self._send_message(method, params or {}, record_raw_timing=True)
 
     def send_raw(
         self,
@@ -579,24 +595,19 @@ class ModCDPClient(CDPSurfaceMixin):
                 pass
         self._closed = True
         try:
-            if self._ws:
+            if self.transport:
+                self.transport.close()
+            elif self._ws:
                 self._ws.close()
         except Exception:
             pass
         if self._reader_thread is not None and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=1)
+        self.transport = None
         self._ws = None
-        if self._launched_process is not None:
-            self._launched_process.terminate()
-            try:
-                self._launched_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._launched_process.kill()
-                self._launched_process.wait(timeout=2)
-            self._launched_process = None
-        if self._profile_dir is not None:
-            self._cleanup_temp_dir(self._profile_dir)
-            self._profile_dir = None
+        if self._launched_browser is not None:
+            self._launched_browser["close"]()
+            self._launched_browser = None
         if self._prepared_extension_dir is not None:
             self._cleanup_temp_dir(self._prepared_extension_dir)
             self._prepared_extension_dir = None
@@ -633,7 +644,7 @@ class ModCDPClient(CDPSurfaceMixin):
         if session_id:
             return session_id
         if allow_attach:
-            result = self._send_frame(
+            result = self._send_message(
                 "Target.attachToTarget",
                 {"targetId": target_id, "flatten": True},
                 timeout=max(timeout, self.cdp_send_timeout_ms / 1000),
@@ -644,69 +655,30 @@ class ModCDPClient(CDPSurfaceMixin):
                 return attached_session_id
         return self._session_id_for_target(target_id, timeout=timeout)
 
-    def _launch_chrome(self) -> dict[str, str]:
-        executable_path = self.launch_options.get("executable_path") or os.environ.get("CHROME_PATH")
-        candidates = [
-            executable_path,
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-            str(Path.home() / "Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
-            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome-canary",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/google-chrome",
-        ]
-        executable_path = next((candidate for candidate in candidates if candidate and Path(candidate).exists()), None)
-        if executable_path is None:
-            raise RuntimeError("No Chrome/Chromium binary found. Set CHROME_PATH or pass launch_options.executable_path.")
-        port = int(self.launch_options.get("port") or _free_port())
-        self._profile_dir = tempfile.TemporaryDirectory(prefix="modcdp.")
-        args = [
-            "--enable-unsafe-extension-debugging",
-            "--remote-allow-origins=*",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-default-apps",
-            "--disable-dev-shm-usage",
-            "--disable-background-networking",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-background-timer-throttling",
-            "--disable-sync",
-            "--disable-features=DisableLoadExtensionCommandLineSwitch",
-            "--password-store=basic",
-            "--use-mock-keychain",
-            "--disable-gpu",
-            f"--user-data-dir={self._profile_dir.name}",
-            "--remote-debugging-address=127.0.0.1",
-            f"--remote-debugging-port={port}",
-        ]
-        default_headless = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
-        if self.launch_options.get("headless", default_headless):
-            args.append("--headless=new")
-        if self.launch_options.get("sandbox", False) is False:
-            args.append("--no-sandbox")
-        if self.extension_path:
-            args.append(f"--load-extension={self.extension_path}")
-        extra_args = self.launch_options.get("extra_args") or []
-        args.extend(extra_args)
-        args.append("about:blank")
-        self._launched_process = subprocess.Popen([executable_path, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        cdp_url = f"http://127.0.0.1:{port}"
-        chrome_ready_timeout_s = DEFAULT_CHROME_READY_TIMEOUT_MS / 1000
-        deadline = time.time() + chrome_ready_timeout_s
-        while time.time() < deadline:
-            try:
-                with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=0.5) as response:
-                    json.loads(response.read())
-                    return {"cdp_url": cdp_url}
-            except Exception:
-                time.sleep(0.1)
-        self.close()
-        raise RuntimeError(f"Chrome at {cdp_url} did not become ready within {chrome_ready_timeout_s}s")
+    def _browser_launcher(self):
+        if self.launch.get("mode") == "local":
+            return LocalBrowserLauncher(self.launch_options)
+        if self.launch.get("mode") == "remote":
+            return RemoteBrowserLauncher(self.launch_options, self.cdp_url)
+        if self.launch.get("mode") == "bb":
+            return BrowserbaseBrowserLauncher(self.launch_options)
+        return NoopBrowserLauncher(self.launch_options)
+
+    def _upstream_transport(self):
+        mode = self.upstream.get("mode")
+        if mode == "ws":
+            if not self.cdp_url:
+                raise RuntimeError("upstream.mode='ws' requires upstream.ws_url or launch.mode='local'.")
+            return WebSocketUpstreamTransport(self.cdp_url, timeout_s=self.cdp_send_timeout_ms / 1000)
+        if mode == "pipe":
+            return PipeUpstreamTransport()
+        if mode == "reversews":
+            return ReverseWebSocketUpstreamTransport(str(self.upstream.get("reversews_bind") or "127.0.0.1:29292"))
+        if mode == "nativemessaging":
+            return NativeMessagingUpstreamTransport(self.upstream.get("nativemessaging_manifest"))
+        if mode == "nats":
+            return NatsUpstreamTransport(self.upstream.get("nats_url"))
+        raise RuntimeError(f"unknown upstream.mode={mode}")
 
     # --- internals ---------------------------------------------------------
 
@@ -721,14 +693,14 @@ class ModCDPClient(CDPSurfaceMixin):
     def _send_raw(self, wrapped: TranslatedCommand) -> Any:
         if wrapped["target"] == "direct_cdp":
             step = wrapped["steps"][0]
-            return self._send_frame(step["method"], step.get("params") or {})
+            return self._send_message(step["method"], step.get("params") or {})
         if wrapped["target"] != "service_worker":
             raise RuntimeError(f"Unsupported command target {wrapped['target']!r}")
 
         result: ProtocolResult = {}
         unwrap: str | None = None
         for step in wrapped["steps"]:
-            result = self._send_frame(step["method"], step.get("params") or {}, self.ext_session_id)
+            result = self._send_message(step["method"], step.get("params") or {}, self.ext_session_id)
             unwrap = step.get("unwrap")
         return unwrap_response_if_needed(result, unwrap)
 
@@ -884,10 +856,10 @@ class ModCDPClient(CDPSurfaceMixin):
         self.latency = latency
         return latency
 
-    def _send_frame(
+    def _send_message(
         self,
         method: str,
-        params: FrameParams | None = None,
+        params: MessageParams | None = None,
         session_id: str | None = None,
         timeout: float | None = None,
         record_raw_timing: bool = False,
@@ -896,10 +868,10 @@ class ModCDPClient(CDPSurfaceMixin):
         with self._lock:
             self._next_id += 1
             msg_id = self._next_id
-            done: Queue[CdpFrame] = Queue()
+            done: Queue[CdpMessage] = Queue()
             self._pending[msg_id] = (method, done)
         started_at = int(time.time() * 1000)
-        msg: CdpFrame = {"id": msg_id, "method": method, "params": params or {}}
+        msg: CdpMessage = {"id": msg_id, "method": method, "params": params or {}}
         if session_id:
             msg["sessionId"] = session_id
         ws = self._ws
@@ -946,7 +918,7 @@ class ModCDPClient(CDPSurfaceMixin):
                 parsed: object = json.loads(raw)
                 if not isinstance(parsed, dict):
                     continue
-                msg = cast(CdpFrame, parsed)
+                msg = cast(CdpMessage, parsed)
                 if "id" in msg and msg["id"] is not None:
                     with self._lock:
                         entry = self._pending.pop(msg["id"], None)
@@ -1008,7 +980,7 @@ class ModCDPClient(CDPSurfaceMixin):
                 done.put({"error": {"message": "connection closed"}})
 
     def _target_infos(self) -> list[TargetInfo]:
-        value = self._send_frame("Target.getTargets").get("targetInfos")
+        value = self._send_message("Target.getTargets").get("targetInfos")
         if not isinstance(value, list):
             return []
         targets: list[TargetInfo] = []
@@ -1038,8 +1010,8 @@ class ModCDPClient(CDPSurfaceMixin):
             session_id = self._ensure_session_id_for_target(target_id, timeout=timeout, allow_attach=allow_attach)
             if not session_id:
                 return None
-            self._send_frame("Runtime.enable", {}, session_id, timeout=self.cdp_send_timeout_ms / 1000)
-            probe = self._send_frame("Runtime.evaluate", {
+            self._send_message("Runtime.enable", {}, session_id, timeout=self.cdp_send_timeout_ms / 1000)
+            probe = self._send_message("Runtime.evaluate", {
                 "expression": ready_expression,
                 "returnByValue": True,
             }, session_id, timeout=self.cdp_send_timeout_ms / 1000)
@@ -1110,7 +1082,7 @@ class ModCDPClient(CDPSurfaceMixin):
 
         # 2. Try Extensions.loadUnpacked.
         try:
-            r = self._send_frame("Extensions.loadUnpacked", {"path": self.extension_path})
+            r = self._send_message("Extensions.loadUnpacked", {"path": self.extension_path})
             extension_id = r.get("id") or r.get("extensionId")
         except RuntimeError as e:
             if "Method not available" in str(e) or "wasn't found" in str(e):
@@ -1168,9 +1140,9 @@ class ModCDPClient(CDPSurfaceMixin):
                 session_id = self._session_id_for_target(target_id, timeout=2)
                 if not session_id:
                     continue
-                try: self._send_frame("Runtime.enable", {}, session_id, timeout=2)
+                try: self._send_message("Runtime.enable", {}, session_id, timeout=2)
                 except Exception: pass
-                result = self._send_frame("Runtime.evaluate", {
+                result = self._send_message("Runtime.evaluate", {
                     "expression": bootstrap,
                     "awaitPromise": True,
                     "returnByValue": True,
@@ -1182,7 +1154,7 @@ class ModCDPClient(CDPSurfaceMixin):
                     value = {}
                 ready = bool(value.get("ok"))
                 if ready and self.service_worker_ready_expression:
-                    probe = self._send_frame("Runtime.evaluate", {
+                    probe = self._send_message("Runtime.evaluate", {
                         "expression": self._ready_expression(),
                         "returnByValue": True,
                     }, session_id, timeout=2)

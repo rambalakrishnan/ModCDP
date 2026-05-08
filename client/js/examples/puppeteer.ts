@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 
-import { freePort, launchChrome } from "../../../bridge/launcher.js";
+import { LocalBrowserLauncher } from "../../../bridge/LocalBrowserLauncher.js";
 import { startProxy } from "../../../bridge/proxy.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -17,19 +17,19 @@ const extension_path = path.resolve(here, "../../../extension");
 const DEFAULT_CUSTOM_PROXY_EVENT_TIMEOUT_MS = 10_000;
 
 let proxy: Awaited<ReturnType<typeof startProxy>> | null = null;
-let chrome: Awaited<ReturnType<typeof launchChrome>> | null = null;
+let chrome: Awaited<ReturnType<LocalBrowserLauncher["launch"]>> | null = null;
 let browser: Awaited<ReturnType<typeof puppeteer.connect>> | null = null;
 
 try {
-  chrome = await launchChrome({
+  chrome = await new LocalBrowserLauncher().launch({
     headless: process.platform === "linux",
     sandbox: process.platform !== "linux",
     extra_args: [`--load-extension=${extension_path}`],
   });
   proxy = await startProxy({
-    port: await freePort(),
-    extensionPath: extension_path,
-    upstream: chrome.cdpUrl,
+    port: await LocalBrowserLauncher.freePort(),
+    upstream: { mode: "ws", ws_url: chrome.cdp_url },
+    extension: { mode: "auto", path: extension_path },
   });
 
   browser = await puppeteer.connect({ browserURL: proxy.url });
@@ -41,7 +41,8 @@ try {
   console.log("Browser.getVersion ->", version.product);
 
   const worker_info = await cdp.send("Mod.evaluate", {
-    expression: "({ extension_id: chrome.runtime.id, service_worker_url: chrome.runtime.getURL('service_worker.js') })",
+    expression:
+      "({ extension_id: chrome.runtime.id, service_worker_url: chrome.runtime.getURL('modcdp/service_worker.js') })",
   });
   assert.equal(typeof worker_info.extension_id, "string");
   console.log("Mod.evaluate ->", worker_info);
@@ -75,5 +76,5 @@ try {
 } finally {
   await browser?.close().catch(() => {});
   await proxy?.close().catch(() => {});
-  await chrome?.close().catch(() => {});
+  await Promise.resolve(chrome?.close()).catch(() => {});
 }
