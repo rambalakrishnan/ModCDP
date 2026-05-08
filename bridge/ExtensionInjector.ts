@@ -34,7 +34,6 @@ export type ExtensionInjectorConfig = {
   service_worker_ready_timeout_ms?: number;
   service_worker_poll_interval_ms?: number;
   target_session_poll_interval_ms?: number;
-  api_key?: string | null;
   browserbase_api_key?: string | null;
   base_url?: string | null;
   browserbase_base_url?: string | null;
@@ -78,7 +77,6 @@ export class ExtensionInjector {
       service_worker_ready_timeout_ms: DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS,
       service_worker_poll_interval_ms: DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS,
       target_session_poll_interval_ms: DEFAULT_TARGET_SESSION_POLL_INTERVAL_MS,
-      api_key: null,
       browserbase_api_key: null,
       base_url: null,
       browserbase_base_url: null,

@@ -17,7 +17,6 @@ export type BrowserLaunchOptions = {
   chrome_ready_poll_interval_ms?: number;
   cdp_url?: string | null;
   ws_url?: string | null;
-  api_key?: string | null;
   browserbase_api_key?: string | null;
   project_id?: string | null;
   browserbase_project_id?: string | null;
@@ -83,7 +82,6 @@ export class BrowserLauncher {
 
   getInjectorConfig(): ExtensionInjectorConfig {
     return {
-      api_key: this.options.api_key ?? null,
       browserbase_api_key: this.options.browserbase_api_key ?? null,
       base_url: this.options.base_url ?? null,
       browserbase_base_url: this.options.browserbase_base_url ?? null,

@@ -35,13 +35,13 @@ function browserbaseUrl(base_url: string, pathname: string) {
 
 async function browserbaseRequest<T>({
   base_url,
-  api_key,
+  browserbase_api_key,
   method,
   pathname,
   body,
 }: {
   base_url: string;
-  api_key: string;
+  browserbase_api_key: string;
   method: "GET" | "POST";
   pathname: string;
   body?: Record<string, unknown>;
@@ -50,7 +50,7 @@ async function browserbaseRequest<T>({
     method,
     headers: {
       "content-type": "application/json",
-      "x-bb-api-key": api_key,
+      "x-bb-api-key": browserbase_api_key,
     },
     body: body == null ? undefined : JSON.stringify(body),
   });
@@ -64,14 +64,10 @@ async function browserbaseRequest<T>({
 export class BrowserbaseBrowserLauncher extends BrowserLauncher {
   async launch(options: BrowserLaunchOptions = {}): Promise<LaunchedBrowser> {
     const merged = { ...this.options, ...options };
-    const api_key = firstString(
-      merged.api_key,
-      merged.api_key,
-      merged.browserbase_api_key,
-      process.env.BROWSERBASE_API_KEY,
-      process.env.BB_API_KEY,
-    );
-    if (!api_key) throw new Error("launch.mode=bb requires BROWSERBASE_API_KEY or launch.options.api_key.");
+    const browserbase_api_key = firstString(merged.browserbase_api_key, process.env.BROWSERBASE_API_KEY);
+    if (!browserbase_api_key) {
+      throw new Error("launch.mode=bb requires BROWSERBASE_API_KEY or launch.options.browserbase_api_key.");
+    }
 
     const project_id = firstString(
       merged.project_id,
@@ -92,7 +88,7 @@ export class BrowserbaseBrowserLauncher extends BrowserLauncher {
     if (resume_session_id) {
       session = await browserbaseRequest<BrowserbaseSession>({
         base_url,
-        api_key,
+        browserbase_api_key,
         method: "GET",
         pathname: `/v1/sessions/${resume_session_id}`,
       });
@@ -136,7 +132,7 @@ export class BrowserbaseBrowserLauncher extends BrowserLauncher {
       };
       session = await browserbaseRequest<BrowserbaseSession>({
         base_url,
-        api_key,
+        browserbase_api_key,
         method: "POST",
         pathname: "/v1/sessions",
         body,
@@ -155,7 +151,7 @@ export class BrowserbaseBrowserLauncher extends BrowserLauncher {
       if (!created_session || !close_session_on_close) return;
       await browserbaseRequest({
         base_url,
-        api_key,
+        browserbase_api_key,
         method: "POST",
         pathname: `/v1/sessions/${session.id}`,
         body: {

@@ -58,8 +58,10 @@ export class BBBrowserExtensionInjector extends ExtensionInjector {
   }
 
   private async uploadExtension(zip_path: string) {
-    const api_key = firstString(this.options.api_key, this.options.browserbase_api_key, process.env.BROWSERBASE_API_KEY, process.env.BB_API_KEY);
-    if (!api_key) throw new Error("BBBrowserExtensionInjector requires BROWSERBASE_API_KEY or launch.options.api_key.");
+    const browserbase_api_key = firstString(this.options.browserbase_api_key, process.env.BROWSERBASE_API_KEY);
+    if (!browserbase_api_key) {
+      throw new Error("BBBrowserExtensionInjector requires BROWSERBASE_API_KEY or launch.options.browserbase_api_key.");
+    }
     const base_url = firstString(this.options.base_url, this.options.browserbase_base_url, process.env.BROWSERBASE_BASE_URL) ?? DEFAULT_BROWSERBASE_BASE_URL;
     const fs = await import("node:fs");
     const path = await import("node:path");
@@ -67,7 +69,7 @@ export class BBBrowserExtensionInjector extends ExtensionInjector {
     form.append("file", new Blob([fs.readFileSync(zip_path)]), path.basename(zip_path));
     const response = await fetch(new URL("/v1/extensions", `${base_url.replace(/\/$/, "")}/`), {
       method: "POST",
-      headers: { "X-BB-API-Key": api_key },
+      headers: { "X-BB-API-Key": browserbase_api_key },
       body: form,
     });
     if (!response.ok) {

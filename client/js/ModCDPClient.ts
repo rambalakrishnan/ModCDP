@@ -749,6 +749,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     const initial_transport_config = this._upstreamTransportConfig();
     launcher.update(await this._launchOptions());
     for (const injector of injectors) injector.update(await this._extensionInjectorConfig());
+    for (const injector of injectors) injector.update(launcher.getInjectorConfig());
     for (const injector of injectors) await injector.prepare();
     for (const injector of injectors) launcher.update(injector.getLauncherConfig());
     transport.update(initial_transport_config);
@@ -760,6 +761,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     if (this.launch.mode !== "none") {
       this._launched = await launcher.launch();
       transport.update(launcher.getTransportConfig());
+      for (const injector of injectors) injector.update(launcher.getInjectorConfig());
     }
     const launched_cdp_url = this._launched?.ws_url ?? this._launched?.cdp_url ?? null;
     if (transport.endpoint_kind === "raw_cdp") await transport.connect();
@@ -843,10 +845,6 @@ export class ModCDPClient extends ModCDPEventEmitter {
       this.extension.trust_service_worker_target ||
       this.extension.service_worker_url_includes.length > 0 ||
       service_worker_url_suffixes.some((suffix) => suffix.split("/").filter(Boolean).length > 1);
-    const extension_id =
-      typeof this.launch.options.extension_id === "string" && this.launch.options.extension_id.trim()
-        ? this.launch.options.extension_id
-        : null;
     return {
       send,
       sessionIdForTarget: (target_id) => this.auto_target_sessions.get(target_id) ?? null,
@@ -860,11 +858,6 @@ export class ModCDPClient extends ModCDPEventEmitter {
       },
       waitForExecutionContext: (session_id, timeout_ms) => this._waitForExecutionContext(session_id, { timeout_ms }),
       extension_path: this.extension.path,
-      extension_id,
-      api_key: (this.launch.options.api_key as string | null | undefined) ?? null,
-      browserbase_api_key: (this.launch.options.browserbase_api_key as string | null | undefined) ?? null,
-      base_url: (this.launch.options.base_url as string | null | undefined) ?? null,
-      browserbase_base_url: (this.launch.options.browserbase_base_url as string | null | undefined) ?? null,
       service_worker_url_includes: this.extension.service_worker_url_includes,
       service_worker_url_suffixes,
       trust_matched_service_worker,
@@ -885,6 +878,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     for (const injector of injectors) {
       injector.update(await this._extensionInjectorConfig(send));
       try {
+        await injector.prepare();
         const result = await injector.inject();
         if (result) return result;
       } catch (error) {
@@ -910,22 +904,6 @@ export class ModCDPClient extends ModCDPEventEmitter {
     ]);
   }
 
-  async _prepareExtensionPath() {
-    if (this.extension_path.endsWith(".zip") && typeof process === "object" && process?.versions?.node) {
-      const nodeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
-      const [{ execFileSync }, fs, os, path] = await Promise.all(
-        ["node:child_process", "node:fs", "node:os", "node:path"].map(nodeImport),
-      );
-      const unpacked_path = fs.mkdtempSync(path.join(os.tmpdir(), "modcdp-extension-"));
-      execFileSync("unzip", ["-q", this.extension_path, "-d", unpacked_path]);
-      return {
-        path: unpacked_path,
-        close: async () => fs.rmSync(unpacked_path, { recursive: true, force: true }),
-      };
-    }
-    return { path: this.extension_path, close: async () => {} };
-  }
-
   async close() {
     for (const cleanup of this.event_wait_cleanups) cleanup();
     this.event_wait_cleanups.clear();
@@ -938,8 +916,6 @@ export class ModCDPClient extends ModCDPEventEmitter {
     }
     await this.transport?.close();
     this.transport = null;
-    if (this._prepared_extension) await this._prepared_extension.close();
-    this._prepared_extension = null;
     if (this._launched) await this._launched.close();
   }
 
