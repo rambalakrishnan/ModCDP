@@ -76,10 +76,10 @@ def _eval_params(expression: str) -> RuntimeEvaluateParams:
     }
 
 
-def _wrap_modcdp_evaluate(params: ProtocolParams, session_id: str) -> RuntimeEvaluateParams:
+def _wrap_modcdp_evaluate(params: ProtocolParams, session_id: str, target_session_id: str | None = None) -> RuntimeEvaluateParams:
     expression = _required_string(params, "expression")
     user_params = params.get("params", {})
-    cdp_session_id = _optional_string(params, "cdpSessionId") or session_id
+    cdp_session_id = target_session_id or _optional_string(params, "cdpSessionId") or session_id
     return _eval_params(
         "(async () => {\n"
         f"  const params = {json.dumps(user_params)};\n"
@@ -154,7 +154,12 @@ def _wrap_custom_command(method: str, params: ProtocolParams, session_id: str) -
     )
 
 
-def _wrap_service_worker_command(method: str, params: ProtocolParams, session_id: str) -> list[TranslatedStep]:
+def _wrap_service_worker_command(
+    method: str,
+    params: ProtocolParams,
+    session_id: str,
+    target_session_id: str | None = None,
+) -> list[TranslatedStep]:
     if method == "Mod.ping" and "sentAt" not in params:
         params = {**params, "sentAt": int(time.time() * 1000)}
 
@@ -167,13 +172,13 @@ def _wrap_service_worker_command(method: str, params: ProtocolParams, session_id
             },
         ]
     if method == "Mod.evaluate":
-        runtime_params = _wrap_modcdp_evaluate(params, session_id)
+        runtime_params = _wrap_modcdp_evaluate(params, session_id, target_session_id)
     elif method == "Mod.addCustomCommand":
         runtime_params = _wrap_modcdp_add_custom_command(params)
     elif method == "Mod.addMiddleware":
         runtime_params = _wrap_modcdp_add_middleware(params)
     else:
-        runtime_params = _wrap_custom_command(method, params, _optional_string(params, "cdpSessionId") or session_id)
+        runtime_params = _wrap_custom_command(method, params, target_session_id or _optional_string(params, "cdpSessionId") or session_id)
     return [{"method": "Runtime.evaluate", "params": runtime_params, "unwrap": "evaluate"}]
 
 
@@ -183,6 +188,7 @@ def wrap_command_if_needed(
     *,
     routes: ModCDPRoutes | None = None,
     cdp_session_id: str | None = None,
+    target_cdp_session_id: str | None = None,
 ) -> TranslatedCommand:
     params = params or {}
     route = route_for(method, routes or DEFAULT_CLIENT_ROUTES)
@@ -194,7 +200,7 @@ def wrap_command_if_needed(
         return {
             "route": route,
             "target": "service_worker",
-            "steps": _wrap_service_worker_command(method, params, cdp_session_id),
+            "steps": _wrap_service_worker_command(method, params, cdp_session_id, target_cdp_session_id),
         }
     raise RuntimeError(f"Unsupported client route '{route}' for {method}")
 

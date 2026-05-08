@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Mapping
 from contextlib import redirect_stderr
 from io import StringIO
 
@@ -9,6 +10,36 @@ from modcdp.types import JsonValue
 
 
 class SchemaValidationTests(unittest.TestCase):
+    def test_generated_cdp_surface_matches_cdp_use_shape(self) -> None:
+        sent: list[tuple[str, dict[str, object], str | None]] = []
+
+        class RecordingClient(ModCDPClient):
+            def _send_command(
+                self,
+                method: str,
+                params: Mapping[str, object] | None = None,
+                session_id: str | None = None,
+            ) -> JsonValue:
+                sent.append((method, dict(params or {}), session_id))
+                return {"frameId": "frame-1"}
+
+        client = RecordingClient()
+
+        result = client.send.Page.navigate({"url": "https://example.com"}, session_id="session-1")
+
+        self.assertEqual(result, {"frameId": "frame-1"})
+        self.assertEqual(sent, [("Page.navigate", {"url": "https://example.com"}, "session-1")])
+
+    def test_generated_event_registration_surface_matches_cdp_use_shape(self) -> None:
+        client = ModCDPClient()
+        events: list[tuple[object, str | None]] = []
+
+        client.register.Page.loadEventFired(lambda event, session_id: events.append((event, session_id)))
+        handled = client._event_registry.handle_event("Page.loadEventFired", {"timestamp": 123.5}, "session-1")
+
+        self.assertTrue(handled)
+        self.assertEqual(events, [({"timestamp": 123.5}, "session-1")])
+
     def test_schema_only_custom_command_registers_without_websocket(self) -> None:
         client = ModCDPClient()
 

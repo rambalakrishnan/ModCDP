@@ -33,7 +33,7 @@ import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from queue import Queue, Empty
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import to_jsonable_python
@@ -75,6 +75,11 @@ from .types import (
     TranslatedCommand,
     WebSocketLike,
 )
+
+if TYPE_CHECKING:
+    from .cdp.library import CDPLibrary
+    from .cdp.registration_library import CDPRegistrationLibrary
+    from .cdp.registry import EventRegistry
 
 EXT_ID_FROM_URL_RE = re.compile(r"^chrome-extension://([a-z]+)/")
 MODCDP_READY_EXPRESSION = (
@@ -286,6 +291,13 @@ class ModCDPClient:
         self._command_params_schemas: dict[str, TypeAdapter[Any]] = {}
         self._command_result_schemas: dict[str, TypeAdapter[Any]] = {}
         self._event_schemas: dict[str, TypeAdapter[Any]] = {}
+        from .cdp.library import CDPLibrary
+        from .cdp.registration_library import CDPRegistrationLibrary
+        from .cdp.registry import EventRegistry
+
+        self._event_registry: "EventRegistry" = EventRegistry()
+        self.send: "CDPLibrary" = CDPLibrary(self)
+        self.register: "CDPRegistrationLibrary" = CDPRegistrationLibrary(self._event_registry)
         self._reader_thread: threading.Thread | None = None
         self._closed = False
         self._launched_process: subprocess.Popen[bytes] | None = None
@@ -369,7 +381,12 @@ class ModCDPClient:
         }
         return self
 
-    def send(self, method: str, params: ProtocolParams | None = None) -> JsonValue:
+    def _send_command(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> JsonValue:
         started_at = int(time.time() * 1000)
         command_params = cast(ProtocolParams, dict(params or {}))
         if method == "Mod.addCustomCommand":
@@ -395,6 +412,7 @@ class ModCDPClient:
             command_params,
             routes=self.routes,
             cdp_session_id=self.ext_session_id,
+            target_cdp_session_id=session_id,
         )
         result = self._send_raw(command)
         if method != "Mod.addCustomCommand":
@@ -411,6 +429,17 @@ class ModCDPClient:
 
     def raw_send(self, method: str, params: ProtocolParams | None = None) -> ProtocolResult:
         return self._send_frame(method, params or {}, record_raw_timing=True)
+
+    def send_raw(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> ProtocolResult:
+        result = self._send_command(method, params, session_id=session_id)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"{method} returned non-object value: {result!r}")
+        return result
 
     def on(self, event: str, handler: Handler) -> "ModCDPClient":
         self._handlers.setdefault(event, []).append(handler)
@@ -799,6 +828,7 @@ class ModCDPClient:
                         validated_payload = self._validate_event_payload(u["event"], u["data"])
                         if validated_payload is None:
                             continue
+                        self._event_registry.handle_event(u["event"], validated_payload, u.get("sessionId"))
                         for h in self._handlers.get(u["event"], []):
                             def run_wrapped_event(handler=h, payload=validated_payload, event_name=u["event"]):
                                 try: handler(payload)
@@ -806,9 +836,12 @@ class ModCDPClient:
                             threading.Thread(target=run_wrapped_event, daemon=True).start()
                     continue
                 if method:
+                    raw_session_id = msg.get("sessionId")
+                    event_session_id = raw_session_id if isinstance(raw_session_id, str) else None
                     validated_payload = self._validate_event_payload(method, dict(params))
                     if validated_payload is None:
                         continue
+                    self._event_registry.handle_event(method, validated_payload, event_session_id)
                     for h in self._handlers.get(method, []):
                         def run_method_event(handler=h, payload=validated_payload, event_name=method):
                             try: handler(payload)
