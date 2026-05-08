@@ -21,8 +21,8 @@
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { WebSocket, WebSocketServer } from "ws";
 import type { RawData } from "ws";
+import type { WebSocket } from "ws";
 
 import { ModCDPClient } from "../client/js/ModCDPClient.js";
 import {
@@ -86,6 +86,7 @@ export async function startProxy({
   forwardMirroredUpstreamEvents?: boolean;
   upstreamMonitorIntervalMs?: number;
 } = {}) {
+  const { WebSocket, WebSocketServer } = await loadWsForProxy();
   const server = http.createServer(async (req, res) => {
     try {
       const requestUrl = req.url === "/json/version/" ? "/json/version" : req.url;
@@ -170,6 +171,22 @@ export async function startProxy({
     wsUrl: `ws://127.0.0.1:${port}`,
     close,
   };
+}
+
+async function loadWsForProxy() {
+  try {
+    return await import("ws");
+  } catch (error) {
+    throw new Error(
+      `The ModCDP proxy requires the optional "ws" package, but it is not installed.\n\n` +
+        `Install optional dependencies for modcdp, or add ws explicitly:\n` +
+        `  pnpm add ws\n` +
+        `  npm install ws\n` +
+        `  yarn add ws\n\n` +
+        `The ModCDP client does not require ws; it uses the native WebSocket implementation.`,
+      { cause: error },
+    );
+  }
 }
 
 function rewriteWsUrls(value: unknown, host: string) {
@@ -257,7 +274,7 @@ async function handleConnection(
   // per-connection state
   const state: ProxyConnectionState = {
     client,
-    upstream: upstream_socket as unknown as import("ws").WebSocket,
+    upstream: upstream_socket,
     nextUpstreamId: 1_000_000,
     pending: new Map(), // upstreamId -> { kind, clientId?, clientSessionId?, ... }
     extSessionId: cdp.ext_session_id,

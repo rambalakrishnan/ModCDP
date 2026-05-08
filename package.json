@@ -1,6 +1,6 @@
 {
   "name": "modcdp",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pirate/modcdp.git"
@@ -48,8 +48,10 @@
     "prepare": "pnpm exec prek install"
   },
   "dependencies": {
-    "ws": "^8.18.0",
     "zod": "^4.4.1"
+  },
+  "optionalDependencies": {
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@j178/prek": "0.3.10",
