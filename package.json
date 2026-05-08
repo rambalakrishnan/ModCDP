@@ -62,7 +62,7 @@
     "demo:proxy:puppeteer": "pnpm run build && node dist/client/js/examples/puppeteer.js",
     "proxy": "pnpm run build && node dist/bridge/proxy.js",
     "test": "pnpm run build && node --test \"dist/test/*.test.js\"",
-    "prepare": "pnpm run build && pnpm exec prek install"
+    "prepare": "pnpm run build"
   },
   "dependencies": {
     "zod": "^4.4.1"
