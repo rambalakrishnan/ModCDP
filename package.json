@@ -1,10 +1,19 @@
 {
   "name": "modcdp",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pirate/modcdp.git"
   },
+  "files": [
+    "bridge/**/*.ts",
+    "client/js/**/*.ts",
+    "dist/**/*",
+    "extension/**/*.ts",
+    "extension/manifest.json",
+    "extension/offscreen/keepalive.html",
+    "types/**/*.ts"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -18,8 +27,14 @@
       "default": "./dist/client/js/ModCDPClient.js"
     },
     "./extension/service_worker.js": "./dist/extension/service_worker.js",
-    "./extension/ModCDPServer.js": "./dist/extension/ModCDPServer.js",
-    "./extension/translate.js": "./dist/extension/translate.js",
+    "./extension/ModCDPServer.js": {
+      "types": "./extension/ModCDPServer.ts",
+      "import": "./dist/extension/ModCDPServer.js"
+    },
+    "./extension/translate.js": {
+      "types": "./extension/translate.ts",
+      "import": "./dist/extension/translate.js"
+    },
     "./bridge/launcher.js": {
       "types": "./bridge/launcher.ts",
       "import": "./dist/bridge/launcher.js"
