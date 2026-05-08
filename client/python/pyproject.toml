@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "modcdp"
-version = "0.0.2"
+version = "0.0.3"
 description = "Python client for ModCDP."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,10 @@ Repository = "https://github.com/pirate/ModCDP"
 
 [tool.hatch.build.targets.wheel]
 packages = ["modcdp"]
+artifacts = ["modcdp/extension.zip"]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["modcdp/extension.zip"]
 
 [dependency-groups]
 dev = [

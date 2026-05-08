@@ -27,7 +27,9 @@ package modcdp
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,6 +66,9 @@ const DefaultServiceWorkerReadyTimeoutMS = 60_000
 const DefaultServiceWorkerPollIntervalMS = 100
 const DefaultTargetSessionPollIntervalMS = 20
 const DefaultWSConnectErrorSettleTimeoutMS = 250
+
+//go:embed extension.zip
+var bundledExtensionZip []byte
 
 func websocketURLFor(endpoint string) (string, error) {
 	if strings.HasPrefix(endpoint, "ws://") || strings.HasPrefix(endpoint, "wss://") {
@@ -622,20 +627,30 @@ func (c *ModCDPClient) launchChrome() (string, error) {
 // --- internals -----------------------------------------------------------
 
 func (c *ModCDPClient) prepareExtensionPath() error {
-	if c.opts.ExtensionPath == "" || !strings.HasSuffix(c.opts.ExtensionPath, ".zip") {
+	if c.opts.ExtensionPath == "" {
+		reader, err := zip.NewReader(bytes.NewReader(bundledExtensionZip), int64(len(bundledExtensionZip)))
+		if err != nil {
+			return err
+		}
+		return c.extractExtensionZip(reader.File)
+	}
+	if !strings.HasSuffix(c.opts.ExtensionPath, ".zip") {
 		return nil
 	}
+	reader, err := zip.OpenReader(c.opts.ExtensionPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	return c.extractExtensionZip(reader.File)
+}
+
+func (c *ModCDPClient) extractExtensionZip(files []*zip.File) error {
 	dir, err := os.MkdirTemp("", "modcdp-extension.")
 	if err != nil {
 		return err
 	}
-	reader, err := zip.OpenReader(c.opts.ExtensionPath)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return err
-	}
-	defer reader.Close()
-	for _, file := range reader.File {
+	for _, file := range files {
 		targetPath := filepath.Join(dir, file.Name)
 		if file.FileInfo().IsDir() {
 			if err := os.MkdirAll(targetPath, 0o755); err != nil {

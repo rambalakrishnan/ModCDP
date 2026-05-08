@@ -165,6 +165,11 @@ def _json_object(value: JsonValue | None) -> ProtocolResult:
     return value if isinstance(value, dict) else {}
 
 
+def default_extension_path() -> str | None:
+    bundled_extension = Path(__file__).resolve().parent / "extension.zip"
+    return str(bundled_extension) if bundled_extension.exists() else None
+
+
 def modcdp_server_path(extension_path: str) -> Path:
     candidates = [Path(extension_path) / "ModCDPServer.js"]
     for parent in Path(__file__).resolve().parents:
@@ -224,7 +229,7 @@ class ModCDPClient:
         launch_options: LaunchOptions | None = None,
     ) -> None:
         self.cdp_url: str | None = cdp_url
-        self.extension_path: str | None = extension_path
+        self.extension_path: str | None = extension_path or default_extension_path()
         self.routes: ModCDPRoutes = {**DEFAULT_CLIENT_ROUTES, **dict(routes or {})}
         if server is DEFAULT_SERVER:
             self.server: ModCDPServerConfig | None = {}
