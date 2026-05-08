@@ -20,6 +20,7 @@
 import type { z } from "zod";
 
 import { createCdpAliases, type CdpAliases } from "../../types/aliases.js";
+export type { CdpAliases } from "../../types/aliases.js";
 import {
   CUSTOM_EVENT_BINDING_NAME,
   DEFAULT_CLIENT_ROUTES,
