@@ -46,6 +46,7 @@ import (
 	"sync"
 	"time"
 
+	abxjsonschema "github.com/ArchiveBox/abxbus/abxbus-go/jsonschema"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
@@ -151,7 +152,7 @@ type CustomEvent struct {
 
 type CustomCommand struct {
 	Name         string         `json:"name"`
-	Expression   string         `json:"expression"`
+	Expression   string         `json:"expression,omitempty"`
 	ParamsSchema map[string]any `json:"paramsSchema,omitempty"`
 	ResultSchema map[string]any `json:"resultSchema,omitempty"`
 }
@@ -217,6 +218,10 @@ type ModCDPClient struct {
 	pending              map[int64]chan map[string]any
 	handlers             map[string][]Handler
 	cdpHandlers          map[string][]func(CDPEvent)
+	commandParamsSchemas map[string]map[string]any
+	commandResultSchemas map[string]map[string]any
+	eventSchemas         map[string]map[string]any
+	schemaMu             sync.RWMutex
 	handlersMu           sync.Mutex
 	targetSessions       map[string]string
 	sessionTargets       map[string]map[string]any
@@ -273,14 +278,19 @@ func New(opts Options) *ModCDPClient {
 	if opts.WSConnectErrorSettleTimeoutMS == 0 {
 		opts.WSConnectErrorSettleTimeoutMS = DefaultWSConnectErrorSettleTimeoutMS
 	}
-	return &ModCDPClient{
-		opts:           opts,
-		pending:        map[int64]chan map[string]any{},
-		handlers:       map[string][]Handler{},
-		cdpHandlers:    map[string][]func(CDPEvent){},
-		targetSessions: map[string]string{},
-		sessionTargets: map[string]map[string]any{},
+	client := &ModCDPClient{
+		opts:                 opts,
+		pending:              map[int64]chan map[string]any{},
+		handlers:             map[string][]Handler{},
+		cdpHandlers:          map[string][]func(CDPEvent){},
+		commandParamsSchemas: map[string]map[string]any{},
+		commandResultSchemas: map[string]map[string]any{},
+		eventSchemas:         map[string]map[string]any{},
+		targetSessions:       map[string]string{},
+		sessionTargets:       map[string]map[string]any{},
 	}
+	client.hydrateCustomSurface()
+	return client
 }
 
 func (c *ModCDPClient) Connect() error {
@@ -436,10 +446,170 @@ func (c *ModCDPClient) Connect() error {
 	return nil
 }
 
+func normalizeModCDPName(name string) (string, error) {
+	normalized := strings.TrimSpace(name)
+	if normalized == "" {
+		return "", fmt.Errorf("name must be a non-empty string")
+	}
+	if strings.Count(normalized, ".") != 1 {
+		return "", fmt.Errorf("name must be in Domain.method form")
+	}
+	parts := strings.Split(normalized, ".")
+	if parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("name must be in Domain.method form")
+	}
+	return normalized, nil
+}
+
+func cloneSchema(schema map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	normalized, _ := abxjsonschema.Normalize(schema).(map[string]any)
+	if normalized == nil {
+		return nil
+	}
+	return normalized
+}
+
+func (c *ModCDPClient) hydrateCustomSurface() {
+	c.schemaMu.Lock()
+	defer c.schemaMu.Unlock()
+	for _, command := range c.opts.CustomCommands {
+		if command.Name == "" {
+			continue
+		}
+		name, err := normalizeModCDPName(command.Name)
+		if err != nil {
+			continue
+		}
+		if schema := cloneSchema(command.ParamsSchema); schema != nil {
+			c.commandParamsSchemas[name] = schema
+		}
+		if schema := cloneSchema(command.ResultSchema); schema != nil {
+			c.commandResultSchemas[name] = schema
+		}
+	}
+	for _, event := range c.opts.CustomEvents {
+		if event.Name == "" {
+			continue
+		}
+		name, err := normalizeModCDPName(event.Name)
+		if err != nil {
+			continue
+		}
+		if schema := cloneSchema(event.EventSchema); schema != nil {
+			c.eventSchemas[name] = schema
+		}
+	}
+}
+
+func (c *ModCDPClient) registerCustomCommandParams(params map[string]any) (string, bool, error) {
+	rawName, _ := params["name"].(string)
+	name, err := normalizeModCDPName(rawName)
+	if err != nil {
+		return "", false, err
+	}
+	c.schemaMu.Lock()
+	defer c.schemaMu.Unlock()
+	if rawSchema, ok := params["paramsSchema"].(map[string]any); ok {
+		if schema := cloneSchema(rawSchema); schema != nil {
+			c.commandParamsSchemas[name] = schema
+		}
+	}
+	if rawSchema, ok := params["resultSchema"].(map[string]any); ok {
+		if schema := cloneSchema(rawSchema); schema != nil {
+			c.commandResultSchemas[name] = schema
+		}
+	}
+	expression, _ := params["expression"].(string)
+	return name, expression != "", nil
+}
+
+func (c *ModCDPClient) registerCustomEventParams(params map[string]any) (string, error) {
+	rawName, _ := params["name"].(string)
+	name, err := normalizeModCDPName(rawName)
+	if err != nil {
+		return "", err
+	}
+	c.schemaMu.Lock()
+	defer c.schemaMu.Unlock()
+	if rawSchema, ok := params["eventSchema"].(map[string]any); ok {
+		if schema := cloneSchema(rawSchema); schema != nil {
+			c.eventSchemas[name] = schema
+		}
+	}
+	return name, nil
+}
+
+func (c *ModCDPClient) validateCommandParams(method string, params map[string]any) error {
+	c.schemaMu.RLock()
+	schema := c.commandParamsSchemas[method]
+	c.schemaMu.RUnlock()
+	if schema == nil {
+		return nil
+	}
+	if err := abxjsonschema.Validate(schema, params); err != nil {
+		return fmt.Errorf("%s params did not match paramsSchema: %w", method, err)
+	}
+	return nil
+}
+
+func (c *ModCDPClient) validateCommandResult(method string, result any) error {
+	c.schemaMu.RLock()
+	schema := c.commandResultSchemas[method]
+	c.schemaMu.RUnlock()
+	if schema == nil {
+		return nil
+	}
+	if err := abxjsonschema.Validate(schema, result); err != nil {
+		return fmt.Errorf("%s result did not match resultSchema: %w", method, err)
+	}
+	return nil
+}
+
+func (c *ModCDPClient) validateEventData(event string, data any) (any, bool) {
+	c.schemaMu.RLock()
+	schema := c.eventSchemas[event]
+	c.schemaMu.RUnlock()
+	if schema == nil {
+		return data, true
+	}
+	if err := abxjsonschema.Validate(schema, data); err != nil {
+		fmt.Fprintf(os.Stderr, "[ModCDPClient] %s event did not match eventSchema: %v\n", event, err)
+		return nil, false
+	}
+	return data, true
+}
+
 func (c *ModCDPClient) Send(method string, params map[string]any) (any, error) {
 	startedAt := time.Now().UnixMilli()
 	if params == nil {
 		params = map[string]any{}
+	}
+	if method == "Mod.addCustomCommand" {
+		name, hasExpression, err := c.registerCustomCommandParams(params)
+		if err != nil {
+			return nil, err
+		}
+		if !hasExpression {
+			completedAt := time.Now().UnixMilli()
+			c.LastCommandTiming = map[string]any{
+				"method":       method,
+				"target":       "client",
+				"started_at":   startedAt,
+				"completed_at": completedAt,
+				"duration_ms":  completedAt - startedAt,
+			}
+			return map[string]any{"name": name, "registered": true}, nil
+		}
+	} else if method == "Mod.addCustomEvent" {
+		if _, err := c.registerCustomEventParams(params); err != nil {
+			return nil, err
+		}
+	}
+	if err := c.validateCommandParams(method, params); err != nil {
+		return nil, err
 	}
 	command, err := wrapCommandIfNeeded(method, params, c.opts.Routes, c.ExtSessionID)
 	if err != nil {
@@ -454,7 +624,13 @@ func (c *ModCDPClient) Send(method string, params map[string]any) (any, error) {
 		"completed_at": completedAt,
 		"duration_ms":  completedAt - startedAt,
 	}
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	if err := c.validateCommandResult(method, result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *ModCDPClient) SendRaw(method string, params map[string]any, sessionID ...string) (map[string]any, error) {
@@ -926,16 +1102,20 @@ func (c *ModCDPClient) reader() {
 			params, _ := msg["params"].(map[string]any)
 			bindingName, _ := params["name"].(string)
 			if event, data, ok := unwrapEventIfNeeded(method, params, sessionID, c.ExtSessionID); ok {
+				validatedData, valid := c.validateEventData(event, data)
+				if !valid {
+					continue
+				}
 				c.handlersMu.Lock()
 				hs := append([]Handler(nil), c.handlers[event]...)
 				cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
 				cdpHandlers = append(cdpHandlers, c.cdpHandlers[event]...)
 				c.handlersMu.Unlock()
 				for _, h := range hs {
-					go h(data)
+					go h(validatedData)
 				}
 				if bindingName == upstreamEventBindingName {
-					dataMap, _ := data.(map[string]any)
+					dataMap, _ := validatedData.(map[string]any)
 					cdpEvent := CDPEvent{Method: event, Params: dataMap, CDPSessionID: sessionID, SessionID: sessionID}
 					for _, h := range cdpHandlers {
 						go h(cdpEvent)
@@ -945,16 +1125,24 @@ func (c *ModCDPClient) reader() {
 			continue
 		}
 		if method != "" {
+			validatedParams, valid := c.validateEventData(method, params)
+			if !valid {
+				continue
+			}
+			validatedParamsMap, _ := validatedParams.(map[string]any)
+			if validatedParamsMap == nil {
+				validatedParamsMap = map[string]any{}
+			}
 			c.handlersMu.Lock()
 			hs := append([]Handler(nil), c.handlers[method]...)
 			cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
 			cdpHandlers = append(cdpHandlers, c.cdpHandlers[method]...)
 			c.handlersMu.Unlock()
 			for _, h := range hs {
-				go h(params)
+				go h(validatedParams)
 			}
 			if len(cdpHandlers) > 0 {
-				event := CDPEvent{Method: method, Params: params, CDPSessionID: sessionID, SessionID: sessionID}
+				event := CDPEvent{Method: method, Params: validatedParamsMap, CDPSessionID: sessionID, SessionID: sessionID}
 				for _, h := range cdpHandlers {
 					go h(event)
 				}
