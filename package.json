@@ -50,7 +50,7 @@
     "build:clean": "pnpm run clean && pnpm run build",
     "build:package": "tsc -p tsconfig.json",
     "build:extension-assets": "node -e \"const fs = require('node:fs'); fs.mkdirSync('dist/extension/offscreen', { recursive: true }); fs.copyFileSync('extension/manifest.json', 'dist/extension/manifest.json'); fs.copyFileSync('dist/bridge/translate.js', 'dist/extension/translate.js'); fs.copyFileSync('extension/offscreen/keepalive.html', 'dist/extension/offscreen/keepalive.html');\" && find dist/extension -exec touch -t 200001010000 {} + && cd dist && rm -f extension.zip && zip -X -qr extension.zip extension && cd .. && cp dist/extension.zip client/python/modcdp/extension.zip && cp dist/extension.zip client/go/extension.zip",
-    "build:python-readme": "cp README.md client/python/README.md",
+    "build:python-readme": "mkdir -p client/python && if [ README.md -ef client/python/README.md ]; then :; else cp README.md client/python/README.md; fi",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "pnpm exec prek run --all-files",
     "format": "pnpm exec prek run oxfmt --all-files",
