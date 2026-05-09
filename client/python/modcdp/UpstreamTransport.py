@@ -21,6 +21,18 @@ class UpstreamTransport:
     def connect(self) -> None:
         raise NotImplementedError(f"{type(self).__name__}.connect is not implemented.")
 
+    def update(self, config: dict[str, Any] | None = None) -> "UpstreamTransport":
+        return self
+
+    def getLauncherConfig(self) -> dict[str, Any]:
+        return {}
+
+    def getInjectorConfig(self) -> dict[str, Any]:
+        return {}
+
+    def getServerConfig(self) -> dict[str, Any]:
+        return {}
+
     def close(self) -> None:
         raise NotImplementedError(f"{type(self).__name__}.close is not implemented.")
 

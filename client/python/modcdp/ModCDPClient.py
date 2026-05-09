@@ -337,8 +337,43 @@ class ModCDPClient(CDPSurfaceMixin):
     def connect(self) -> "ModCDPClient":
         connect_started_at = int(time.time() * 1000)
         if self.upstream.get("mode") != "ws":
-            self.transport = self._upstream_transport()
-            self.transport.connect()
+            transport_started_at = int(time.time() * 1000)
+            launcher = self._browser_launcher()
+            launcher.update(self.launch_options)
+            transport = self._upstream_transport()
+            injectors = self._extension_injectors_for_config()
+            self._extension_injectors = injectors
+            transport.connect()
+            self.transport = transport
+            transport.on_recv(lambda message: self._on_recv(cast(CdpMessage, message)))
+            transport.on_close(lambda error: self._reject_all(error))
+            for injector in injectors:
+                injector.update(self._base_extension_injector_config(None))
+                injector.update(cast(ExtensionInjectorConfig, transport.getInjectorConfig()))
+                injector.prepare()
+                launcher.update(injector.getLauncherConfig())
+            if self.launch.get("mode") != "none":
+                launched = launcher.launch()
+                self._launched_browser = launched
+                self.cdp_url = cast(str | None, launched.get("ws_url") or launched.get("cdp_url"))
+                if self.server is not None and self.cdp_url and "loopback_cdp_url" not in self.server:
+                    self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
+            transport_connected_at = int(time.time() * 1000)
+            transport.wait_for_peer()
+            if self.server is not None:
+                self._send_message("Mod.configure", cast(ProtocolParams, self._server_configure_params()))
+            threading.Thread(target=self._measure_ping_latency, daemon=True).start()
+            connected_at = int(time.time() * 1000)
+            self.connect_timing = cast(ModCDPConnectTiming, {
+                "started_at": connect_started_at,
+                "upstream_mode": self.upstream.get("mode"),
+                "upstream_endpoint_kind": self.upstream_endpoint_kind,
+                "transport_started_at": transport_started_at,
+                "transport_connected_at": transport_connected_at,
+                "transport_duration_ms": transport_connected_at - transport_started_at,
+                "connected_at": connected_at,
+                "duration_ms": connected_at - connect_started_at,
+            })
             return self
         launcher = self._browser_launcher()
         launcher.update(self.launch_options)
@@ -395,29 +430,9 @@ class ModCDPClient(CDPSurfaceMixin):
             self._send_message("Runtime.addBinding", {"name": UPSTREAM_EVENT_BINDING_NAME}, self.ext_session_id)
 
         if self.server is not None:
-            custom_events: list[ModCDPAddCustomEventObjectParams] = []
-            for event in self.custom_events:
-                custom_events.append(
-                    {"name": event}
-                    if isinstance(event, str)
-                    else cast(ModCDPAddCustomEventObjectParams, self._custom_event_wire_params(cast(ProtocolParams, event)))
-                )
-            custom_commands: list[ModCDPAddCustomCommandParams] = [
-                cast(ModCDPAddCustomCommandParams, self._custom_command_wire_params(cast(ProtocolParams, command)))
-                for command in self.custom_commands
-                if isinstance(command.get("expression"), str) and command.get("expression")
-            ]
-            custom_middlewares: list[ModCDPAddMiddlewareParams] = list(self.custom_middlewares)
-            configure_params: ModCDPServerConfig = {
-                **self.server_options,
-                **self.server,
-                "custom_events": custom_events,
-                "custom_commands": custom_commands,
-                "custom_middlewares": custom_middlewares,
-            }
             self._send_raw(wrap_command_if_needed(
                 "Mod.configure",
-                cast(ProtocolParams, configure_params),
+                cast(ProtocolParams, self._server_configure_params()),
                 routes=self.routes,
                 cdp_session_id=self.ext_session_id,
             ))
@@ -459,7 +474,7 @@ class ModCDPClient(CDPSurfaceMixin):
             command_params = self._custom_command_wire_params(command_params)
         elif method == "Mod.addCustomEvent":
             self._register_custom_event(command_params)
-            if self.ext_session_id is None:
+            if self.ext_session_id is None and self.upstream_endpoint_kind != "modcdp_server":
                 completed_at = int(time.time() * 1000)
                 self.last_command_timing = {
                     "method": method,
@@ -474,6 +489,20 @@ class ModCDPClient(CDPSurfaceMixin):
         should_validate_result = validate_custom_schema or method in self._command_result_schemas
         if method not in {"Mod.addCustomCommand", "Mod.addCustomEvent"} and should_validate_params:
             command_params = self._validate_command_params(method, command_params)
+
+        if self.upstream_endpoint_kind == "modcdp_server":
+            result = self._send_message(method, command_params)
+            if should_validate_result and method != "Mod.addCustomCommand":
+                result = self._validate_command_result(method, result)
+            completed_at = int(time.time() * 1000)
+            self.last_command_timing = {
+                "method": method,
+                "target": "modcdp_server",
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "duration_ms": completed_at - started_at,
+            }
+            return AwaitableDict(result) if isinstance(result, dict) else AwaitableValue(result)
 
         command = wrap_command_if_needed(
             method,
@@ -560,6 +589,40 @@ class ModCDPClient(CDPSurfaceMixin):
         dynamic = DynamicDomain(self, domain)
         setattr(self, domain, dynamic)
         return dynamic
+
+    def _server_configure_params(self) -> ModCDPServerConfig:
+        custom_events: list[ModCDPAddCustomEventObjectParams] = []
+        for event in self.custom_events:
+            custom_events.append(
+                {"name": event}
+                if isinstance(event, str)
+                else cast(ModCDPAddCustomEventObjectParams, self._custom_event_wire_params(cast(ProtocolParams, event)))
+            )
+        custom_commands: list[ModCDPAddCustomCommandParams] = [
+            cast(ModCDPAddCustomCommandParams, self._custom_command_wire_params(cast(ProtocolParams, command)))
+            for command in self.custom_commands
+            if isinstance(command.get("expression"), str) and command.get("expression")
+        ]
+        custom_middlewares: list[ModCDPAddMiddlewareParams] = list(self.custom_middlewares)
+        return cast(ModCDPServerConfig, {
+            "upstream": {
+                "mode": self.upstream.get("mode"),
+                **({"nats_url": self.upstream.get("nats_url")} if self.upstream.get("nats_url") else {}),
+                **(
+                    {"nats_subject_prefix": self.upstream.get("nats_subject_prefix")}
+                    if self.upstream.get("nats_subject_prefix")
+                    else {}
+                ),
+            },
+            "client": {"routes": self.routes},
+            "server": {
+                **self.server_options,
+                **(self.server or {}),
+            },
+            "custom_events": custom_events,
+            "custom_commands": custom_commands,
+            "custom_middlewares": custom_middlewares,
+        })
 
     def close(self) -> None:
         if self._closed:
@@ -912,12 +975,13 @@ class ModCDPClient(CDPSurfaceMixin):
         if session_id:
             msg["sessionId"] = session_id
         ws = self._ws
-        if ws is None:
-            with self._lock:
-                self._pending.pop(msg_id, None)
-            raise RuntimeError("CDP websocket is not connected")
         try:
-            ws.send(json.dumps(msg))
+            if ws is not None:
+                ws.send(json.dumps(msg))
+            elif self.transport is not None:
+                self.transport.send(cast(dict[str, Any], msg))
+            else:
+                raise RuntimeError("ModCDP upstream is not connected")
         except Exception:
             with self._lock:
                 self._pending.pop(msg_id, None)
@@ -941,6 +1005,63 @@ class ModCDPClient(CDPSurfaceMixin):
             }
         return _json_object(response.get("result"))
 
+    def _reject_all(self, error: Exception) -> None:
+        with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for _, done in pending:
+            done.put({"error": {"message": str(error)}})
+
+    def _on_recv(self, msg: CdpMessage) -> None:
+        if "id" in msg and msg["id"] is not None:
+            with self._lock:
+                entry = self._pending.pop(msg["id"], None)
+            if entry:
+                entry[1].put(msg)
+            return
+        method = msg.get("method")
+        raw_params = msg.get("params")
+        params = cast(ProtocolParams, raw_params) if isinstance(raw_params, Mapping) else {}
+        if method == "Target.attachedToTarget":
+            session_id = params.get("sessionId")
+            raw_target_info = params.get("targetInfo")
+            target_info = cast(TargetInfo, raw_target_info) if isinstance(raw_target_info, dict) else None
+            target_id = target_info.get("targetId") if target_info else None
+            if isinstance(session_id, str) and isinstance(target_id, str) and target_info:
+                self._target_sessions[target_id] = session_id
+                self._session_targets[session_id] = target_info
+        elif method == "Target.detachedFromTarget":
+            session_id = params.get("sessionId")
+            target_info = self._session_targets.pop(session_id, None) if isinstance(session_id, str) else None
+            target_id = target_info.get("targetId") if target_info else None
+            if target_id:
+                self._target_sessions.pop(target_id, None)
+        if method and msg.get("sessionId") == self.ext_session_id:
+            session_id = msg.get("sessionId")
+            u = unwrap_event_if_needed(
+                method,
+                params,
+                session_id if isinstance(session_id, str) else None,
+                self.ext_session_id,
+            )
+            if u:
+                validated_payload = self._validate_event_payload(u["event"], u["data"])
+                if validated_payload is None:
+                    return
+                for handler in self._handlers.get(u["event"], []):
+                    def run_wrapped_event(handler=handler, payload=validated_payload, event_name=u["event"]):
+                        self._run_handler(handler, payload, event_name)
+                    threading.Thread(target=run_wrapped_event, daemon=True).start()
+            return
+        if method:
+            validated_payload = self._validate_event_payload(method, dict(params))
+            if validated_payload is None:
+                return
+            for handler in self._handlers.get(method, []):
+                def run_method_event(handler=handler, payload=validated_payload, event_name=method):
+                    self._run_handler(handler, payload, event_name)
+                threading.Thread(target=run_method_event, daemon=True).start()
+
     def _reader(self) -> None:
         ws = self._ws
         if ws is None:
@@ -955,57 +1076,7 @@ class ModCDPClient(CDPSurfaceMixin):
                 parsed: object = json.loads(raw)
                 if not isinstance(parsed, dict):
                     continue
-                msg = cast(CdpMessage, parsed)
-                if "id" in msg and msg["id"] is not None:
-                    with self._lock:
-                        entry = self._pending.pop(msg["id"], None)
-                    if entry:
-                        entry[1].put(msg)
-                    continue
-                method = msg.get("method")
-                raw_params = msg.get("params")
-                params = cast(ProtocolParams, raw_params) if isinstance(raw_params, Mapping) else {}
-                if method == "Target.attachedToTarget":
-                    session_id = params.get("sessionId")
-                    raw_target_info = params.get("targetInfo")
-                    target_info = cast(TargetInfo, raw_target_info) if isinstance(raw_target_info, dict) else None
-                    target_id = target_info.get("targetId") if target_info else None
-                    if isinstance(session_id, str) and isinstance(target_id, str) and target_info:
-                        self._target_sessions[target_id] = session_id
-                        self._session_targets[session_id] = target_info
-                elif method == "Target.detachedFromTarget":
-                    session_id = params.get("sessionId")
-                    target_info = self._session_targets.pop(session_id, None) if isinstance(session_id, str) else None
-                    target_id = target_info.get("targetId") if target_info else None
-                    if target_id:
-                        self._target_sessions.pop(target_id, None)
-                if method and msg.get("sessionId") == self.ext_session_id:
-                    session_id = msg.get("sessionId")
-                    u = unwrap_event_if_needed(
-                        method,
-                        params,
-                        session_id if isinstance(session_id, str) else None,
-                        self.ext_session_id,
-                    )
-                    if u:
-                        validated_payload = self._validate_event_payload(u["event"], u["data"])
-                        if validated_payload is None:
-                            continue
-                        for h in self._handlers.get(u["event"], []):
-                            def run_wrapped_event(handler=h, payload=validated_payload, event_name=u["event"]):
-                                self._run_handler(handler, payload, event_name)
-                            threading.Thread(target=run_wrapped_event, daemon=True).start()
-                    continue
-                if method:
-                    raw_session_id = msg.get("sessionId")
-                    event_session_id = raw_session_id if isinstance(raw_session_id, str) else None
-                    validated_payload = self._validate_event_payload(method, dict(params))
-                    if validated_payload is None:
-                        continue
-                    for h in self._handlers.get(method, []):
-                        def run_method_event(handler=h, payload=validated_payload, event_name=method):
-                            self._run_handler(handler, payload, event_name)
-                        threading.Thread(target=run_method_event, daemon=True).start()
+                self._on_recv(cast(CdpMessage, parsed))
         except Exception as e:
             if not self._closed:
                 print(f"[ModCDPClient] reader exited: {e}")
