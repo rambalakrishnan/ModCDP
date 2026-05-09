@@ -20,6 +20,19 @@ test("reversews upstream config owns bind updates, wait timeout, and injector co
   await assert.rejects(() => transport.waitForPeer(), /Timed out waiting 5ms/);
 });
 
+test("reversews upstream close rejects pending peer waits", async () => {
+  const reverse_port = await LocalBrowserLauncher.freePort();
+  const transport = new ReverseWebSocketUpstreamTransport(`127.0.0.1:${reverse_port}`, 5_000);
+  const pending = transport.waitForPeer();
+
+  await transport.close();
+
+  await assert.rejects(
+    () => pending,
+    new RegExp(`Reverse websocket transport at ws://127\\.0\\.0\\.1:${reverse_port} closed before a peer connected`),
+  );
+});
+
 test("reversews upstream accepts a real extension reverse connection and routes CDP through loopback", async () => {
   const reverse_port = await LocalBrowserLauncher.freePort();
   const reverse_bind = `127.0.0.1:${reverse_port}`;

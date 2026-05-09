@@ -22,7 +22,11 @@ export class ReverseWebSocketUpstreamTransport extends UpstreamTransport {
     send: (data: string) => void;
     close: (...args: unknown[]) => void;
   } | null = null;
-  private peer_waiters = new Set<() => void>();
+  private peer_waiters = new Set<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
   peer_info: ReverseHello | null = null;
 
   constructor(
@@ -71,14 +75,13 @@ export class ReverseWebSocketUpstreamTransport extends UpstreamTransport {
   async waitForPeer() {
     if (this.socket && this.socket.readyState === this.socket.OPEN) return;
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error(`Timed out waiting ${this.wait_timeout_ms}ms for reverse ModCDP extension connection.`)),
-        this.wait_timeout_ms,
-      );
-      this.peer_waiters.add(() => {
-        clearTimeout(timeout);
-        resolve();
-      });
+      let waiter!: { resolve: () => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> };
+      const timeout = setTimeout(() => {
+        this.peer_waiters.delete(waiter);
+        reject(new Error(`Timed out waiting ${this.wait_timeout_ms}ms for reverse ModCDP extension connection.`));
+      }, this.wait_timeout_ms);
+      waiter = { resolve, reject, timeout };
+      this.peer_waiters.add(waiter);
     });
   }
 
@@ -90,6 +93,11 @@ export class ReverseWebSocketUpstreamTransport extends UpstreamTransport {
     const server = this.server as { close?: (callback: () => void) => void } | null;
     if (server?.close) await new Promise<void>((resolve) => server.close?.(() => resolve()));
     this.server = null;
+    for (const waiter of this.peer_waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error(`Reverse websocket transport at ${this.url} closed before a peer connected.`));
+    }
+    this.peer_waiters.clear();
   }
 
   private accept(socket: any) {
@@ -130,7 +138,10 @@ export class ReverseWebSocketUpstreamTransport extends UpstreamTransport {
         this.peer_info = null;
         this.emitClose(new Error("Reverse ModCDP websocket error"));
       });
-      for (const waiter of this.peer_waiters) waiter();
+      for (const waiter of this.peer_waiters) {
+        clearTimeout(waiter.timeout);
+        waiter.resolve();
+      }
       this.peer_waiters.clear();
     });
   }

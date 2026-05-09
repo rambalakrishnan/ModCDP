@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import socket
+import threading
+import time
 import unittest
+from queue import Queue
 
 from modcdp import ModCDPClient
 from modcdp.ReverseWebSocketUpstreamTransport import ReverseWebSocketUpstreamTransport
@@ -17,6 +20,32 @@ class ReverseWebSocketUpstreamTransportTests(unittest.TestCase):
         self.assertEqual(transport.getInjectorConfig(), {"reverse_proxy_url": "ws://127.0.0.1:29293"})
         with self.assertRaisesRegex(RuntimeError, "Timed out waiting 5ms"):
             transport.waitForPeer()
+
+    def test_close_rejects_pending_peer_waits(self) -> None:
+        reverse_port = _free_port()
+        transport = ReverseWebSocketUpstreamTransport(f"127.0.0.1:{reverse_port}", 5_000)
+        result: Queue[BaseException | None] = Queue()
+
+        def wait_for_peer() -> None:
+            try:
+                transport.waitForPeer()
+            except BaseException as error:
+                result.put(error)
+                return
+            result.put(None)
+
+        thread = threading.Thread(target=wait_for_peer, daemon=True)
+        thread.start()
+        time.sleep(0.05)
+        transport.close()
+        thread.join(timeout=1)
+
+        error = result.get(timeout=1)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertRegex(
+            str(error),
+            rf"Reverse websocket transport at ws://127\.0\.0\.1:{reverse_port} closed before a peer connected",
+        )
 
     def test_accepts_real_extension_reverse_connection_and_routes_cdp_through_loopback(self) -> None:
         reverse_port = _free_port()

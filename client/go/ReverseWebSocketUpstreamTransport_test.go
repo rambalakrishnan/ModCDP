@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReverseWebSocketUpstreamTransportConfigOwnsBindUpdatesWaitTimeoutAndInjectorConfig(t *testing.T) {
@@ -42,6 +43,31 @@ func TestReverseWebSocketUpstreamTransportCloseResetsPeerWaitState(t *testing.T)
 	}
 	if transport.PeerInfo != nil {
 		t.Fatalf("PeerInfo after close = %#v", transport.PeerInfo)
+	}
+}
+
+func TestReverseWebSocketUpstreamTransportCloseRejectsPendingPeerWaits(t *testing.T) {
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := NewReverseWebSocketUpstreamTransport(fmt.Sprintf("127.0.0.1:%d", port), 5_000)
+	done := make(chan error, 1)
+	go func() {
+		done <- transport.WaitForPeer()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if err := transport.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	select {
+	case err := <-done:
+		expected := fmt.Sprintf("reverse websocket transport at ws://127.0.0.1:%d closed before a peer connected", port)
+		if err == nil || !strings.Contains(err.Error(), expected) {
+			t.Fatalf("WaitForPeer close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitForPeer did not return after Close")
 	}
 }
 

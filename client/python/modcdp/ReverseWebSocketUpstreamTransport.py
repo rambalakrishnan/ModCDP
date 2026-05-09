@@ -6,6 +6,7 @@ import json
 import socket
 import struct
 import threading
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -30,6 +31,8 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
         self.reader_thread: threading.Thread | None = None
         self.peer_info: dict[str, Any] | None = None
         self.peer_event = threading.Event()
+        self._peer_condition = threading.Condition()
+        self._close_generation = 0
         self.closed = False
         self.write_lock = threading.Lock()
         self.setBind(bind)
@@ -64,6 +67,9 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
         server_socket.bind((host, port))
         server_socket.listen(1)
         self.server_socket = server_socket
+        with self._peer_condition:
+            self._close_generation += 1
+            self.peer_event.clear()
         self.closed = False
         self.accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self.accept_thread.start()
@@ -78,8 +84,16 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
     def waitForPeer(self) -> None:
         if self.socket is not None:
             return
-        if not self.peer_event.wait(self.wait_timeout_ms / 1000):
-            raise RuntimeError(f"Timed out waiting {self.wait_timeout_ms}ms for reverse ModCDP extension connection.")
+        deadline = time.monotonic() + self.wait_timeout_ms / 1000
+        with self._peer_condition:
+            close_generation = self._close_generation
+            while self.socket is None:
+                if close_generation != self._close_generation:
+                    raise RuntimeError(f"Reverse websocket transport at {self.url} closed before a peer connected.")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Timed out waiting {self.wait_timeout_ms}ms for reverse ModCDP extension connection.")
+                self._peer_condition.wait(remaining)
 
     def close(self) -> None:
         self.closed = True
@@ -92,6 +106,9 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
         self.server_socket = None
         self.peer_info = None
         self.peer_event.clear()
+        with self._peer_condition:
+            self._close_generation += 1
+            self._peer_condition.notify_all()
 
     def _accept_loop(self) -> None:
         while not self.closed and self.server_socket is not None:
@@ -118,9 +135,11 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
                     old_socket.close()
                 except Exception:
                     pass
-            self.socket = sock
-            self.peer_info = hello
-            self.peer_event.set()
+            with self._peer_condition:
+                self.socket = sock
+                self.peer_info = hello
+                self.peer_event.set()
+                self._peer_condition.notify_all()
             self.reader_thread = threading.Thread(target=self._read_loop, args=(sock,), daemon=True)
             self.reader_thread.start()
         except Exception as error:
@@ -142,9 +161,11 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
                 self._emit_close(error if isinstance(error, Exception) else RuntimeError(str(error)))
         finally:
             if self.socket is sock:
-                self.socket = None
-                self.peer_info = None
-                self.peer_event.clear()
+                with self._peer_condition:
+                    if self.socket is sock:
+                        self.socket = None
+                        self.peer_info = None
+                        self.peer_event.clear()
 
 
 def _perform_server_handshake(sock: socket.socket) -> None:

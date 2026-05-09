@@ -25,6 +25,8 @@ type ReverseWebSocketUpstreamTransport struct {
 	writeMu       sync.Mutex
 	peerCh        chan struct{}
 	peerOnce      sync.Once
+	closeCh       chan struct{}
+	stateMu       sync.Mutex
 	PeerInfo      map[string]any
 }
 
@@ -35,7 +37,7 @@ func NewReverseWebSocketUpstreamTransport(bind string, wait_timeout_ms int) *Rev
 	if wait_timeout_ms == 0 {
 		wait_timeout_ms = DefaultReverseWSWaitTimeoutMS
 	}
-	t := &ReverseWebSocketUpstreamTransport{WaitTimeoutMS: wait_timeout_ms, peerCh: make(chan struct{})}
+	t := &ReverseWebSocketUpstreamTransport{WaitTimeoutMS: wait_timeout_ms, peerCh: make(chan struct{}), closeCh: make(chan struct{})}
 	t.SetBind(bind)
 	return t
 }
@@ -72,6 +74,9 @@ func (t *ReverseWebSocketUpstreamTransport) Update(config map[string]any) {
 }
 
 func (t *ReverseWebSocketUpstreamTransport) Connect() error {
+	t.stateMu.Lock()
+	t.closeCh = make(chan struct{})
+	t.stateMu.Unlock()
 	listener, err := net.Listen("tcp", t.Bind)
 	if err != nil {
 		return err
@@ -102,15 +107,25 @@ func (t *ReverseWebSocketUpstreamTransport) WaitForPeer() error {
 	if t.Conn != nil {
 		return nil
 	}
+	t.stateMu.Lock()
+	closeCh := t.closeCh
+	t.stateMu.Unlock()
 	select {
 	case <-t.peerCh:
 		return nil
+	case <-closeCh:
+		return fmt.Errorf("reverse websocket transport at %s closed before a peer connected", t.URL)
 	case <-time.After(time.Duration(t.WaitTimeoutMS) * time.Millisecond):
 		return fmt.Errorf("timed out waiting %dms for reverse ModCDP extension connection", t.WaitTimeoutMS)
 	}
 }
 
 func (t *ReverseWebSocketUpstreamTransport) Close() error {
+	t.stateMu.Lock()
+	closeCh := t.closeCh
+	t.closeCh = make(chan struct{})
+	t.stateMu.Unlock()
+	close(closeCh)
 	if t.Conn != nil {
 		_ = t.Conn.Close()
 		t.Conn = nil
