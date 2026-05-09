@@ -11,19 +11,14 @@ Constructor option groups mirror the JS / Go ports:
     upstream          upstream transport options and upstream-owned timings
 
 Public methods: connect(), send(method, params), on(event, handler), close(), _cdp.send(), _cdp.on().
-Synchronous (blocking) API; one background thread reads messages off the WS.
+Synchronous (blocking) API; upstream transports own their read loops.
 """
 
-import json
 import asyncio
 import inspect
-import re
 import sys
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from queue import Queue, Empty
@@ -199,31 +194,6 @@ class _RawCDP:
         return self._client.on(event, handler)
 
 
-def websocket_url_for(endpoint: str) -> str:
-    if re.match(r"^wss?://", endpoint, re.I):
-        return endpoint
-    http_endpoint = endpoint if re.match(r"^[a-z][a-z\d+\-.]*://", endpoint, re.I) else f"http://{endpoint}"
-    try:
-        r = urllib.request.urlopen(f"{http_endpoint}/json/version", timeout=5)
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise
-        parsed = urllib.parse.urlparse(http_endpoint)
-        scheme = "wss" if parsed.scheme == "https" else "ws"
-        return urllib.parse.urlunparse((scheme, parsed.netloc, "/devtools/browser", "", "", ""))
-    with r:
-        parsed: object = json.loads(r.read())
-    if not isinstance(parsed, dict):
-        raise RuntimeError(f"HTTP discovery for {endpoint} returned invalid JSON")
-    parsed_obj = cast(Mapping[str, object], parsed)
-    ws_url = parsed_obj.get("webSocketDebuggerUrl")
-    if not ws_url:
-        raise RuntimeError(f"HTTP discovery for {endpoint} returned no webSocketDebuggerUrl")
-    if not isinstance(ws_url, str):
-        raise RuntimeError(f"HTTP discovery for {endpoint} returned a non-string webSocketDebuggerUrl")
-    return ws_url
-
-
 def _json_object(value: JsonValue | None) -> ProtocolResult:
     return value if isinstance(value, dict) else {}
 
@@ -374,50 +344,16 @@ class ModCDPClient(CDPSurfaceMixin):
 
     def connect(self) -> "ModCDPClient":
         connect_started_at = int(time.time() * 1000)
+        transport_started_at = int(time.time() * 1000)
+        self._connect_upstream_transport()
+        transport_connected_at = int(time.time() * 1000)
+        if self.transport is None:
+            raise RuntimeError("upstream transport did not connect.")
+        self.transport.onRecv(lambda message: self._on_recv(cast(CdpMessage, message)))
+        self.transport.onClose(lambda error: self._reject_all(error))
+
         if self.upstream_endpoint_kind == "modcdp_server":
-            transport_started_at = int(time.time() * 1000)
-            launcher = self._browser_launcher()
-            launcher.update(self._launch_options())
-            transport = self._upstream_transport()
-            transport.update(
-                {
-                    "ws_url": self.upstream.get("ws_url"),
-                    "cdp_url": self.upstream.get("ws_url"),
-                    "nats_url": self.upstream.get("nats_url"),
-                    "nats_subject_prefix": self.upstream.get("nats_subject_prefix"),
-                    "reversews_bind": self.upstream.get("reversews_bind"),
-                    "reversews_wait_timeout_ms": self.upstream.get("reversews_wait_timeout_ms"),
-                    "manifest_path": self.upstream.get("nativemessaging_manifest"),
-                    "extension_id": self.extension.get("extension_id"),
-                }
-            )
-            injectors = self._extension_injectors_for_config()
-            self._extension_injectors = injectors
-            for injector in injectors:
-                injector.update(self._base_extension_injector_config(None))
-                injector.update(cast(ExtensionInjectorConfig, transport.getInjectorConfig()))
-                injector.prepare()
-                launcher.update(injector.getLauncherConfig())
-                transport.update(injector.getTransportConfig())
-            launcher.update(transport.getLauncherConfig())
-            transport.update(launcher.getTransportConfig())
-            transport.connect()
-            self.transport = transport
-            transport.onRecv(lambda message: self._on_recv(cast(CdpMessage, message)))
-            transport.onClose(lambda error: self._reject_all(error))
-            if self.launch.get("mode") != "none":
-                launched = launcher.launch()
-                self._launched_browser = launched
-                self.cdp_url = cast(str | None, launched.get("ws_url") or launched.get("cdp_url"))
-                transport.update(launcher.getTransportConfig())
-                for injector in injectors:
-                    transport.update(injector.getTransportConfig())
-                server_config = {"loopback_cdp_url": self.cdp_url} if self.cdp_url else {}
-                server_config.update(transport.getServerConfig())
-                if self.server is not None and server_config.get("loopback_cdp_url") and "loopback_cdp_url" not in self.server:
-                    self.server = {**self.server, **server_config}
-            transport_connected_at = int(time.time() * 1000)
-            transport.waitForPeer()
+            self.transport.waitForPeer()
             if self.server is not None:
                 self._send_message("Mod.configure", cast(ProtocolParams, self._server_configure_params()))
             threading.Thread(target=self._measure_ping_latency, daemon=True).start()
@@ -433,65 +369,13 @@ class ModCDPClient(CDPSurfaceMixin):
                 "duration_ms": connected_at - connect_started_at,
             })
             return self
-        launcher = self._browser_launcher()
-        launcher.update(self._launch_options())
-        transport: UpstreamTransport | None = None
-        if self.upstream.get("mode") != "ws" or self.cdp_url is not None:
-            transport = self._upstream_transport()
-            launcher.update(transport.getLauncherConfig())
-        injectors = self._extension_injectors_for_config()
-        self._extension_injectors = injectors
-        for injector in injectors:
-            injector.update(self._base_extension_injector_config(None))
-            injector.update(launcher.getInjectorConfig())
-            injector.prepare()
-            launcher.update(injector.getLauncherConfig())
-        if self.cdp_url is None:
-            if self.launch.get("mode") == "none":
-                raise RuntimeError("upstream.mode=ws requires upstream.ws_url or a launch mode that creates a browser.")
-            launched = launcher.launch()
-            self._launched_browser = launched
-            self.cdp_url = cast(str | None, launched.get("ws_url") or launched.get("cdp_url"))
-            if transport is not None:
-                transport.update(launcher.getTransportConfig())
-            for injector in injectors:
-                injector.update(launcher.getInjectorConfig())
-        input_cdp_url = self.cdp_url
-        if input_cdp_url is None:
-            raise RuntimeError("upstream.mode=ws requires an upstream CDP endpoint.")
-        if self.upstream.get("mode") == "ws":
-            self.cdp_url = websocket_url_for(input_cdp_url)
-            self.upstream["ws_url"] = self.cdp_url
-            if transport is None:
-                transport = self._upstream_transport()
-            transport.update({"ws_url": self.cdp_url, "cdp_url": self.cdp_url, "url": self.cdp_url})
-        if transport is None:
-            transport = self._upstream_transport()
-        can_autoconfigure_loopback = self.cdp_url is not None and not self.cdp_url.startswith("pipe://")
-        if self.server is not None and can_autoconfigure_loopback and "loopback_cdp_url" not in self.server:
-            self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
-        elif self.server and isinstance(self.server.get("loopback_cdp_url"), str):
-            loopback_url = self.server["loopback_cdp_url"]
-            if loopback_url == input_cdp_url or loopback_url == self.cdp_url:
-                self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
-        transport_started_at = int(time.time() * 1000)
-        self.transport = transport
-        self.transport.connect()
-        transport_connected_at = int(time.time() * 1000)
-        self.transport.onRecv(lambda message: self._on_recv(cast(CdpMessage, message)))
-        self.transport.onClose(lambda error: self._reject_all(error))
 
-        self._send_message("Target.setAutoAttach", {
-            "autoAttach": True,
-            "waitForDebuggerOnStart": False,
-            "flatten": True,
-        })
-        self._send_message("Target.setDiscoverTargets", {"discover": True})
+        self._initialize_raw_cdp_transport()
 
         extension_started_at = int(time.time() * 1000)
         if self.extension.get("mode") == "none":
             raise RuntimeError("extension.mode='none' cannot be used with a raw_cdp upstream.")
-        ext = self._inject_extension(injectors)
+        ext = self._inject_extension(self._extension_injectors)
         extension_completed_at = int(time.time() * 1000)
         self.extension_id = ext["extension_id"]
         self.ext_target_id = ext["target_id"]
@@ -759,6 +643,91 @@ class ModCDPClient(CDPSurfaceMixin):
         if self.launch.get("user_data_dir"):
             launch_options["user_data_dir"] = cast(str, self.launch["user_data_dir"])
         return launch_options
+
+    def _connect_upstream_transport(self) -> None:
+        if self.transport is not None:
+            return
+        launcher = self._browser_launcher()
+        transport = self._upstream_transport()
+        injectors = self._extension_injectors_for_config()
+        self._extension_injectors = injectors
+        initial_transport_config = self._upstream_transport_config()
+
+        transport.update(initial_transport_config)
+        launcher.update(self._launch_options())
+        for injector in injectors:
+            injector.update(self._base_extension_injector_config(None))
+        for injector in injectors:
+            injector.update(launcher.getInjectorConfig())
+        for injector in injectors:
+            injector.update(cast(ExtensionInjectorConfig, transport.getInjectorConfig()))
+        for injector in injectors:
+            injector.prepare()
+        for injector in injectors:
+            launcher.update(injector.getLauncherConfig())
+        for injector in injectors:
+            transport.update(injector.getTransportConfig())
+        launcher.update(transport.getLauncherConfig())
+        transport.update(launcher.getTransportConfig())
+
+        if transport.endpoint_kind == "modcdp_server":
+            transport.connect()
+        if self.launch.get("mode") != "none":
+            launched = launcher.launch()
+            self._launched_browser = launched
+            transport.update(launcher.getTransportConfig())
+            for injector in injectors:
+                injector.update(launcher.getInjectorConfig())
+            for injector in injectors:
+                transport.update(injector.getTransportConfig())
+        launched_cdp_url = (
+            cast(str | None, self._launched_browser.get("ws_url") or self._launched_browser.get("cdp_url"))
+            if self._launched_browser
+            else None
+        )
+        if transport.endpoint_kind == "raw_cdp":
+            transport.connect()
+
+        self.transport = transport
+        self.cdp_url = cast(
+            str | None,
+            (transport.url or launched_cdp_url) if transport.endpoint_kind == "raw_cdp" else launched_cdp_url,
+        )
+        if transport.mode == "ws" and transport.url:
+            self.upstream["ws_url"] = transport.url
+        server_config = (
+            {"loopback_cdp_url": launched_cdp_url}
+            if transport.endpoint_kind == "modcdp_server" and launched_cdp_url
+            else {}
+        )
+        server_config.update(transport.getServerConfig())
+        if self.server is not None and server_config.get("loopback_cdp_url"):
+            configured_loopback = self.server.get("loopback_cdp_url")
+            if "loopback_cdp_url" not in self.server or configured_loopback in (
+                initial_transport_config.get("ws_url"),
+                launched_cdp_url,
+            ):
+                self.server = {**self.server, **server_config}
+
+    def _upstream_transport_config(self) -> dict[str, Any]:
+        return {
+            "ws_url": self.upstream.get("ws_url"),
+            "cdp_url": self.upstream.get("ws_url"),
+            "nats_url": self.upstream.get("nats_url"),
+            "nats_subject_prefix": self.upstream.get("nats_subject_prefix"),
+            "reversews_bind": self.upstream.get("reversews_bind"),
+            "reversews_wait_timeout_ms": self.upstream.get("reversews_wait_timeout_ms"),
+            "manifest_path": self.upstream.get("nativemessaging_manifest"),
+            "extension_id": self.extension.get("extension_id"),
+        }
+
+    def _initialize_raw_cdp_transport(self) -> None:
+        self._send_message("Target.setAutoAttach", {
+            "autoAttach": True,
+            "waitForDebuggerOnStart": False,
+            "flatten": True,
+        })
+        self._send_message("Target.setDiscoverTargets", {"discover": True})
 
     def _upstream_transport(self):
         mode = self.upstream.get("mode")

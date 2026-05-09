@@ -320,6 +320,13 @@ type extensionInjector interface {
 	Close() error
 }
 
+type browserLauncherClient interface {
+	Update(LaunchOptions) *BrowserLauncher
+	GetInjectorConfig() ExtensionInjectorConfig
+	GetTransportConfig() map[string]any
+	Launch(LaunchOptions) (*LaunchedBrowser, error)
+}
+
 type upstreamTransportClient interface {
 	Update(map[string]any)
 	Connect() error
@@ -439,75 +446,47 @@ func New(opts Options) *ModCDPClient {
 
 func (c *ModCDPClient) Connect() error {
 	connectStartedAt := time.Now().UnixMilli()
-	if c.opts.Upstream.Mode == "pipe" {
-		return c.connectPipeRawCDPTransport(connectStartedAt)
-	}
-	if c.opts.Upstream.Mode != "ws" {
-		return c.connectModCDPServerTransport(connectStartedAt)
-	}
-	injectors := c.extensionInjectorsForConfig()
-	c.extensionInjectors = injectors
-	launcher := c.browserLauncher()
-	launchOptions := c.opts.Launch.Options
-	if c.opts.Extension.Mode != "none" {
-		for _, injector := range injectors {
-			injector.Update(c.baseExtensionInjectorConfig(nil))
-			injector.Update(launcher.GetInjectorConfig())
-			if err := injector.Prepare(); err != nil {
-				return err
-			}
-			launchOptions = mergeLaunchOptions(launchOptions, injector.GetLauncherConfig())
-		}
-	}
-	if c.opts.Upstream.WSURL == "" {
-		if c.opts.Upstream.WSURL == "" {
-			launched, err := launcher.Launch(launchOptions)
-			if err != nil {
-				return err
-			}
-			c.launchedBrowser = launched
-			c.opts.Upstream.WSURL = launched.CDPURL
-		}
-	}
-	inputCDPURL := c.opts.Upstream.WSURL
-	wsURL, err := websocketURLFor(c.opts.Upstream.WSURL)
-	if err != nil {
-		return err
-	}
-	c.opts.Upstream.WSURL = wsURL
-	c.CDPURL = wsURL
-	if c.opts.Server != nil && c.opts.Server.LoopbackCDPURL == "" {
-		c.opts.Server.LoopbackCDPURL = wsURL
-	} else if c.opts.Server != nil && (c.opts.Server.LoopbackCDPURL == inputCDPURL || c.opts.Server.LoopbackCDPURL == wsURL) {
-		c.opts.Server.LoopbackCDPURL = wsURL
-	}
-
 	transportStartedAt := time.Now().UnixMilli()
-	wsTransport := c.upstreamTransport().(*WebSocketUpstreamTransport)
-	c.transport = wsTransport
-	if err := wsTransport.Connect(); err != nil {
-		return fmt.Errorf("websocket dial: %w", err)
+	if err := c.connectUpstreamTransport(); err != nil {
+		return err
 	}
 	transportConnectedAt := time.Now().UnixMilli()
-	wsTransport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
-	wsTransport.OnClose(func(err error) { c.rejectAll(err) })
-	if _, err := c.sendMessage("Target.setAutoAttach", map[string]any{
-		"autoAttach":             true,
-		"waitForDebuggerOnStart": false,
-		"flatten":                true,
-	}, ""); err != nil {
+	if c.transport == nil {
+		return fmt.Errorf("upstream transport did not connect")
+	}
+	c.transport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
+	c.transport.OnClose(func(err error) { c.rejectAll(err) })
+	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
+		if err := c.transport.WaitForPeer(); err != nil {
+			c.Close()
+			return err
+		}
+		if c.opts.Server != nil {
+			if _, err := c.sendMessage("Mod.configure", c.serverConfigureParams(nil, nil, nil), ""); err != nil {
+				c.Close()
+				return err
+			}
+		}
+		go func() { _ = c.measurePingLatency() }()
+		connectedAt := time.Now().UnixMilli()
+		c.ConnectTiming = map[string]any{
+			"started_at":             connectStartedAt,
+			"upstream_mode":          c.opts.Upstream.Mode,
+			"upstream_endpoint_kind": endpointKindForUpstream(c.opts.Upstream.Mode),
+			"transport_started_at":   transportStartedAt,
+			"transport_connected_at": transportConnectedAt,
+			"transport_duration_ms":  transportConnectedAt - transportStartedAt,
+			"connected_at":           connectedAt,
+			"duration_ms":            connectedAt - connectStartedAt,
+		}
+		return nil
+	}
+	if err := c.initializeRawCDPTransport(); err != nil {
 		c.Close()
 		return err
 	}
-	if _, err := c.sendMessage("Target.setDiscoverTargets", map[string]any{"discover": true}, ""); err != nil {
-		c.Close()
-		return err
-	}
-
-	// once the reader goroutine is running, any further error must call Close
-	// to tear it down; otherwise the goroutine + ws connection leak.
 	extensionStartedAt := time.Now().UnixMilli()
-	ext, err := c.injectExtension(injectors)
+	ext, err := c.injectExtension(c.extensionInjectors)
 	if err != nil {
 		c.Close()
 		return err
@@ -596,123 +575,104 @@ func (c *ModCDPClient) Connect() error {
 	return nil
 }
 
-func (c *ModCDPClient) connectPipeRawCDPTransport(connectStartedAt int64) error {
-	if c.opts.Launch.Mode != "local" {
-		return fmt.Errorf("upstream.mode=pipe requires launch.mode='local'")
+func (c *ModCDPClient) connectUpstreamTransport() error {
+	if c.transport != nil {
+		return nil
 	}
-	transportStartedAt := time.Now().UnixMilli()
-	pipeTransport := NewPipeUpstreamTransport(nil, nil, "")
 	launcher := c.browserLauncher()
+	transport := c.upstreamTransport()
 	injectors := c.extensionInjectorsForConfig()
 	c.extensionInjectors = injectors
-	launchOptions := mergeLaunchOptions(c.opts.Launch.Options, pipeTransport.GetLauncherConfig())
-	if c.opts.Extension.Mode != "none" {
-		for _, injector := range injectors {
-			injector.Update(c.baseExtensionInjectorConfig(nil))
-			injector.Update(launcher.GetInjectorConfig())
-			if err := injector.Prepare(); err != nil {
-				return err
-			}
-			launchOptions = mergeLaunchOptions(launchOptions, injector.GetLauncherConfig())
-		}
+	initialTransportConfig := c.upstreamTransportConfig()
+
+	transport.Update(initialTransportConfig)
+	launcher.Update(c.opts.Launch.Options)
+	for _, injector := range injectors {
+		injector.Update(c.baseExtensionInjectorConfig(nil))
 	}
-	launched, err := launcher.Launch(launchOptions)
-	if err != nil {
-		return err
+	for _, injector := range injectors {
+		injector.Update(launcher.GetInjectorConfig())
 	}
-	c.launchedBrowser = launched
-	c.CDPURL = launched.CDPURL
-	pipeTransport.Update(map[string]any{
-		"cdp_url":    launched.CDPURL,
-		"pipe_read":  launched.PipeRead,
-		"pipe_write": launched.PipeWrite,
-	})
-	c.transport = pipeTransport
-	if err := pipeTransport.Connect(); err != nil {
-		c.Close()
-		return err
+	for _, injector := range injectors {
+		injector.Update(transport.GetInjectorConfig())
 	}
-	pipeTransport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
-	pipeTransport.OnClose(func(err error) { c.rejectAll(err) })
-	transportConnectedAt := time.Now().UnixMilli()
-	if _, err := c.sendMessage("Target.setAutoAttach", map[string]any{
-		"autoAttach":             true,
-		"waitForDebuggerOnStart": false,
-		"flatten":                true,
-	}, ""); err != nil {
-		c.Close()
-		return err
-	}
-	if _, err := c.sendMessage("Target.setDiscoverTargets", map[string]any{"discover": true}, ""); err != nil {
-		c.Close()
-		return err
-	}
-	extensionStartedAt := time.Now().UnixMilli()
-	ext, err := c.injectExtension(injectors)
-	if err != nil {
-		c.Close()
-		return err
-	}
-	extensionCompletedAt := time.Now().UnixMilli()
-	c.ExtensionID = ext.ExtensionID
-	c.ExtTargetID = ext.TargetID
-	c.ExtSessionID = ext.SessionID
-	if _, err := c.sendMessage("Runtime.enable", map[string]any{}, c.ExtSessionID); err != nil {
-		c.Close()
-		return err
-	}
-	if _, err := c.sendMessage("Runtime.addBinding", map[string]any{"name": customEventBindingName}, c.ExtSessionID); err != nil {
-		c.Close()
-		return err
-	}
-	mirrorUpstreamEvents := true
-	if c.opts.Client.MirrorUpstreamEvents != nil {
-		mirrorUpstreamEvents = *c.opts.Client.MirrorUpstreamEvents
-	}
-	if mirrorUpstreamEvents {
-		if _, err := c.sendMessage("Runtime.addBinding", map[string]any{"name": upstreamEventBindingName}, c.ExtSessionID); err != nil {
-			c.Close()
+	for _, injector := range injectors {
+		if err := injector.Prepare(); err != nil {
 			return err
 		}
 	}
-	if c.opts.Server != nil {
-		command, err := wrapCommandIfNeeded("Mod.configure", c.serverConfigureParams(nil, nil, nil), c.opts.Client.Routes, c.ExtSessionID)
-		if err != nil {
-			c.Close()
-			return fmt.Errorf("Mod.configure: %w", err)
-		}
-		if _, err := c.sendRaw(command); err != nil {
-			c.Close()
-			return fmt.Errorf("Mod.configure: %w", err)
+	for _, injector := range injectors {
+		launcher.Update(injector.GetLauncherConfig())
+	}
+	for _, injector := range injectors {
+		transport.Update(injector.GetTransportConfig())
+	}
+	launcher.Update(transport.GetLauncherConfig())
+	transport.Update(launcher.GetTransportConfig())
+
+	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
+		if err := transport.Connect(); err != nil {
+			return err
 		}
 	}
-	go func() { _ = c.measurePingLatency() }()
-	connectedAt := time.Now().UnixMilli()
-	c.ConnectTiming = map[string]any{
-		"started_at":             connectStartedAt,
-		"upstream_mode":          c.opts.Upstream.Mode,
-		"upstream_endpoint_kind": endpointKindForUpstream(c.opts.Upstream.Mode),
-		"transport_started_at":   transportStartedAt,
-		"transport_connected_at": transportConnectedAt,
-		"transport_duration_ms":  transportConnectedAt - transportStartedAt,
-		"extension_source":       ext.Source,
-		"extension_started_at":   extensionStartedAt,
-		"extension_completed_at": extensionCompletedAt,
-		"extension_duration_ms":  extensionCompletedAt - extensionStartedAt,
-		"connected_at":           connectedAt,
-		"duration_ms":            connectedAt - connectStartedAt,
+	if c.opts.Launch.Mode != "none" {
+		launched, err := launcher.Launch(LaunchOptions{})
+		if err != nil {
+			_ = transport.Close()
+			return err
+		}
+		c.launchedBrowser = launched
+		transport.Update(launcher.GetTransportConfig())
+		for _, injector := range injectors {
+			injector.Update(launcher.GetInjectorConfig())
+		}
+		for _, injector := range injectors {
+			transport.Update(injector.GetTransportConfig())
+		}
+	}
+	launchedCDPURL := ""
+	if c.launchedBrowser != nil {
+		launchedCDPURL = firstNonEmptyString(c.launchedBrowser.WSURL, c.launchedBrowser.CDPURL)
+	}
+	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindRawCDP {
+		if err := transport.Connect(); err != nil {
+			return err
+		}
+	}
+
+	c.transport = transport
+	transportURL := transportURL(transport)
+	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindRawCDP {
+		c.CDPURL = firstNonEmptyString(transportURL, launchedCDPURL)
+	} else {
+		c.CDPURL = launchedCDPURL
+	}
+	if wsTransport, ok := transport.(*WebSocketUpstreamTransport); ok && wsTransport.URL != "" {
+		c.opts.Upstream.WSURL = wsTransport.URL
+	}
+
+	serverConfig := map[string]any{}
+	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer && launchedCDPURL != "" {
+		serverConfig["loopback_cdp_url"] = launchedCDPURL
+	}
+	for key, value := range transport.GetServerConfig() {
+		serverConfig[key] = value
+	}
+	if c.opts.Server != nil {
+		if loopbackCDPURL, _ := serverConfig["loopback_cdp_url"].(string); loopbackCDPURL != "" {
+			initialWSURL, _ := initialTransportConfig["ws_url"].(string)
+			if c.opts.Server.LoopbackCDPURL == "" ||
+				c.opts.Server.LoopbackCDPURL == initialWSURL ||
+				c.opts.Server.LoopbackCDPURL == launchedCDPURL {
+				c.opts.Server.LoopbackCDPURL = loopbackCDPURL
+			}
+		}
 	}
 	return nil
 }
 
-func (c *ModCDPClient) connectModCDPServerTransport(connectStartedAt int64) error {
-	transportStartedAt := time.Now().UnixMilli()
-	transport := c.upstreamTransport().(upstreamTransportClient)
-	launcher := c.browserLauncher()
-	injectors := c.extensionInjectorsForConfig()
-	c.extensionInjectors = injectors
-	launchOptions := mergeLaunchOptions(c.opts.Launch.Options, transport.GetLauncherConfig())
-	transport.Update(map[string]any{
+func (c *ModCDPClient) upstreamTransportConfig() map[string]any {
+	return map[string]any{
 		"ws_url":                    c.opts.Upstream.WSURL,
 		"cdp_url":                   c.opts.Upstream.WSURL,
 		"nats_url":                  c.opts.Upstream.NATSURL,
@@ -721,78 +681,32 @@ func (c *ModCDPClient) connectModCDPServerTransport(connectStartedAt int64) erro
 		"reversews_wait_timeout_ms": c.opts.Upstream.ReverseWSWaitTimeoutMS,
 		"manifest_path":             c.opts.Upstream.NativeMessagingManifest,
 		"extension_id":              c.opts.Extension.ExtensionID,
-		"user_data_dir":             launchOptions.UserDataDir,
-	})
-
-	if c.opts.Extension.Mode != "none" {
-		for _, injector := range injectors {
-			injector.Update(c.baseExtensionInjectorConfig(nil))
-			injector.Update(launcher.GetInjectorConfig())
-			injector.Update(transport.GetInjectorConfig())
-			if err := injector.Prepare(); err != nil {
-				return err
-			}
-			launchOptions = mergeLaunchOptions(launchOptions, injector.GetLauncherConfig())
-			transport.Update(injector.GetTransportConfig())
-		}
 	}
-	transport.Update(map[string]any{"user_data_dir": launchOptions.UserDataDir})
-	if err := transport.Connect(); err != nil {
+}
+
+func (c *ModCDPClient) initializeRawCDPTransport() error {
+	if _, err := c.sendMessage("Target.setAutoAttach", map[string]any{
+		"autoAttach":             true,
+		"waitForDebuggerOnStart": false,
+		"flatten":                true,
+	}, ""); err != nil {
 		return err
 	}
-	c.transport = transport
-	transport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
-	transport.OnClose(func(err error) { c.rejectAll(err) })
-
-	if c.opts.Launch.Mode != "none" {
-		launched, err := launcher.Launch(launchOptions)
-		if err != nil {
-			c.Close()
-			return err
-		}
-		c.launchedBrowser = launched
-		c.CDPURL = firstNonEmptyString(launched.WSURL, launched.CDPURL)
-		transport.Update(map[string]any{
-			"ws_url":        launched.WSURL,
-			"cdp_url":       launched.CDPURL,
-			"user_data_dir": launched.ProfileDir,
-		})
-		for _, injector := range injectors {
-			transport.Update(injector.GetTransportConfig())
-		}
-		serverConfig := transport.GetServerConfig()
-		if c.opts.Server != nil && c.opts.Server.LoopbackCDPURL == "" {
-			if loopbackCDPURL, _ := serverConfig["loopback_cdp_url"].(string); loopbackCDPURL != "" {
-				c.opts.Server.LoopbackCDPURL = loopbackCDPURL
-			} else {
-				c.opts.Server.LoopbackCDPURL = c.CDPURL
-			}
-		}
-	}
-	transportConnectedAt := time.Now().UnixMilli()
-	if err := transport.WaitForPeer(); err != nil {
-		c.Close()
+	if _, err := c.sendMessage("Target.setDiscoverTargets", map[string]any{"discover": true}, ""); err != nil {
 		return err
-	}
-	if c.opts.Server != nil {
-		if _, err := c.sendMessage("Mod.configure", c.serverConfigureParams(nil, nil, nil), ""); err != nil {
-			c.Close()
-			return fmt.Errorf("Mod.configure: %w", err)
-		}
-	}
-	go func() { _ = c.measurePingLatency() }()
-	connectedAt := time.Now().UnixMilli()
-	c.ConnectTiming = map[string]any{
-		"started_at":             connectStartedAt,
-		"upstream_mode":          c.opts.Upstream.Mode,
-		"upstream_endpoint_kind": endpointKindForUpstream(c.opts.Upstream.Mode),
-		"transport_started_at":   transportStartedAt,
-		"transport_connected_at": transportConnectedAt,
-		"transport_duration_ms":  transportConnectedAt - transportStartedAt,
-		"connected_at":           connectedAt,
-		"duration_ms":            connectedAt - connectStartedAt,
 	}
 	return nil
+}
+
+func transportURL(transport upstreamTransportClient) string {
+	switch typed := transport.(type) {
+	case *WebSocketUpstreamTransport:
+		return typed.URL
+	case *PipeUpstreamTransport:
+		return typed.URL
+	default:
+		return ""
+	}
 }
 
 func (c *ModCDPClient) serverConfigureParams(customCommands []map[string]any, customEvents []map[string]any, customMiddlewares []map[string]any) map[string]any {
@@ -1138,11 +1052,7 @@ func (c *ModCDPClient) Close() {
 	c.extensionInjectors = nil
 }
 
-func (c *ModCDPClient) browserLauncher() interface {
-	GetInjectorConfig() ExtensionInjectorConfig
-	GetTransportConfig() map[string]any
-	Launch(LaunchOptions) (*LaunchedBrowser, error)
-} {
+func (c *ModCDPClient) browserLauncher() browserLauncherClient {
 	switch c.opts.Launch.Mode {
 	case "local":
 		return NewLocalBrowserLauncher(c.opts.Launch.Options)
@@ -1155,11 +1065,7 @@ func (c *ModCDPClient) browserLauncher() interface {
 	}
 }
 
-func (c *ModCDPClient) upstreamTransport() interface {
-	Connect() error
-	Close() error
-	Send(map[string]any) error
-} {
+func (c *ModCDPClient) upstreamTransport() upstreamTransportClient {
 	switch c.opts.Upstream.Mode {
 	case "ws":
 		return NewWebSocketUpstreamTransport(c.opts.Upstream.WSURL)
