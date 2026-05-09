@@ -18,17 +18,13 @@ Synchronous (blocking) API; one background thread reads messages off the WS.
 import json
 import asyncio
 import inspect
-import os
 import re
-import shutil
 import sys
 import threading
 import time
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from queue import Queue, Empty
@@ -78,10 +74,8 @@ from .types import (
     ModCDPRawTiming,
     ModCDPRoutes,
     ModCDPServerConfig,
-    BorrowedExtensionInfo,
     CdpMessage,
     ExtensionInfo,
-    ExtensionProbe,
     MessageParams,
     Handler,
     JsonValue,
@@ -168,7 +162,6 @@ class _ModDomain:
     def ping(self, **params: Any):
         return self._client._send_command("Mod.ping", params)
 
-EXT_ID_FROM_URL_RE = re.compile(r"^chrome-extension://([a-z]+)/")
 MODCDP_READY_EXPRESSION = (
     "Boolean(globalThis.ModCDP?.__ModCDPServerVersion === 1 && "
     "globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)"
@@ -232,37 +225,6 @@ def _json_object(value: JsonValue | None) -> ProtocolResult:
 def default_extension_path() -> str | None:
     bundled_extension = Path(__file__).resolve().parent / "extension.zip"
     return str(bundled_extension) if bundled_extension.exists() else None
-
-
-def modcdp_server_path(extension_path: str) -> Path:
-    candidates = [Path(extension_path) / "ModCDPServer.js"]
-    for parent in Path(__file__).resolve().parents:
-        candidates.append(parent / "dist" / "extension" / "ModCDPServer.js")
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    checked = ", ".join(str(candidate) for candidate in candidates)
-    raise FileNotFoundError(f"Unable to locate ModCDPServer.js; checked: {checked}")
-
-
-def modcdp_server_bootstrap_expression(extension_path: str) -> str:
-    server_path = modcdp_server_path(extension_path)
-    source = server_path.read_text()
-    start = source.index("export function installModCDPServer")
-    end = source.index("export const ModCDPServer")
-    installer = source[start:end].replace("export function", "function", 1)
-    return (
-        "(() => {\n"
-        f"{installer}\n"
-        "const ModCDP = installModCDPServer(globalThis);\n"
-        "return {\n"
-        "  ok: Boolean(ModCDP?.__ModCDPServerVersion === 1 && ModCDP?.handleCommand && ModCDP?.addCustomEvent),\n"
-        "  extension_id: globalThis.chrome?.runtime?.id ?? null,\n"
-        "  has_tabs: Boolean(globalThis.chrome?.tabs?.query),\n"
-        "  has_debugger: Boolean(globalThis.chrome?.debugger?.sendCommand),\n"
-        "};\n"
-        "})()"
-    )
 
 
 class ModCDPClient(CDPSurfaceMixin):
@@ -368,7 +330,6 @@ class ModCDPClient(CDPSurfaceMixin):
         self._reader_thread: threading.Thread | None = None
         self._closed = False
         self._launched_browser: Any | None = None
-        self._prepared_extension_dir: tempfile.TemporaryDirectory[str] | None = None
         self._extension_injectors: list[ExtensionInjector] = []
         self._cdp = _RawCDP(self)
         self._hydrate_custom_surface()
@@ -632,25 +593,6 @@ class ModCDPClient(CDPSurfaceMixin):
         if self._launched_browser is not None:
             self._launched_browser["close"]()
             self._launched_browser = None
-        if self._prepared_extension_dir is not None:
-            self._cleanup_temp_dir(self._prepared_extension_dir)
-            self._prepared_extension_dir = None
-
-    def _cleanup_temp_dir(self, temp_dir: tempfile.TemporaryDirectory[str]) -> None:
-        for attempt in range(20):
-            try:
-                temp_dir.cleanup()
-                return
-            except OSError:
-                if attempt == 19:
-                    shutil.rmtree(temp_dir.name, ignore_errors=True)
-                    return
-                time.sleep(0.1)
-
-    def _ready_expression(self) -> str:
-        if not self.service_worker_ready_expression:
-            return MODCDP_READY_EXPRESSION
-        return f"({MODCDP_READY_EXPRESSION}) && Boolean({self.service_worker_ready_expression})"
 
     def _session_id_for_target(self, target_id: str, timeout: float = 0) -> str | None:
         if timeout <= 0:
@@ -784,14 +726,6 @@ class ModCDPClient(CDPSurfaceMixin):
         raise RuntimeError(f"Cannot install, discover, or borrow the ModCDP extension in the running browser.{detail}")
 
     # --- internals ---------------------------------------------------------
-
-    def _prepare_extension_path(self) -> None:
-        if not self.extension_path or not self.extension_path.endswith(".zip"):
-            return
-        self._prepared_extension_dir = tempfile.TemporaryDirectory(prefix="modcdp-extension.")
-        with zipfile.ZipFile(self.extension_path) as archive:
-            archive.extractall(self._prepared_extension_dir.name)
-        self.extension_path = self._prepared_extension_dir.name
 
     def _send_raw(self, wrapped: TranslatedCommand) -> Any:
         if wrapped["target"] == "direct_cdp":
@@ -1081,212 +1015,3 @@ class ModCDPClient(CDPSurfaceMixin):
                 self._pending.clear()
             for _, done in pending:
                 done.put({"error": {"message": "connection closed"}})
-
-    def _target_infos(self) -> list[TargetInfo]:
-        value = self._send_message("Target.getTargets").get("targetInfos")
-        if not isinstance(value, list):
-            return []
-        targets: list[TargetInfo] = []
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            target_id = item.get("targetId")
-            target_type = item.get("type")
-            target_url = item.get("url")
-            if isinstance(target_id, str) and isinstance(target_type, str) and isinstance(target_url, str):
-                targets.append({"targetId": target_id, "type": target_type, "url": target_url})
-        return targets
-
-    def _ensure_extension(self) -> ExtensionInfo:
-        ready_expression = self._ready_expression()
-        trust_service_worker_target = (
-            self.trust_service_worker_target
-            or len(self.service_worker_url_includes) > 0
-            or any(len([part for part in suffix.split("/") if part]) > 1 for suffix in self.service_worker_url_suffixes)
-        )
-
-        def probe_target(target: TargetInfo, timeout: float = 0, allow_attach: bool = False) -> ExtensionProbe | None:
-            target_id = target.get("targetId")
-            target_url = target.get("url")
-            if not target_id or not target_url:
-                return None
-            session_id = self._ensure_session_id_for_target(target_id, timeout=timeout, allow_attach=allow_attach)
-            if not session_id:
-                return None
-            self._send_message("Runtime.enable", {}, session_id, timeout=self.cdp_send_timeout_ms / 1000)
-            probe = self._send_message("Runtime.evaluate", {
-                "expression": ready_expression,
-                "returnByValue": True,
-            }, session_id, timeout=self.cdp_send_timeout_ms / 1000)
-            if _json_object(probe.get("result")).get("value") is not True:
-                return None
-            match = EXT_ID_FROM_URL_RE.match(target_url)
-            if match is None:
-                return None
-            return {
-                "extension_id": match.group(1),
-                "target_id": target_id,
-                "url": target_url,
-                "session_id": session_id,
-            }
-
-        def discover_ready_service_worker(matched_only: bool = False) -> ExtensionInfo | None:
-            target_infos = self._target_infos()
-            if trust_service_worker_target:
-                for t in target_infos:
-                    if self._service_worker_target_matches(t):
-                        try:
-                            result = probe_target(t, timeout=self.service_worker_probe_timeout_ms / 1000, allow_attach=True)
-                        except Exception:
-                            result = None
-                        if result:
-                            return {"source": "trusted", **result}
-            if trust_service_worker_target or matched_only:
-                return None
-            for t in target_infos:
-                if t["type"] != "service_worker": continue
-                if not t["url"].startswith("chrome-extension://"): continue
-                try:
-                    result = probe_target(t, timeout=self.service_worker_probe_timeout_ms / 1000)
-                except Exception:
-                    continue
-                if result:
-                    return {"source": "discovered", **result}
-            return None
-
-        def wait_for_ready_service_worker(timeout: float, matched_only: bool = False) -> ExtensionInfo | None:
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                result = discover_ready_service_worker(matched_only=matched_only)
-                if result:
-                    return result
-                time.sleep(self.service_worker_poll_interval_ms / 1000)
-            return None
-
-        # 1. Discover an existing ModCDP service worker. Browserbase loads the
-        # extension for the session, but the service-worker target can appear a
-        # moment after the browser CDP websocket accepts connections.
-        discovered = discover_ready_service_worker()
-        if discovered:
-            return discovered
-        if self.require_service_worker_target:
-            discovered = wait_for_ready_service_worker(
-                self.service_worker_probe_timeout_ms / 1000,
-                matched_only=trust_service_worker_target,
-            )
-            if discovered:
-                return discovered
-            raise RuntimeError(
-                "Required ModCDP service worker target did not become ready "
-                f"({', '.join([*self.service_worker_url_includes, *self.service_worker_url_suffixes]) or 'no matcher'})."
-            )
-        if self.extension_path is None:
-            raise RuntimeError("extension_path is required when no existing ModCDP service worker can be discovered.")
-
-        # 2. Try Extensions.loadUnpacked.
-        try:
-            r = self._send_message("Extensions.loadUnpacked", {"path": self.extension_path})
-            extension_id = r.get("id") or r.get("extensionId")
-        except RuntimeError as e:
-            if "Method not available" in str(e) or "wasn't found" in str(e):
-                discovered = wait_for_ready_service_worker(
-                    self.service_worker_probe_timeout_ms / 1000,
-                    matched_only=trust_service_worker_target,
-                )
-                if discovered:
-                    return discovered
-                return self._borrow_extension_worker(str(e))
-            raise
-        if not isinstance(extension_id, str) or not extension_id:
-            raise RuntimeError(f"Extensions.loadUnpacked returned no id: {r}")
-
-        # 3. Wait for the loaded extension's SW.
-        sw_url_prefix = f"chrome-extension://{extension_id}/"
-        deadline = time.monotonic() + self.service_worker_ready_timeout_ms / 1000
-        while time.monotonic() < deadline:
-            for t in self._target_infos():
-                target_url = t.get("url") or ""
-                if t.get("type") == "service_worker" and target_url.startswith(sw_url_prefix):
-                    result = probe_target(t, timeout=self.service_worker_probe_timeout_ms / 1000, allow_attach=True)
-                    if result:
-                        return {
-                            "source": "injected", "extension_id": extension_id,
-                            "target_id": t["targetId"], "url": target_url, "session_id": result["session_id"],
-                        }
-            time.sleep(self.service_worker_poll_interval_ms / 1000)
-        raise RuntimeError(
-            f"Timed out after {self.service_worker_ready_timeout_ms}ms waiting for service worker target for extension {extension_id}."
-        )
-
-    def _service_worker_target_matches(self, target: TargetInfo) -> bool:
-        url = target.get("url") or ""
-        if target.get("type") != "service_worker" or not url.startswith("chrome-extension://"):
-            return False
-        if self.service_worker_url_includes and not all(part in url for part in self.service_worker_url_includes):
-            return False
-        if self.service_worker_url_suffixes and not any(url.endswith(suffix) for suffix in self.service_worker_url_suffixes):
-            return False
-        return bool(self.service_worker_url_includes or self.service_worker_url_suffixes)
-
-    def _borrow_extension_worker(self, load_error: str) -> ExtensionInfo:
-        if self.extension_path is None:
-            raise RuntimeError("extension_path is required to bootstrap a borrowed extension worker.")
-        borrowed: list[BorrowedExtensionInfo] = []
-        bootstrap = modcdp_server_bootstrap_expression(self.extension_path)
-        for t in self._target_infos():
-            target_id = t.get("targetId")
-            target_url = t.get("url") or ""
-            if t.get("type") != "service_worker": continue
-            if not target_id or not target_url.startswith("chrome-extension://"): continue
-            session_id = None
-            try:
-                session_id = self._session_id_for_target(target_id, timeout=2)
-                if not session_id:
-                    continue
-                try: self._send_message("Runtime.enable", {}, session_id, timeout=2)
-                except Exception: pass
-                result = self._send_message("Runtime.evaluate", {
-                    "expression": bootstrap,
-                    "awaitPromise": True,
-                    "returnByValue": True,
-                    "allowUnsafeEvalBlockedByCSP": True,
-                }, session_id, timeout=3)
-                result_object = result.get("result")
-                value = result_object.get("value") if isinstance(result_object, dict) else {}
-                if not isinstance(value, dict):
-                    value = {}
-                ready = bool(value.get("ok"))
-                if ready and self.service_worker_ready_expression:
-                    probe = self._send_message("Runtime.evaluate", {
-                        "expression": self._ready_expression(),
-                        "returnByValue": True,
-                    }, session_id, timeout=2)
-                    ready = _json_object(probe.get("result")).get("value") is True
-                if ready:
-                    m = EXT_ID_FROM_URL_RE.match(target_url)
-                    extension_id = value.get("extension_id") or (m.group(1) if m else None)
-                    if not isinstance(extension_id, str):
-                        continue
-                    borrowed.append({
-                        "source": "borrowed",
-                        "extension_id": extension_id,
-                        "target_id": target_id,
-                        "url": target_url,
-                        "session_id": session_id,
-                        "has_tabs": bool(value.get("has_tabs")),
-                        "has_debugger": bool(value.get("has_debugger")),
-                    })
-            except Exception:
-                pass
-        borrowed.sort(key=lambda item: (item.get("has_debugger", False), item.get("has_tabs", False)), reverse=True)
-        if borrowed:
-            selected = borrowed[0]
-            selected.pop("has_tabs", None)
-            selected.pop("has_debugger", None)
-            return selected
-        raise RuntimeError(
-            "Cannot install or borrow ModCDP in the running browser.\n"
-            "  - No existing service worker with globalThis.ModCDP was found.\n"
-            f"  - Extensions.loadUnpacked is unavailable ({load_error}).\n"
-            "  - No running chrome-extension:// service worker accepted the ModCDP bootstrap."
-        )
