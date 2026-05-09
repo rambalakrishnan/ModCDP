@@ -11,7 +11,7 @@ const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 
 test("BorrowedExtensionInjector bootstraps ModCDP inside a live extension service worker", async () => {
   const chrome = await new LocalBrowserLauncher({
-    headless: process.platform === "linux",
+    headless: true,
     sandbox: process.platform !== "linux",
     extra_args: [`--load-extension=${EXTENSION_PATH}`],
   }).launch();

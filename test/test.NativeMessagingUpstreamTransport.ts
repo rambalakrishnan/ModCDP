@@ -16,7 +16,7 @@ test.skipIf(process.platform === "win32")(
     const native_client = new ModCDPClient({
       launch: {
         mode: "local",
-        options: { headless: process.platform === "linux", sandbox: process.platform !== "linux" },
+        options: { headless: true, sandbox: process.platform !== "linux" },
       },
       upstream: { mode: "nativemessaging" },
       extension: {

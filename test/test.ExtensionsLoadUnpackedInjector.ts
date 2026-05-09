@@ -12,7 +12,7 @@ const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 
 test("ExtensionsLoadUnpackedInjector exercises the real CDP loadUnpacked path", async () => {
   const chrome = await new LocalBrowserLauncher({
-    headless: process.platform === "linux",
+    headless: true,
     sandbox: process.platform !== "linux",
   }).launch();
   const cdp = await CdpSocket.connect(chrome.ws_url!);

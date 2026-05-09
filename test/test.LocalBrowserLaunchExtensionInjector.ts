@@ -12,7 +12,7 @@ test("LocalBrowserLaunchExtensionInjector loads the real extension during local 
   const cdp = new ModCDPClient({
     launch: {
       mode: "local",
-      options: { headless: process.platform === "linux", sandbox: process.platform !== "linux" },
+      options: { headless: true, sandbox: process.platform !== "linux" },
     },
     upstream: { mode: "ws" },
     extension: {

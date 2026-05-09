@@ -74,7 +74,7 @@ test(
   { timeout: DEFAULT_ROUTED_OVERRIDES_TEST_TIMEOUT_MS },
   async () => {
     const chrome = await new LocalBrowserLauncher().launch({
-      headless: process.platform === "linux",
+      headless: true,
       sandbox: process.platform !== "linux",
       extra_args: [`--load-extension=${EXTENSION_PATH}`],
     });

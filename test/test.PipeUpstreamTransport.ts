@@ -12,7 +12,7 @@ test("pipe upstream launches a real browser and uses a pid-scoped pipe URL", asy
   const cdp = new ModCDPClient({
     launch: {
       mode: "local",
-      options: { headless: process.platform === "linux", sandbox: process.platform !== "linux" },
+      options: { headless: true, sandbox: process.platform !== "linux" },
     },
     upstream: { mode: "pipe" },
     extension: {

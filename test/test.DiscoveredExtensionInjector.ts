@@ -11,7 +11,7 @@ const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 
 test("DiscoveredExtensionInjector attaches to an already-loaded real ModCDP extension", async () => {
   const chrome = await new LocalBrowserLauncher({
-    headless: process.platform === "linux",
+    headless: true,
     sandbox: process.platform !== "linux",
     extra_args: [`--load-extension=${EXTENSION_PATH}`],
   }).launch();

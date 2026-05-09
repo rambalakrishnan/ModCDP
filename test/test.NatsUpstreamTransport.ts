@@ -89,7 +89,7 @@ test("nats upstream relays CDP through a real extension over a real NATS server"
   const nats_client = new ModCDPClient({
     launch: {
       mode: "local",
-      options: { headless: process.platform === "linux", sandbox: process.platform !== "linux" },
+      options: { headless: true, sandbox: process.platform !== "linux" },
     },
     upstream: {
       mode: "nats",

@@ -16,7 +16,7 @@ test("reversews upstream accepts a real extension reverse connection and routes 
   const reverse = new ModCDPClient({
     launch: {
       mode: "local",
-      options: { headless: process.platform === "linux", sandbox: process.platform !== "linux" },
+      options: { headless: true, sandbox: process.platform !== "linux" },
     },
     upstream: { mode: "reversews", reversews_bind: reverse_bind },
     extension: {

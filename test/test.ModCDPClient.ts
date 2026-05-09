@@ -8,11 +8,15 @@ import { ModCDPClient } from "../client/js/ModCDPClient.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test("ModCDPClient connects with nested launch/upstream/extension/client/server config", async () => {
   const cdp = new ModCDPClient({
     launch: {
       mode: "local",
-      options: { headless: process.platform === "linux", sandbox: process.platform !== "linux" },
+      options: { headless: true, sandbox: process.platform !== "linux" },
     },
     upstream: { mode: "ws" },
     extension: {
@@ -44,6 +48,26 @@ test("ModCDPClient connects with nested launch/upstream/extension/client/server 
     assert.equal(cdp.client.routes["*.*"], "direct_cdp");
     assert.equal(cdp.upstream_endpoint_kind, "raw_cdp");
     assert.match(cdp.cdp_url ?? "", /^ws:\/\//);
+    await delay(2_000);
+    const targets = (await cdp.sendRaw("Target.getTargets")) as {
+      targetInfos: { type?: string; url?: string }[];
+    };
+    assert.equal(
+      targets.targetInfos.some(
+        (target) =>
+          target.type === "service_worker" &&
+          target.url === `chrome-extension://${cdp.extension_id}/modcdp/service_worker.js`,
+      ),
+      true,
+    );
+    assert.equal(
+      targets.targetInfos.some(
+        (target) =>
+          target.type === "background_page" &&
+          target.url === `chrome-extension://${cdp.extension_id}/offscreen/keepalive.html`,
+      ),
+      true,
+    );
     assert.equal(typeof (await cdp.Browser.getVersion()).product, "string");
   } finally {
     await cdp.close();

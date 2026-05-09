@@ -20,7 +20,7 @@ class ProbeExtensionInjector extends ExtensionInjector {
 
 test("ExtensionInjector probes a real extension service worker with shared base config", async () => {
   const chrome = await new LocalBrowserLauncher({
-    headless: process.platform === "linux",
+    headless: true,
     sandbox: process.platform !== "linux",
     extra_args: [`--load-extension=${EXTENSION_PATH}`],
   }).launch();
