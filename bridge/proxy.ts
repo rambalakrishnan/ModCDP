@@ -94,6 +94,7 @@ export async function startProxy({
     mode?: string;
     ws_url?: string | null;
     nats_url?: string | null;
+    nats_subject_prefix?: string | null;
     reversews_bind?: string | null;
     nativemessaging_manifest?: string | null;
   };
@@ -107,12 +108,13 @@ export async function startProxy({
   const { WebSocket, WebSocketServer } = await loadWsForProxy();
   const upstreamMode = upstream.mode ?? "ws";
   const upstreamWsUrl = upstream.ws_url ?? (launch.mode === "local" ? null : DEFAULT_UPSTREAM);
+  const clientManagedUpstream = upstreamMode === "nativemessaging" || upstreamMode === "nats" || upstreamMode === "pipe";
   const reverseOptions =
     upstreamMode === "reversews"
       ? parseHostPort(upstream.reversews_bind ?? "127.0.0.1:29292", DEFAULT_HOST, 29292)
       : null;
   const reversePeer = reverseOptions ? createReversePeerState(reverseWaitTimeoutMs) : null;
-  const servesLocalDiscovery = Boolean(reversePeer) || upstreamMode === "nativemessaging";
+  const servesLocalDiscovery = Boolean(reversePeer) || clientManagedUpstream;
   const httpServer = http.createServer(async (req, res) => {
     try {
       const requestUrl = req.url === "/json/version/" ? "/json/version" : req.url;
@@ -206,15 +208,15 @@ export async function startProxy({
       });
       return;
     }
-    if (upstreamMode === "nativemessaging") {
-      handleModCDPServerConnection(client, earlyBuffer, earlyHandler, {
+    if (clientManagedUpstream) {
+      handleClientManagedConnection(client, earlyBuffer, earlyHandler, {
         launch,
         upstream: { ...upstream, mode: upstreamMode, ws_url: upstreamWsUrl },
         extension,
         clientRoutes,
         server: serverOptions,
       }).catch((err) => {
-        log("modcdp server connection failed:", err.message);
+        log("client-managed connection failed:", err.message);
         try {
           client.close(1011, err.message.slice(0, 120));
         } catch {}
@@ -249,7 +251,7 @@ export async function startProxy({
   }
 
   await new Promise<void>((resolve) => httpServer.listen(port, host, () => resolve()));
-  if (!reversePeer && upstreamMode !== "nativemessaging" && upstreamWsUrl && !isWsUrl(upstreamWsUrl)) {
+  if (!reversePeer && !clientManagedUpstream && upstreamWsUrl && !isWsUrl(upstreamWsUrl)) {
     stopUpstreamMonitor = monitorUpstream(
       upstreamWsUrl,
       upstreamMonitorIntervalMs,
@@ -262,8 +264,8 @@ export async function startProxy({
   log(
     reverseOptions
       ? `listening on ws://${host}:${port}/  (reverse: ws://${reverseOptions.host}:${reverseOptions.port})`
-      : upstreamMode === "nativemessaging"
-        ? `listening on ws://${host}:${port}/  (upstream: nativemessaging)`
+      : clientManagedUpstream
+        ? `listening on ws://${host}:${port}/  (upstream: ${upstreamMode})`
         : `listening on ws://${host}:${port}/  (upstream: ${upstreamMode}:${upstreamWsUrl ?? "local-launch"})`,
   );
 
@@ -703,7 +705,7 @@ async function handleConnection(
   state.queuedFromClient = [];
 }
 
-async function handleModCDPServerConnection(
+async function handleClientManagedConnection(
   client: WebSocket,
   earlyBuffer: RawData[],
   earlyHandler: (buf: RawData) => void,
@@ -718,6 +720,8 @@ async function handleModCDPServerConnection(
     upstream: {
       mode?: string;
       ws_url?: string | null;
+      nats_url?: string | null;
+      nats_subject_prefix?: string | null;
       nativemessaging_manifest?: string | null;
     };
     extension: { mode?: string; path?: string | null };
@@ -732,8 +736,10 @@ async function handleModCDPServerConnection(
       user_data_dir: launch.user_data_dir,
     },
     upstream: {
-      mode: upstream.mode as "nativemessaging",
+      mode: upstream.mode as "pipe" | "nativemessaging" | "nats",
       ws_url: upstream.ws_url,
+      nats_url: upstream.nats_url,
+      nats_subject_prefix: upstream.nats_subject_prefix,
       nativemessaging_manifest: upstream.nativemessaging_manifest,
     },
     extension: {
@@ -762,8 +768,14 @@ async function handleModCDPServerConnection(
       log("client parse error", e.message);
       return;
     }
-    void cdp
-      .sendRaw(msg.method, msg.params ?? {}, msg.sessionId ?? null)
+    const service_worker_params =
+      msg.sessionId && msg.params && typeof msg.params === "object" && !("cdpSessionId" in msg.params)
+        ? { ...msg.params, cdpSessionId: msg.sessionId }
+        : (msg.params ?? {});
+    const command_promise = ROUTE_TO_SW_RE.test(msg.method)
+      ? cdp.send(msg.method, service_worker_params)
+      : cdp.sendRaw(msg.method, msg.params ?? {}, msg.sessionId ?? null);
+    void command_promise
       .then((result) =>
         sendRawClientMessage(client, {
           id: msg.id,
@@ -1019,6 +1031,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       nats_url:
         typeof argv["upstream-nats-url"] === "string" && argv["upstream-nats-url"] !== "true"
           ? String(argv["upstream-nats-url"])
+          : null,
+      nats_subject_prefix:
+        typeof argv["upstream-nats-subject-prefix"] === "string" &&
+        argv["upstream-nats-subject-prefix"] !== "true"
+          ? String(argv["upstream-nats-subject-prefix"])
           : null,
       reversews_bind:
         typeof argv["upstream-reversews-bind"] === "string" && argv["upstream-reversews-bind"] !== "true"
