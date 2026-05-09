@@ -28,11 +28,14 @@ type ReverseWebSocketUpstreamTransport struct {
 	PeerInfo      map[string]any
 }
 
-func NewReverseWebSocketUpstreamTransport(bind string) *ReverseWebSocketUpstreamTransport {
+func NewReverseWebSocketUpstreamTransport(bind string, wait_timeout_ms int) *ReverseWebSocketUpstreamTransport {
 	if bind == "" {
 		bind = DefaultReverseWSBind
 	}
-	t := &ReverseWebSocketUpstreamTransport{WaitTimeoutMS: DefaultReverseWSWaitTimeoutMS, peerCh: make(chan struct{})}
+	if wait_timeout_ms == 0 {
+		wait_timeout_ms = DefaultReverseWSWaitTimeoutMS
+	}
+	t := &ReverseWebSocketUpstreamTransport{WaitTimeoutMS: wait_timeout_ms, peerCh: make(chan struct{})}
 	t.SetBind(bind)
 	return t
 }
@@ -62,6 +65,9 @@ func (t *ReverseWebSocketUpstreamTransport) Update(config map[string]any) {
 		t.SetBind(bind)
 	} else if rawURL, _ := config["url"].(string); rawURL != "" {
 		t.SetBind(rawURL)
+	}
+	if waitTimeoutMS, ok := intFromConfig(config["reversews_wait_timeout_ms"]); ok {
+		t.WaitTimeoutMS = waitTimeoutMS
 	}
 }
 
@@ -132,7 +138,9 @@ func (t *ReverseWebSocketUpstreamTransport) accept(conn net.Conn) {
 		t.emitClose(err)
 		return
 	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Duration(t.WaitTimeoutMS) * time.Millisecond))
 	helloBytes, err := wsutil.ReadClientText(conn)
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		_ = conn.Close()
 		t.emitClose(err)
@@ -167,5 +175,20 @@ func (t *ReverseWebSocketUpstreamTransport) accept(conn net.Conn) {
 		if err := json.Unmarshal(data, &message); err == nil {
 			t.emitRecv(message)
 		}
+	}
+}
+
+func intFromConfig(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case float32:
+		return int(typed), true
+	default:
+		return 0, false
 	}
 }

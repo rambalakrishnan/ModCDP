@@ -27,7 +27,7 @@ export class ReverseWebSocketUpstreamTransport extends UpstreamTransport {
 
   constructor(
     bind = DEFAULT_REVERSEWS_BIND,
-    private readonly wait_timeout_ms = DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS,
+    private wait_timeout_ms = DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS,
   ) {
     super();
     this.setBind(bind);
@@ -36,6 +36,7 @@ export class ReverseWebSocketUpstreamTransport extends UpstreamTransport {
   update(config: UpstreamTransportConfig = {}) {
     if (config.reversews_bind) this.setBind(config.reversews_bind);
     else if (config.url) this.setBind(config.url);
+    if (typeof config.reversews_wait_timeout_ms === "number") this.wait_timeout_ms = config.reversews_wait_timeout_ms;
     return this;
   }
 

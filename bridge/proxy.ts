@@ -88,7 +88,7 @@ export async function startProxy({
   server: serverOptions = {},
   forwardMirroredUpstreamEvents = false,
   upstreamMonitorIntervalMs = DEFAULT_UPSTREAM_MONITOR_INTERVAL_MS,
-  reverseWaitTimeoutMs = DEFAULT_REVERSE_WAIT_TIMEOUT_MS,
+  reverseWaitTimeoutMs = null,
 }: {
   host?: string;
   port?: number;
@@ -99,6 +99,7 @@ export async function startProxy({
     nats_url?: string | null;
     nats_subject_prefix?: string | null;
     reversews_bind?: string | null;
+    reversews_wait_timeout_ms?: number | null;
     nativemessaging_manifest?: string | null;
   };
   extension?: { mode?: string; path?: string | null };
@@ -106,17 +107,19 @@ export async function startProxy({
   server?: Record<string, unknown> | null;
   forwardMirroredUpstreamEvents?: boolean;
   upstreamMonitorIntervalMs?: number;
-  reverseWaitTimeoutMs?: number;
+  reverseWaitTimeoutMs?: number | null;
 } = {}) {
   const { WebSocket, WebSocketServer } = await loadWsForProxy();
   const upstreamMode = upstream.mode ?? "ws";
   const upstreamWsUrl = upstream.ws_url ?? (launch.mode === "local" ? null : DEFAULT_UPSTREAM);
   const clientManagedUpstream = upstreamMode === "nativemessaging" || upstreamMode === "nats" || upstreamMode === "pipe";
+  const reverse_wait_timeout_ms =
+    reverseWaitTimeoutMs ?? upstream.reversews_wait_timeout_ms ?? DEFAULT_REVERSE_WAIT_TIMEOUT_MS;
   const reverseOptions =
     upstreamMode === "reversews"
       ? parseHostPort(upstream.reversews_bind ?? "127.0.0.1:29292", DEFAULT_HOST, 29292)
       : null;
-  const reversePeer = reverseOptions ? createReversePeerState(reverseWaitTimeoutMs) : null;
+  const reversePeer = reverseOptions ? createReversePeerState(reverse_wait_timeout_ms) : null;
   const servesLocalDiscovery = Boolean(reversePeer) || clientManagedUpstream;
   const httpServer = http.createServer(async (req, res) => {
     try {
@@ -1058,6 +1061,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         typeof argv["upstream-reversews-bind"] === "string" && argv["upstream-reversews-bind"] !== "true"
           ? String(argv["upstream-reversews-bind"])
           : "127.0.0.1:29292",
+      reversews_wait_timeout_ms:
+        typeof argv["upstream-reversews-wait-timeout-ms"] === "string" &&
+        argv["upstream-reversews-wait-timeout-ms"] !== "true"
+          ? Number(argv["upstream-reversews-wait-timeout-ms"])
+          : null,
       nativemessaging_manifest:
         typeof argv["upstream-nativemessaging-manifest"] === "string" &&
         argv["upstream-nativemessaging-manifest"] !== "true"

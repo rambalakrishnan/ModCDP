@@ -19,6 +19,7 @@ export type UpstreamTransportConfig = {
   nats_url?: string | null;
   nats_subject_prefix?: string | null;
   reversews_bind?: string | null;
+  reversews_wait_timeout_ms?: number | null;
 };
 
 export class UpstreamTransport {

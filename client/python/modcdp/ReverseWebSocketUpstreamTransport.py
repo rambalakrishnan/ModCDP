@@ -39,6 +39,9 @@ class ReverseWebSocketUpstreamTransport(UpstreamTransport):
         bind = config.get("reversews_bind") or config.get("url")
         if isinstance(bind, str) and bind:
             self.setBind(bind)
+        wait_timeout_ms = config.get("reversews_wait_timeout_ms")
+        if isinstance(wait_timeout_ms, int | float):
+            self.wait_timeout_ms = int(wait_timeout_ms)
         return self
 
     def getInjectorConfig(self) -> dict[str, Any]:

@@ -30,6 +30,7 @@ import {
 } from "../../bridge/UpstreamTransport.js";
 import {
   DEFAULT_REVERSEWS_BIND,
+  DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS,
   ReverseWebSocketUpstreamTransport,
 } from "../../bridge/ReverseWebSocketUpstreamTransport.js";
 import { WebSocketUpstreamTransport } from "../../bridge/WebSocketUpstreamTransport.js";
@@ -111,6 +112,7 @@ type UpstreamOptions = {
   nats_url?: string | null;
   nats_subject_prefix?: string | null;
   reversews_bind?: string | null;
+  reversews_wait_timeout_ms?: number;
   nativemessaging_manifest?: string | null;
   ws_connect_error_settle_timeout_ms?: number;
 };
@@ -264,6 +266,7 @@ function normalizeClientOptions({
       nats_url: upstream.nats_url ?? null,
       nats_subject_prefix: upstream.nats_subject_prefix ?? null,
       reversews_bind: upstream.reversews_bind ?? DEFAULT_REVERSEWS_BIND,
+      reversews_wait_timeout_ms: upstream.reversews_wait_timeout_ms ?? DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS,
       nativemessaging_manifest: upstream.nativemessaging_manifest ?? null,
       ws_connect_error_settle_timeout_ms:
         upstream.ws_connect_error_settle_timeout_ms ?? DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS,
@@ -827,6 +830,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
       nats_url: this.upstream.nats_url,
       nats_subject_prefix: this.upstream.nats_subject_prefix,
       reversews_bind: this.upstream.reversews_bind,
+      reversews_wait_timeout_ms: this.upstream.reversews_wait_timeout_ms,
       manifest_path: this.upstream.nativemessaging_manifest,
       extension_id: this.extension.extension_id,
     };

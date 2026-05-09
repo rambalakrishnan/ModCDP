@@ -34,6 +34,7 @@ class ModCDPClientTests(unittest.TestCase):
             upstream={
                 "mode": "ws",
                 "ws_url": "http://127.0.0.1:9222",
+                "reversews_wait_timeout_ms": 456,
                 "ws_connect_error_settle_timeout_ms": 321,
             },
             extension={
@@ -68,6 +69,7 @@ class ModCDPClientTests(unittest.TestCase):
         self.assertEqual(cdp.launch["options"], {"headless": True})
         self.assertEqual(cdp._launch_options()["executable_path"], "/tmp/chrome")
         self.assertEqual(cdp._launch_options()["user_data_dir"], "/tmp/profile")
+        self.assertEqual(cdp.upstream["reversews_wait_timeout_ms"], 456)
         self.assertEqual(cdp.upstream["ws_connect_error_settle_timeout_ms"], 321)
         self.assertEqual(cdp.extension["execution_context_timeout_ms"], 4321)
         self.assertEqual(cdp.extension["service_worker_probe_timeout_ms"], 5432)

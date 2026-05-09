@@ -2,6 +2,26 @@ package modcdp
 
 import "testing"
 
+func TestPipeUpstreamTransportConstructorUpdateLauncherConfigAndUnconnectedErrorsMatchTransportSurface(t *testing.T) {
+	transport := NewPipeUpstreamTransport(nil, nil, "pipe://constructor")
+	if transport.URL != "pipe://constructor" {
+		t.Fatalf("URL = %q", transport.URL)
+	}
+	if launcherConfig := transport.GetLauncherConfig(); launcherConfig.RemoteDebugging != "pipe" {
+		t.Fatalf("launcher config = %#v", launcherConfig)
+	}
+	transport.Update(map[string]any{"cdp_url": "pipe://1234"})
+	if transport.URL != "pipe://1234" {
+		t.Fatalf("URL after update = %q", transport.URL)
+	}
+	if err := transport.Connect(); err == nil {
+		t.Fatal("expected Connect to require pipe handles")
+	}
+	if err := transport.Send(map[string]any{"id": 1, "method": "Browser.getVersion"}); err == nil {
+		t.Fatal("expected Send to require a connected pipe")
+	}
+}
+
 func TestPipeUpstreamTransportLaunchesRealBrowserAndUsesPIDScopedPipeURL(t *testing.T) {
 	cdp := New(Options{
 		Launch: LaunchConfig{

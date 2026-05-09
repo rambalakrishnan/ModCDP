@@ -2,23 +2,27 @@ package modcdp
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
-func TestReverseWebSocketUpstreamTransportConfigOwnsBindUpdatesAndInjectorConfig(t *testing.T) {
-	transport := NewReverseWebSocketUpstreamTransport("127.0.0.1:29292")
+func TestReverseWebSocketUpstreamTransportConfigOwnsBindUpdatesWaitTimeoutAndInjectorConfig(t *testing.T) {
+	transport := NewReverseWebSocketUpstreamTransport("127.0.0.1:29292", 10)
 	if transport.URL != "ws://127.0.0.1:29292" {
 		t.Fatalf("URL = %q", transport.URL)
 	}
 	if transport.GetInjectorConfig().ReverseProxyURL != "ws://127.0.0.1:29292" {
 		t.Fatalf("injector config = %#v", transport.GetInjectorConfig())
 	}
-	transport.Update(map[string]any{"reversews_bind": "127.0.0.1:29293"})
+	transport.Update(map[string]any{"reversews_bind": "127.0.0.1:29293", "reversews_wait_timeout_ms": 5})
 	if transport.URL != "ws://127.0.0.1:29293" {
 		t.Fatalf("URL after update = %q", transport.URL)
 	}
 	if transport.GetInjectorConfig().ReverseProxyURL != "ws://127.0.0.1:29293" {
 		t.Fatalf("injector config after update = %#v", transport.GetInjectorConfig())
+	}
+	if err := transport.WaitForPeer(); err == nil || !strings.Contains(err.Error(), "timed out waiting 5ms") {
+		t.Fatalf("WaitForPeer error = %v", err)
 	}
 }
 

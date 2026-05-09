@@ -29,6 +29,7 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 		Upstream: UpstreamConfig{
 			Mode:                          "ws",
 			WSURL:                         "http://127.0.0.1:9222",
+			ReverseWSWaitTimeoutMS:        456,
 			WSConnectErrorSettleTimeoutMS: 321,
 		},
 		Extension: ExtensionConfig{
@@ -68,6 +69,9 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 	}
 	if cdp.opts.Upstream.WSConnectErrorSettleTimeoutMS != 321 {
 		t.Fatalf("Upstream.WSConnectErrorSettleTimeoutMS = %d", cdp.opts.Upstream.WSConnectErrorSettleTimeoutMS)
+	}
+	if cdp.opts.Upstream.ReverseWSWaitTimeoutMS != 456 {
+		t.Fatalf("Upstream.ReverseWSWaitTimeoutMS = %d", cdp.opts.Upstream.ReverseWSWaitTimeoutMS)
 	}
 	if cdp.opts.Extension.ExecutionContextTimeoutMS != 4321 {
 		t.Fatalf("Extension.ExecutionContextTimeoutMS = %d", cdp.opts.Extension.ExecutionContextTimeoutMS)

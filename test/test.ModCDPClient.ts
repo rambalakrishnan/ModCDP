@@ -46,6 +46,7 @@ test("ModCDPClient connects with nested launch/upstream/extension/client/server 
     await cdp.connect();
     assert.equal(cdp.launch.mode, "local");
     assert.equal(cdp.upstream.mode, "ws");
+    assert.equal(cdp.upstream.reversews_wait_timeout_ms, 10_000);
     assert.equal(cdp.extension.mode, "auto");
     assert.equal(cdp.client.routes["*.*"], "direct_cdp");
     assert.equal(cdp.upstream_endpoint_kind, "raw_cdp");

@@ -52,7 +52,11 @@ from .RemoteBrowserLauncher import RemoteBrowserLauncher
 from .NativeMessagingUpstreamTransport import NativeMessagingUpstreamTransport
 from .NatsUpstreamTransport import NatsUpstreamTransport
 from .PipeUpstreamTransport import PipeUpstreamTransport
-from .ReverseWebSocketUpstreamTransport import ReverseWebSocketUpstreamTransport
+from .ReverseWebSocketUpstreamTransport import (
+    DEFAULT_REVERSEWS_BIND,
+    DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS,
+    ReverseWebSocketUpstreamTransport,
+)
 from .UpstreamTransport import UpstreamTransport
 from .WebSocketUpstreamTransport import WebSocketUpstreamTransport
 from .translate import (
@@ -252,7 +256,10 @@ class ModCDPClient(CDPSurfaceMixin):
             "ws_url": upstream_input.get("ws_url"),
             "nats_url": upstream_input.get("nats_url"),
             "nats_subject_prefix": upstream_input.get("nats_subject_prefix"),
-            "reversews_bind": upstream_input.get("reversews_bind"),
+            "reversews_bind": upstream_input.get("reversews_bind") or DEFAULT_REVERSEWS_BIND,
+            "reversews_wait_timeout_ms": int(
+                upstream_input.get("reversews_wait_timeout_ms") or DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS
+            ),
             "nativemessaging_manifest": upstream_input.get("nativemessaging_manifest"),
             "ws_connect_error_settle_timeout_ms": int(
                 upstream_input.get("ws_connect_error_settle_timeout_ms")
@@ -379,6 +386,7 @@ class ModCDPClient(CDPSurfaceMixin):
                     "nats_url": self.upstream.get("nats_url"),
                     "nats_subject_prefix": self.upstream.get("nats_subject_prefix"),
                     "reversews_bind": self.upstream.get("reversews_bind"),
+                    "reversews_wait_timeout_ms": self.upstream.get("reversews_wait_timeout_ms"),
                     "manifest_path": self.upstream.get("nativemessaging_manifest"),
                     "extension_id": self.extension.get("extension_id"),
                 }
@@ -760,7 +768,10 @@ class ModCDPClient(CDPSurfaceMixin):
         if mode == "pipe":
             return PipeUpstreamTransport()
         if mode == "reversews":
-            return ReverseWebSocketUpstreamTransport(str(self.upstream.get("reversews_bind") or "127.0.0.1:29292"))
+            return ReverseWebSocketUpstreamTransport(
+                str(self.upstream.get("reversews_bind") or DEFAULT_REVERSEWS_BIND),
+                int(self.upstream.get("reversews_wait_timeout_ms") or DEFAULT_REVERSEWS_WAIT_TIMEOUT_MS),
+            )
         if mode == "nativemessaging":
             return NativeMessagingUpstreamTransport({"manifest_path": self.upstream.get("nativemessaging_manifest")})
         if mode == "nats":

@@ -147,7 +147,7 @@ pnpm run proxy -- --upstream=reversews --upstream-reversews-bind=127.0.0.1:29292
 # const browser = await playwright.chromium.connectOverCDP("http://127.0.0.1:9223")
 ```
 
-Reverse mode is opt-in. The default extension does not dial a reverse websocket; loopback remains the default route. A reverse-specific launcher/test should call `globalThis.ModCDP.startReverseBridge("ws://127.0.0.1:29292", { reconnect_interval_ms: 2000 })`. Once it connects, it self-identifies as a ModCDP extension service worker and the proxy uses that reverse websocket as its upstream. `Mod.*`, expression-backed `Custom.*` commands, custom event fanout, middleware, and normal CDP commands all stay routed through `globalThis.ModCDP.handleCommand(...)` in the service worker.
+Reverse mode is opt-in. The default extension does not dial a reverse websocket; loopback remains the default route. A reverse-specific launcher/test should call `globalThis.ModCDP.startReverseBridge("ws://127.0.0.1:29292", { reconnect_interval_ms: 2000 })`. `--upstream-reversews-wait-timeout-ms` controls how long the proxy/client waits for that extension connection. Once it connects, it self-identifies as a ModCDP extension service worker and the proxy uses that reverse websocket as its upstream. `Mod.*`, expression-backed `Custom.*` commands, custom event fanout, middleware, and normal CDP commands all stay routed through `globalThis.ModCDP.handleCommand(...)` in the service worker.
 
 Reverse mode is intentionally scoped to one local browser and one reverse extension connection per proxy process. The browser may still have other extensions installed; ModCDP does not require `--disable-extensions-except`.
 

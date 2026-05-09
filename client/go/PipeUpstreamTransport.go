@@ -15,8 +15,11 @@ type PipeUpstreamTransport struct {
 	closed    bool
 }
 
-func NewPipeUpstreamTransport() *PipeUpstreamTransport {
-	return &PipeUpstreamTransport{}
+func NewPipeUpstreamTransport(pipe_read *os.File, pipe_write *os.File, url string) *PipeUpstreamTransport {
+	if url == "" {
+		url = "pipe://unknown"
+	}
+	return &PipeUpstreamTransport{URL: url, PipeRead: pipe_read, PipeWrite: pipe_write}
 }
 
 func (t *PipeUpstreamTransport) Update(config map[string]any) {
@@ -50,6 +53,9 @@ func (t *PipeUpstreamTransport) Connect() error {
 }
 
 func (t *PipeUpstreamTransport) Send(message map[string]any) error {
+	if t.PipeWrite == nil || t.closed {
+		return fmt.Errorf("CDP pipe is not connected")
+	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 	return writePipeMessage(t.PipeWrite, message)

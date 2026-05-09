@@ -176,6 +176,7 @@ type UpstreamConfig struct {
 	NATSURL                       string
 	NATSSubjectPrefix             string
 	ReverseWSBind                 string
+	ReverseWSWaitTimeoutMS        int
 	NativeMessagingManifest       string
 	WSConnectErrorSettleTimeoutMS int
 }
@@ -404,6 +405,12 @@ func New(opts Options) *ModCDPClient {
 	if opts.Upstream.WSConnectErrorSettleTimeoutMS == 0 {
 		opts.Upstream.WSConnectErrorSettleTimeoutMS = DefaultWSConnectErrorSettleTimeoutMS
 	}
+	if opts.Upstream.ReverseWSBind == "" {
+		opts.Upstream.ReverseWSBind = DefaultReverseWSBind
+	}
+	if opts.Upstream.ReverseWSWaitTimeoutMS == 0 {
+		opts.Upstream.ReverseWSWaitTimeoutMS = DefaultReverseWSWaitTimeoutMS
+	}
 	client := &ModCDPClient{
 		opts:                 opts,
 		pending:              map[int64]chan map[string]any{},
@@ -583,7 +590,7 @@ func (c *ModCDPClient) connectPipeRawCDPTransport(connectStartedAt int64) error 
 		return fmt.Errorf("upstream.mode=pipe requires launch.mode='local'")
 	}
 	transportStartedAt := time.Now().UnixMilli()
-	pipeTransport := NewPipeUpstreamTransport()
+	pipeTransport := NewPipeUpstreamTransport(nil, nil, "")
 	launcher := c.browserLauncher()
 	injectors := c.extensionInjectorsForConfig()
 	c.extensionInjectors = injectors
@@ -695,14 +702,15 @@ func (c *ModCDPClient) connectModCDPServerTransport(connectStartedAt int64) erro
 	c.extensionInjectors = injectors
 	launchOptions := mergeLaunchOptions(c.opts.Launch.Options, transport.GetLauncherConfig())
 	transport.Update(map[string]any{
-		"ws_url":              c.opts.Upstream.WSURL,
-		"cdp_url":             c.opts.Upstream.WSURL,
-		"nats_url":            c.opts.Upstream.NATSURL,
-		"nats_subject_prefix": c.opts.Upstream.NATSSubjectPrefix,
-		"reversews_bind":      c.opts.Upstream.ReverseWSBind,
-		"manifest_path":       c.opts.Upstream.NativeMessagingManifest,
-		"extension_id":        c.opts.Extension.ExtensionID,
-		"user_data_dir":       launchOptions.UserDataDir,
+		"ws_url":                    c.opts.Upstream.WSURL,
+		"cdp_url":                   c.opts.Upstream.WSURL,
+		"nats_url":                  c.opts.Upstream.NATSURL,
+		"nats_subject_prefix":       c.opts.Upstream.NATSSubjectPrefix,
+		"reversews_bind":            c.opts.Upstream.ReverseWSBind,
+		"reversews_wait_timeout_ms": c.opts.Upstream.ReverseWSWaitTimeoutMS,
+		"manifest_path":             c.opts.Upstream.NativeMessagingManifest,
+		"extension_id":              c.opts.Extension.ExtensionID,
+		"user_data_dir":             launchOptions.UserDataDir,
 	})
 
 	if c.opts.Extension.Mode != "none" {
@@ -1152,9 +1160,9 @@ func (c *ModCDPClient) upstreamTransport() interface {
 	case "ws":
 		return NewWebSocketUpstreamTransport(c.opts.Upstream.WSURL)
 	case "pipe":
-		return NewPipeUpstreamTransport()
+		return NewPipeUpstreamTransport(nil, nil, "")
 	case "reversews":
-		return NewReverseWebSocketUpstreamTransport(c.opts.Upstream.ReverseWSBind)
+		return NewReverseWebSocketUpstreamTransport(c.opts.Upstream.ReverseWSBind, c.opts.Upstream.ReverseWSWaitTimeoutMS)
 	case "nativemessaging":
 		return NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
 			ManifestPath: c.opts.Upstream.NativeMessagingManifest,

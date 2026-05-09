@@ -10,13 +10,14 @@ import { ModCDPClient } from "../client/js/ModCDPClient.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 
-test("reversews upstream config owns bind updates and injector config", () => {
-  const transport = new ReverseWebSocketUpstreamTransport("127.0.0.1:29292");
+test("reversews upstream config owns bind updates, wait timeout, and injector config", async () => {
+  const transport = new ReverseWebSocketUpstreamTransport("127.0.0.1:29292", 10);
   assert.equal(transport.url, "ws://127.0.0.1:29292");
   assert.deepEqual(transport.getInjectorConfig(), { reverse_proxy_url: "ws://127.0.0.1:29292" });
-  assert.equal(transport.update({ reversews_bind: "127.0.0.1:29293" }), transport);
+  assert.equal(transport.update({ reversews_bind: "127.0.0.1:29293", reversews_wait_timeout_ms: 5 }), transport);
   assert.equal(transport.url, "ws://127.0.0.1:29293");
   assert.deepEqual(transport.getInjectorConfig(), { reverse_proxy_url: "ws://127.0.0.1:29293" });
+  await assert.rejects(() => transport.waitForPeer(), /Timed out waiting 5ms/);
 });
 
 test("reversews upstream accepts a real extension reverse connection and routes CDP through loopback", async () => {
