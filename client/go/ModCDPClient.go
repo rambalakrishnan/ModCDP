@@ -357,6 +357,7 @@ type ModCDPClient struct {
 	ExtensionID             string
 	ExtTargetID             string
 	ExtSessionID            string
+	ExtExecutionContextID   int
 	Latency                 map[string]any
 	ConnectTiming           map[string]any
 	LastCommandTiming       map[string]any
@@ -567,6 +568,12 @@ func (c *ModCDPClient) Connect() error {
 		c.Close()
 		return err
 	}
+	extExecutionContextID, err := c.autoSessions.WaitForExecutionContext(c.ExtSessionID, c.Extension.ExecutionContextTimeoutMS)
+	if err != nil {
+		c.Close()
+		return err
+	}
+	c.ExtExecutionContextID = extExecutionContextID
 	if _, err := c.sendMessage("Runtime.addBinding", map[string]any{"name": customEventBindingName}, c.ExtSessionID); err != nil {
 		c.Close()
 		return err
@@ -1409,6 +1416,14 @@ func formatInjectorErrors(errors []string) string {
 	return "\n\n" + strings.Join(errors, "\n")
 }
 
+func cloneMap(value map[string]any) map[string]any {
+	cloned := map[string]any{}
+	for key, item := range value {
+		cloned[key] = item
+	}
+	return cloned
+}
+
 func (c *ModCDPClient) sendRaw(command rawCommand) (any, error) {
 	if command.Target == "direct_cdp" {
 		step := command.Steps[0]
@@ -1421,7 +1436,24 @@ func (c *ModCDPClient) sendRaw(command rawCommand) (any, error) {
 	var result map[string]any
 	unwrap := ""
 	for _, step := range command.Steps {
-		r, err := c.sendMessage(step.Method, step.Params, c.ExtSessionID)
+		params := step.Params
+		if params == nil {
+			params = map[string]any{}
+		}
+		if step.Method == "Runtime.callFunctionOn" {
+			if _, exists := params["executionContextId"]; !exists {
+				if c.ExtExecutionContextID == 0 {
+					contextID, err := c.autoSessions.WaitForExecutionContext(c.ExtSessionID, c.Extension.ExecutionContextTimeoutMS)
+					if err != nil {
+						return nil, err
+					}
+					c.ExtExecutionContextID = contextID
+				}
+				params = cloneMap(params)
+				params["executionContextId"] = c.ExtExecutionContextID
+			}
+		}
+		r, err := c.sendMessage(step.Method, params, c.ExtSessionID)
 		if err != nil {
 			return nil, err
 		}

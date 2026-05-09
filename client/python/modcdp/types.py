@@ -98,7 +98,7 @@ class ModCDPServerConfig(TypedDict, total=False):
     custom_middlewares: list[ModCDPAddMiddlewareParams]
 
 
-RuntimeEvaluateParams: TypeAlias = dict[str, JsonValue]
+RuntimeCallFunctionOnParams: TypeAlias = dict[str, JsonValue]
 
 
 class _TranslatedStepRequired(TypedDict):
@@ -108,7 +108,7 @@ class _TranslatedStepRequired(TypedDict):
 class TranslatedStep(_TranslatedStepRequired, total=False):
     params: MessageParams
     sessionId: str | None
-    unwrap: Literal["evaluate"]
+    unwrap: Literal["runtime"]
 
 
 class TranslatedCommand(TypedDict):

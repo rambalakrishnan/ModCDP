@@ -313,6 +313,7 @@ class ModCDPClient(CDPSurfaceMixin):
         self.extension_id: str | None = None
         self.ext_target_id: str | None = None
         self.ext_session_id: str | None = None
+        self.ext_execution_context_id: int | None = None
         self.latency: ModCDPPingLatency | None = None
         self.connect_timing: ModCDPConnectTiming | None = None
         self.last_command_timing: ModCDPCommandTiming | None = None
@@ -383,6 +384,10 @@ class ModCDPClient(CDPSurfaceMixin):
         self.ext_target_id = ext["target_id"]
         self.ext_session_id = ext["session_id"]
         self._send_message("Runtime.enable", {}, self.ext_session_id)
+        self.ext_execution_context_id = self.auto_sessions.waitForExecutionContext(
+            self.ext_session_id,
+            self.extension["execution_context_timeout_ms"],
+        )
         self._send_message("Runtime.addBinding", {"name": CUSTOM_EVENT_BINDING_NAME}, self.ext_session_id)
         if self.client["mirror_upstream_events"]:
             self._send_message("Runtime.addBinding", {"name": UPSTREAM_EVENT_BINDING_NAME}, self.ext_session_id)
@@ -874,7 +879,15 @@ class ModCDPClient(CDPSurfaceMixin):
         result: ProtocolResult = {}
         unwrap: str | None = None
         for step in wrapped["steps"]:
-            result = self._send_message(step["method"], step.get("params") or {}, self.ext_session_id)
+            params = dict(step.get("params") or {})
+            if step["method"] == "Runtime.callFunctionOn" and "executionContextId" not in params:
+                if self.ext_execution_context_id is None:
+                    self.ext_execution_context_id = self.auto_sessions.waitForExecutionContext(
+                        self.ext_session_id,
+                        self.extension["execution_context_timeout_ms"],
+                    )
+                params["executionContextId"] = self.ext_execution_context_id
+            result = self._send_message(step["method"], params, self.ext_session_id)
             unwrap = step.get("unwrap")
         return unwrap_response_if_needed(result, unwrap)
 

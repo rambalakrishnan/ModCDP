@@ -34,17 +34,17 @@ func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t
 	if wrapped.Target != "service_worker" {
 		t.Fatalf("wrapped.Target = %q", wrapped.Target)
 	}
-	if wrapped.Steps[0].Method != "Runtime.evaluate" {
+	if wrapped.Steps[0].Method != "Runtime.callFunctionOn" {
 		t.Fatalf("wrapped step = %#v", wrapped.Steps[0])
 	}
-	if !strings.Contains(stringValue(wrapped.Steps[0].Params["expression"]), `attachToSession("session-1")`) {
-		t.Fatalf("expression = %s", wrapped.Steps[0].Params["expression"])
+	if !strings.Contains(stringValue(wrapped.Steps[0].Params["functionDeclaration"]), `attachToSession("session-1")`) {
+		t.Fatalf("functionDeclaration = %s", wrapped.Steps[0].Params["functionDeclaration"])
 	}
-	if wrapped.Steps[0].Unwrap != "evaluate" {
+	if wrapped.Steps[0].Unwrap != "runtime" {
 		t.Fatalf("unwrap = %q", wrapped.Steps[0].Unwrap)
 	}
 
-	unwrapped, err := unwrapResponseIfNeeded(map[string]any{"result": map[string]any{"type": "object", "value": map[string]any{"ok": true}}}, "evaluate")
+	unwrapped, err := unwrapResponseIfNeeded(map[string]any{"result": map[string]any{"type": "object", "value": map[string]any{"ok": true}}}, "runtime")
 	if err != nil {
 		t.Fatal(err)
 	}
