@@ -103,8 +103,8 @@ func TestModCDPClientRoutedDefaultOverrides(t *testing.T) {
 	if cdp.CDPURL != chrome.WSURL {
 		t.Fatalf("CDPURL = %q, expected %q", cdp.CDPURL, chrome.WSURL)
 	}
-	if cdp.opts.Server.LoopbackCDPURL != chrome.WSURL {
-		t.Fatalf("LoopbackCDPURL = %q, expected %q", cdp.opts.Server.LoopbackCDPURL, chrome.WSURL)
+	if cdp.Server.LoopbackCDPURL != chrome.WSURL {
+		t.Fatalf("LoopbackCDPURL = %q, expected %q", cdp.Server.LoopbackCDPURL, chrome.WSURL)
 	}
 
 	rawTargets, err := cdp.sendMessage("Target.getTargets", map[string]any{}, "")

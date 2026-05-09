@@ -65,53 +65,56 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 		},
 	})
 
-	if cdp.opts.Launch.Options.ExecutablePath != "/tmp/chrome" {
-		t.Fatalf("Launch.Options.ExecutablePath = %q", cdp.opts.Launch.Options.ExecutablePath)
+	if cdp.Launch.Options.ExecutablePath != "/tmp/chrome" {
+		t.Fatalf("Launch.Options.ExecutablePath = %q", cdp.Launch.Options.ExecutablePath)
 	}
-	if cdp.opts.Launch.Options.UserDataDir != "/tmp/profile" {
-		t.Fatalf("Launch.Options.UserDataDir = %q", cdp.opts.Launch.Options.UserDataDir)
+	if cdp.Launch.Options.UserDataDir != "/tmp/profile" {
+		t.Fatalf("Launch.Options.UserDataDir = %q", cdp.Launch.Options.UserDataDir)
 	}
-	if cdp.opts.Upstream.WSConnectErrorSettleTimeoutMS != 321 {
-		t.Fatalf("Upstream.WSConnectErrorSettleTimeoutMS = %d", cdp.opts.Upstream.WSConnectErrorSettleTimeoutMS)
+	if cdp.Upstream.WSConnectErrorSettleTimeoutMS != 321 {
+		t.Fatalf("Upstream.WSConnectErrorSettleTimeoutMS = %d", cdp.Upstream.WSConnectErrorSettleTimeoutMS)
 	}
-	if cdp.opts.Upstream.ReverseWSWaitTimeoutMS != 456 {
-		t.Fatalf("Upstream.ReverseWSWaitTimeoutMS = %d", cdp.opts.Upstream.ReverseWSWaitTimeoutMS)
+	if cdp.Upstream.ReverseWSWaitTimeoutMS != 456 {
+		t.Fatalf("Upstream.ReverseWSWaitTimeoutMS = %d", cdp.Upstream.ReverseWSWaitTimeoutMS)
 	}
-	if cdp.opts.Upstream.NativeMessagingHostName != "com.modcdp.custom" {
-		t.Fatalf("Upstream.NativeMessagingHostName = %q", cdp.opts.Upstream.NativeMessagingHostName)
+	if cdp.Upstream.NativeMessagingHostName != "com.modcdp.custom" {
+		t.Fatalf("Upstream.NativeMessagingHostName = %q", cdp.Upstream.NativeMessagingHostName)
 	}
-	if cdp.opts.Extension.ExecutionContextTimeoutMS != 4321 {
-		t.Fatalf("Extension.ExecutionContextTimeoutMS = %d", cdp.opts.Extension.ExecutionContextTimeoutMS)
+	if cdp.Extension.ExecutionContextTimeoutMS != 4321 {
+		t.Fatalf("Extension.ExecutionContextTimeoutMS = %d", cdp.Extension.ExecutionContextTimeoutMS)
 	}
-	if cdp.opts.Extension.ServiceWorkerProbeTimeoutMS != 5432 {
-		t.Fatalf("Extension.ServiceWorkerProbeTimeoutMS = %d", cdp.opts.Extension.ServiceWorkerProbeTimeoutMS)
+	if cdp.Extension.ServiceWorkerProbeTimeoutMS != 5432 {
+		t.Fatalf("Extension.ServiceWorkerProbeTimeoutMS = %d", cdp.Extension.ServiceWorkerProbeTimeoutMS)
 	}
-	if cdp.opts.Extension.ServiceWorkerReadyTimeoutMS != 6543 {
-		t.Fatalf("Extension.ServiceWorkerReadyTimeoutMS = %d", cdp.opts.Extension.ServiceWorkerReadyTimeoutMS)
+	if cdp.Extension.ServiceWorkerReadyTimeoutMS != 6543 {
+		t.Fatalf("Extension.ServiceWorkerReadyTimeoutMS = %d", cdp.Extension.ServiceWorkerReadyTimeoutMS)
 	}
-	if cdp.opts.Extension.ServiceWorkerPollIntervalMS != 76 {
-		t.Fatalf("Extension.ServiceWorkerPollIntervalMS = %d", cdp.opts.Extension.ServiceWorkerPollIntervalMS)
+	if cdp.Extension.ServiceWorkerPollIntervalMS != 76 {
+		t.Fatalf("Extension.ServiceWorkerPollIntervalMS = %d", cdp.Extension.ServiceWorkerPollIntervalMS)
 	}
-	if cdp.opts.Extension.TargetSessionPollIntervalMS != 87 {
-		t.Fatalf("Extension.TargetSessionPollIntervalMS = %d", cdp.opts.Extension.TargetSessionPollIntervalMS)
+	if cdp.Extension.TargetSessionPollIntervalMS != 87 {
+		t.Fatalf("Extension.TargetSessionPollIntervalMS = %d", cdp.Extension.TargetSessionPollIntervalMS)
 	}
-	if cdp.opts.Client.Routes["*.*"] != "direct_cdp" {
-		t.Fatalf("Client.Routes[*.*] = %q", cdp.opts.Client.Routes["*.*"])
+	if cdp.Client.Routes["*.*"] != "direct_cdp" {
+		t.Fatalf("Client.Routes[*.*] = %q", cdp.Client.Routes["*.*"])
 	}
-	if cdp.opts.Client.HydrateAliases == nil || *cdp.opts.Client.HydrateAliases {
-		t.Fatalf("Client.HydrateAliases = %#v", cdp.opts.Client.HydrateAliases)
+	if cdp.Client.HydrateAliases == nil || *cdp.Client.HydrateAliases {
+		t.Fatalf("Client.HydrateAliases = %#v", cdp.Client.HydrateAliases)
 	}
 	if _, err := cdp.Browser.GetVersion(); err == nil || !strings.Contains(err.Error(), "client.hydrate_aliases is false") {
 		t.Fatalf("Browser.GetVersion with aliases disabled error = %v", err)
 	}
-	if cdp.opts.Client.MirrorUpstreamEvents == nil || *cdp.opts.Client.MirrorUpstreamEvents {
-		t.Fatalf("Client.MirrorUpstreamEvents = %#v", cdp.opts.Client.MirrorUpstreamEvents)
+	if cdp.Client.MirrorUpstreamEvents == nil || *cdp.Client.MirrorUpstreamEvents {
+		t.Fatalf("Client.MirrorUpstreamEvents = %#v", cdp.Client.MirrorUpstreamEvents)
 	}
-	if cdp.opts.Client.CDPSendTimeoutMS != 1234 {
-		t.Fatalf("Client.CDPSendTimeoutMS = %d", cdp.opts.Client.CDPSendTimeoutMS)
+	if cdp.Client.CDPSendTimeoutMS != 1234 {
+		t.Fatalf("Client.CDPSendTimeoutMS = %d", cdp.Client.CDPSendTimeoutMS)
 	}
-	if cdp.opts.Client.EventWaitTimeoutMS != 2345 {
-		t.Fatalf("Client.EventWaitTimeoutMS = %d", cdp.opts.Client.EventWaitTimeoutMS)
+	if cdp.Client.EventWaitTimeoutMS != 2345 {
+		t.Fatalf("Client.EventWaitTimeoutMS = %d", cdp.Client.EventWaitTimeoutMS)
+	}
+	if cdp.UpstreamEndpointKind != UpstreamEndpointKindRawCDP {
+		t.Fatalf("UpstreamEndpointKind = %q", cdp.UpstreamEndpointKind)
 	}
 
 	params := cdp.serverConfigureParams(nil, nil, nil)
@@ -227,8 +230,8 @@ func TestModCDPClientPreservesExplicitEmptyServiceWorkerSuffixConfig(t *testing.
 		},
 	})
 
-	if len(cdp.opts.Extension.ServiceWorkerURLSuffixes) != 0 {
-		t.Fatalf("ServiceWorkerURLSuffixes = %#v", cdp.opts.Extension.ServiceWorkerURLSuffixes)
+	if len(cdp.Extension.ServiceWorkerURLSuffixes) != 0 {
+		t.Fatalf("ServiceWorkerURLSuffixes = %#v", cdp.Extension.ServiceWorkerURLSuffixes)
 	}
 	injectorConfig := cdp.baseExtensionInjectorConfig(nil)
 	if len(injectorConfig.ServiceWorkerURLSuffixes) != 0 {
@@ -239,8 +242,8 @@ func TestModCDPClientPreservesExplicitEmptyServiceWorkerSuffixConfig(t *testing.
 func TestModCDPClientDefaultsServiceWorkerSuffixConfigToModCDPWorker(t *testing.T) {
 	cdp := New(Options{})
 
-	if len(cdp.opts.Extension.ServiceWorkerURLSuffixes) != 1 || cdp.opts.Extension.ServiceWorkerURLSuffixes[0] != "/modcdp/service_worker.js" {
-		t.Fatalf("ServiceWorkerURLSuffixes = %#v", cdp.opts.Extension.ServiceWorkerURLSuffixes)
+	if len(cdp.Extension.ServiceWorkerURLSuffixes) != 1 || cdp.Extension.ServiceWorkerURLSuffixes[0] != "/modcdp/service_worker.js" {
+		t.Fatalf("ServiceWorkerURLSuffixes = %#v", cdp.Extension.ServiceWorkerURLSuffixes)
 	}
 	injectorConfig := cdp.baseExtensionInjectorConfig(nil)
 	if len(injectorConfig.ServiceWorkerURLSuffixes) != 1 || injectorConfig.ServiceWorkerURLSuffixes[0] != "/modcdp/service_worker.js" {
@@ -254,27 +257,33 @@ func TestModCDPClientDefaultsLaunchedModCDPServerUpstreamsToExtensionAuto(t *tes
 			Launch:   LaunchConfig{Mode: "local"},
 			Upstream: UpstreamConfig{Mode: mode},
 		})
-		if launched.opts.Launch.Mode != "local" {
-			t.Fatalf("%s launched Launch.Mode = %q", mode, launched.opts.Launch.Mode)
+		if launched.Launch.Mode != "local" {
+			t.Fatalf("%s launched Launch.Mode = %q", mode, launched.Launch.Mode)
 		}
-		if endpointKindForUpstream(launched.opts.Upstream.Mode) != UpstreamEndpointKindModCDPServer {
-			t.Fatalf("%s launched endpoint kind = %q", mode, endpointKindForUpstream(launched.opts.Upstream.Mode))
+		if endpointKindForUpstream(launched.Upstream.Mode) != UpstreamEndpointKindModCDPServer {
+			t.Fatalf("%s launched endpoint kind = %q", mode, endpointKindForUpstream(launched.Upstream.Mode))
 		}
-		if launched.opts.Extension.Mode != "auto" {
-			t.Fatalf("%s launched Extension.Mode = %q", mode, launched.opts.Extension.Mode)
+		if launched.UpstreamEndpointKind != UpstreamEndpointKindModCDPServer {
+			t.Fatalf("%s launched UpstreamEndpointKind = %q", mode, launched.UpstreamEndpointKind)
+		}
+		if launched.Extension.Mode != "auto" {
+			t.Fatalf("%s launched Extension.Mode = %q", mode, launched.Extension.Mode)
 		}
 
 		attachOnly := New(Options{
 			Upstream: UpstreamConfig{Mode: mode},
 		})
-		if attachOnly.opts.Launch.Mode != "none" {
-			t.Fatalf("%s attach-only Launch.Mode = %q", mode, attachOnly.opts.Launch.Mode)
+		if attachOnly.Launch.Mode != "none" {
+			t.Fatalf("%s attach-only Launch.Mode = %q", mode, attachOnly.Launch.Mode)
 		}
-		if endpointKindForUpstream(attachOnly.opts.Upstream.Mode) != UpstreamEndpointKindModCDPServer {
-			t.Fatalf("%s attach-only endpoint kind = %q", mode, endpointKindForUpstream(attachOnly.opts.Upstream.Mode))
+		if endpointKindForUpstream(attachOnly.Upstream.Mode) != UpstreamEndpointKindModCDPServer {
+			t.Fatalf("%s attach-only endpoint kind = %q", mode, endpointKindForUpstream(attachOnly.Upstream.Mode))
 		}
-		if attachOnly.opts.Extension.Mode != "none" {
-			t.Fatalf("%s attach-only Extension.Mode = %q", mode, attachOnly.opts.Extension.Mode)
+		if attachOnly.UpstreamEndpointKind != UpstreamEndpointKindModCDPServer {
+			t.Fatalf("%s attach-only UpstreamEndpointKind = %q", mode, attachOnly.UpstreamEndpointKind)
+		}
+		if attachOnly.Extension.Mode != "none" {
+			t.Fatalf("%s attach-only Extension.Mode = %q", mode, attachOnly.Extension.Mode)
 		}
 	}
 }

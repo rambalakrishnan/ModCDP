@@ -298,7 +298,15 @@ type ModCDPClient struct {
 	WebAuthn             WebAuthnDomain
 	Mod                  ModDomain
 
-	opts                    Options
+	Launch                  LaunchConfig
+	Upstream                UpstreamConfig
+	Extension               ExtensionConfig
+	Client                  ClientConfig
+	Server                  *ServerConfig
+	CustomCommands          []CustomCommand
+	CustomEvents            []CustomEvent
+	CustomMiddlewares       []CustomMiddleware
+	UpstreamEndpointKind    UpstreamEndpointKind
 	CDPURL                  string
 	transport               upstreamTransportClient
 	mu                      sync.Mutex
@@ -357,12 +365,12 @@ func New(opts Options) *ModCDPClient {
 	if opts.Upstream.Mode == "" {
 		opts.Upstream.Mode = "ws"
 	}
-	upstreamEndpointKind := "modcdp_server"
+	upstreamEndpointKind := UpstreamEndpointKindModCDPServer
 	if opts.Upstream.Mode == "ws" || opts.Upstream.Mode == "pipe" {
-		upstreamEndpointKind = "raw_cdp"
+		upstreamEndpointKind = UpstreamEndpointKindRawCDP
 	}
 	if opts.Launch.Mode == "" {
-		if upstreamEndpointKind == "modcdp_server" {
+		if upstreamEndpointKind == UpstreamEndpointKindModCDPServer {
 			opts.Launch.Mode = "none"
 		} else if opts.Upstream.WSURL != "" {
 			opts.Launch.Mode = "remote"
@@ -371,7 +379,7 @@ func New(opts Options) *ModCDPClient {
 		}
 	}
 	if opts.Extension.Mode == "" {
-		if upstreamEndpointKind == "raw_cdp" || opts.Launch.Mode != "none" {
+		if upstreamEndpointKind == UpstreamEndpointKindRawCDP || opts.Launch.Mode != "none" {
 			opts.Extension.Mode = "auto"
 		} else {
 			opts.Extension.Mode = "none"
@@ -399,7 +407,7 @@ func New(opts Options) *ModCDPClient {
 	if opts.Server == nil {
 		opts.Server = &ServerConfig{}
 	}
-	if upstreamEndpointKind == "modcdp_server" && opts.Server.Routes == nil {
+	if upstreamEndpointKind == UpstreamEndpointKindModCDPServer && opts.Server.Routes == nil {
 		opts.Server.Routes = map[string]string{"*.*": "chrome_debugger"}
 	}
 	if opts.Extension.ServiceWorkerURLSuffixes == nil {
@@ -436,7 +444,15 @@ func New(opts Options) *ModCDPClient {
 		opts.Upstream.ReverseWSWaitTimeoutMS = DefaultReverseWSWaitTimeoutMS
 	}
 	client := &ModCDPClient{
-		opts:                    opts,
+		Launch:                  opts.Launch,
+		Upstream:                opts.Upstream,
+		Extension:               opts.Extension,
+		Client:                  opts.Client,
+		Server:                  opts.Server,
+		CustomCommands:          opts.CustomCommands,
+		CustomEvents:            opts.CustomEvents,
+		CustomMiddlewares:       opts.CustomMiddlewares,
+		UpstreamEndpointKind:    upstreamEndpointKind,
 		pending:                 map[int64]chan map[string]any{},
 		handlers:                map[string][]handlerEntry{},
 		cdpHandlers:             map[string][]func(CDPEvent){},
@@ -450,9 +466,9 @@ func New(opts Options) *ModCDPClient {
 		func(method string, params map[string]any, sessionID string) (map[string]any, error) {
 			return client.sendMessage(method, params, sessionID)
 		},
-		func() int { return client.opts.Extension.ExecutionContextTimeoutMS },
+		func() int { return client.Extension.ExecutionContextTimeoutMS },
 	)
-	if *opts.Client.HydrateAliases {
+	if *client.Client.HydrateAliases {
 		initCDPSurface(client)
 	}
 	client.hydrateCustomSurface()
@@ -471,12 +487,12 @@ func (c *ModCDPClient) Connect() error {
 	}
 	c.transport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
 	c.transport.OnClose(func(err error) { c.rejectAll(err) })
-	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
+	if endpointKindForUpstream(c.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
 		if err := c.transport.WaitForPeer(); err != nil {
 			c.Close()
 			return err
 		}
-		if c.opts.Server != nil {
+		if c.Server != nil {
 			if _, err := c.sendMessage("Mod.configure", c.serverConfigureParams(nil, nil, nil), ""); err != nil {
 				c.Close()
 				return err
@@ -486,8 +502,8 @@ func (c *ModCDPClient) Connect() error {
 		connectedAt := time.Now().UnixMilli()
 		c.ConnectTiming = map[string]any{
 			"started_at":             connectStartedAt,
-			"upstream_mode":          c.opts.Upstream.Mode,
-			"upstream_endpoint_kind": endpointKindForUpstream(c.opts.Upstream.Mode),
+			"upstream_mode":          c.Upstream.Mode,
+			"upstream_endpoint_kind": endpointKindForUpstream(c.Upstream.Mode),
 			"transport_started_at":   transportStartedAt,
 			"transport_connected_at": transportConnectedAt,
 			"transport_duration_ms":  transportConnectedAt - transportStartedAt,
@@ -519,8 +535,8 @@ func (c *ModCDPClient) Connect() error {
 		return err
 	}
 	mirrorUpstreamEvents := true
-	if c.opts.Client.MirrorUpstreamEvents != nil {
-		mirrorUpstreamEvents = *c.opts.Client.MirrorUpstreamEvents
+	if c.Client.MirrorUpstreamEvents != nil {
+		mirrorUpstreamEvents = *c.Client.MirrorUpstreamEvents
 	}
 	if mirrorUpstreamEvents {
 		if _, err := c.sendMessage("Runtime.addBinding", map[string]any{"name": upstreamEventBindingName}, c.ExtSessionID); err != nil {
@@ -529,9 +545,9 @@ func (c *ModCDPClient) Connect() error {
 		}
 	}
 
-	if c.opts.Server != nil {
-		customCommands := make([]map[string]any, 0, len(c.opts.CustomCommands))
-		for _, command := range c.opts.CustomCommands {
+	if c.Server != nil {
+		customCommands := make([]map[string]any, 0, len(c.CustomCommands))
+		for _, command := range c.CustomCommands {
 			if command.Expression == "" {
 				continue
 			}
@@ -542,15 +558,15 @@ func (c *ModCDPClient) Connect() error {
 				"result_schema": command.ResultSchema,
 			})
 		}
-		customEvents := make([]map[string]any, 0, len(c.opts.CustomEvents))
-		for _, event := range c.opts.CustomEvents {
+		customEvents := make([]map[string]any, 0, len(c.CustomEvents))
+		for _, event := range c.CustomEvents {
 			customEvents = append(customEvents, map[string]any{
 				"name":         event.Name,
 				"event_schema": event.EventSchema,
 			})
 		}
-		customMiddlewares := make([]map[string]any, 0, len(c.opts.CustomMiddlewares))
-		for _, middleware := range c.opts.CustomMiddlewares {
+		customMiddlewares := make([]map[string]any, 0, len(c.CustomMiddlewares))
+		for _, middleware := range c.CustomMiddlewares {
 			item := map[string]any{
 				"phase":      middleware.Phase,
 				"expression": middleware.Expression,
@@ -561,7 +577,7 @@ func (c *ModCDPClient) Connect() error {
 			customMiddlewares = append(customMiddlewares, item)
 		}
 		configureParams := c.serverConfigureParams(customCommands, customEvents, customMiddlewares)
-		command, err := wrapCommandIfNeeded("Mod.configure", configureParams, c.opts.Client.Routes, c.ExtSessionID)
+		command, err := wrapCommandIfNeeded("Mod.configure", configureParams, c.Client.Routes, c.ExtSessionID)
 		if err != nil {
 			c.Close()
 			return fmt.Errorf("Mod.configure: %w", err)
@@ -575,8 +591,8 @@ func (c *ModCDPClient) Connect() error {
 	connectedAt := time.Now().UnixMilli()
 	c.ConnectTiming = map[string]any{
 		"started_at":             connectStartedAt,
-		"upstream_mode":          c.opts.Upstream.Mode,
-		"upstream_endpoint_kind": endpointKindForUpstream(c.opts.Upstream.Mode),
+		"upstream_mode":          c.Upstream.Mode,
+		"upstream_endpoint_kind": endpointKindForUpstream(c.Upstream.Mode),
 		"transport_started_at":   transportStartedAt,
 		"transport_connected_at": transportConnectedAt,
 		"transport_duration_ms":  transportConnectedAt - transportStartedAt,
@@ -594,14 +610,14 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 	if c.transport != nil {
 		return nil
 	}
-	if !isKnownLaunchMode(c.opts.Launch.Mode) {
-		return fmt.Errorf("unknown launch.mode=%s", c.opts.Launch.Mode)
+	if !isKnownLaunchMode(c.Launch.Mode) {
+		return fmt.Errorf("unknown launch.mode=%s", c.Launch.Mode)
 	}
-	if !isKnownUpstreamMode(c.opts.Upstream.Mode) {
-		return fmt.Errorf("unknown upstream.mode=%s", c.opts.Upstream.Mode)
+	if !isKnownUpstreamMode(c.Upstream.Mode) {
+		return fmt.Errorf("unknown upstream.mode=%s", c.Upstream.Mode)
 	}
-	if !isKnownExtensionMode(c.opts.Extension.Mode) {
-		return fmt.Errorf("unknown extension.mode=%s", c.opts.Extension.Mode)
+	if !isKnownExtensionMode(c.Extension.Mode) {
+		return fmt.Errorf("unknown extension.mode=%s", c.Extension.Mode)
 	}
 	launcher := c.browserLauncher()
 	transport := c.upstreamTransport()
@@ -610,7 +626,7 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 	initialTransportConfig := c.upstreamTransportConfig()
 
 	transport.Update(initialTransportConfig)
-	launcher.Update(c.opts.Launch.Options)
+	launcher.Update(c.Launch.Options)
 	for _, injector := range injectors {
 		injector.Update(c.baseExtensionInjectorConfig(nil))
 	}
@@ -634,12 +650,12 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 	launcher.Update(transport.GetLauncherConfig())
 	transport.Update(launcher.GetTransportConfig())
 
-	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
+	if endpointKindForUpstream(c.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
 		if err := transport.Connect(); err != nil {
 			return err
 		}
 	}
-	if c.opts.Launch.Mode != "none" {
+	if c.Launch.Mode != "none" {
 		launched, err := launcher.Launch(LaunchOptions{})
 		if err != nil {
 			_ = transport.Close()
@@ -658,7 +674,7 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 	if c.launchedBrowser != nil {
 		launchedCDPURL = firstNonEmptyString(c.launchedBrowser.WSURL, c.launchedBrowser.CDPURL)
 	}
-	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindRawCDP {
+	if endpointKindForUpstream(c.Upstream.Mode) == UpstreamEndpointKindRawCDP {
 		if err := transport.Connect(); err != nil {
 			return err
 		}
@@ -666,29 +682,29 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 
 	c.transport = transport
 	transportURL := transportURL(transport)
-	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindRawCDP {
+	if endpointKindForUpstream(c.Upstream.Mode) == UpstreamEndpointKindRawCDP {
 		c.CDPURL = firstNonEmptyString(transportURL, launchedCDPURL)
 	} else {
 		c.CDPURL = launchedCDPURL
 	}
 	if wsTransport, ok := transport.(*WebSocketUpstreamTransport); ok && wsTransport.URL != "" {
-		c.opts.Upstream.WSURL = wsTransport.URL
+		c.Upstream.WSURL = wsTransport.URL
 	}
 
 	serverConfig := map[string]any{}
-	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer && launchedCDPURL != "" {
+	if endpointKindForUpstream(c.Upstream.Mode) == UpstreamEndpointKindModCDPServer && launchedCDPURL != "" {
 		serverConfig["loopback_cdp_url"] = launchedCDPURL
 	}
 	for key, value := range transport.GetServerConfig() {
 		serverConfig[key] = value
 	}
-	if c.opts.Server != nil {
+	if c.Server != nil {
 		if loopbackCDPURL, _ := serverConfig["loopback_cdp_url"].(string); loopbackCDPURL != "" {
 			initialWSURL, _ := initialTransportConfig["ws_url"].(string)
-			if c.opts.Server.LoopbackCDPURL == "" ||
-				c.opts.Server.LoopbackCDPURL == initialWSURL ||
-				c.opts.Server.LoopbackCDPURL == launchedCDPURL {
-				c.opts.Server.LoopbackCDPURL = loopbackCDPURL
+			if c.Server.LoopbackCDPURL == "" ||
+				c.Server.LoopbackCDPURL == initialWSURL ||
+				c.Server.LoopbackCDPURL == launchedCDPURL {
+				c.Server.LoopbackCDPURL = loopbackCDPURL
 			}
 		}
 	}
@@ -697,15 +713,15 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 
 func (c *ModCDPClient) upstreamTransportConfig() map[string]any {
 	return map[string]any{
-		"ws_url":                    c.opts.Upstream.WSURL,
-		"cdp_url":                   c.opts.Upstream.WSURL,
-		"nats_url":                  c.opts.Upstream.NATSURL,
-		"nats_subject_prefix":       c.opts.Upstream.NATSSubjectPrefix,
-		"reversews_bind":            c.opts.Upstream.ReverseWSBind,
-		"reversews_wait_timeout_ms": c.opts.Upstream.ReverseWSWaitTimeoutMS,
-		"manifest_path":             c.opts.Upstream.NativeMessagingManifest,
-		"native_host_name":          c.opts.Upstream.NativeMessagingHostName,
-		"extension_id":              c.opts.Extension.ExtensionID,
+		"ws_url":                    c.Upstream.WSURL,
+		"cdp_url":                   c.Upstream.WSURL,
+		"nats_url":                  c.Upstream.NATSURL,
+		"nats_subject_prefix":       c.Upstream.NATSSubjectPrefix,
+		"reversews_bind":            c.Upstream.ReverseWSBind,
+		"reversews_wait_timeout_ms": c.Upstream.ReverseWSWaitTimeoutMS,
+		"manifest_path":             c.Upstream.NativeMessagingManifest,
+		"native_host_name":          c.Upstream.NativeMessagingHostName,
+		"extension_id":              c.Extension.ExtensionID,
 	}
 }
 
@@ -745,40 +761,40 @@ func (c *ModCDPClient) serverConfigureParams(customCommands []map[string]any, cu
 		customMiddlewares = []map[string]any{}
 	}
 	server := map[string]any{
-		"cdp_send_timeout_ms":                   c.opts.Client.CDPSendTimeoutMS,
-		"loopback_execution_context_timeout_ms": c.opts.Extension.ExecutionContextTimeoutMS,
-		"ws_connect_error_settle_timeout_ms":    c.opts.Upstream.WSConnectErrorSettleTimeoutMS,
+		"cdp_send_timeout_ms":                   c.Client.CDPSendTimeoutMS,
+		"loopback_execution_context_timeout_ms": c.Extension.ExecutionContextTimeoutMS,
+		"ws_connect_error_settle_timeout_ms":    c.Upstream.WSConnectErrorSettleTimeoutMS,
 	}
-	if c.opts.Server != nil {
-		server["loopback_cdp_url"] = c.opts.Server.LoopbackCDPURL
-		server["routes"] = c.opts.Server.Routes
-		if c.opts.Server.BrowserToken != "" {
-			server["browser_token"] = c.opts.Server.BrowserToken
+	if c.Server != nil {
+		server["loopback_cdp_url"] = c.Server.LoopbackCDPURL
+		server["routes"] = c.Server.Routes
+		if c.Server.BrowserToken != "" {
+			server["browser_token"] = c.Server.BrowserToken
 		}
-		if c.opts.Server.CDPSendTimeoutMS != 0 {
-			server["cdp_send_timeout_ms"] = c.opts.Server.CDPSendTimeoutMS
+		if c.Server.CDPSendTimeoutMS != 0 {
+			server["cdp_send_timeout_ms"] = c.Server.CDPSendTimeoutMS
 		}
-		if c.opts.Server.LoopbackExecutionContextTimeoutMS != 0 {
-			server["loopback_execution_context_timeout_ms"] = c.opts.Server.LoopbackExecutionContextTimeoutMS
+		if c.Server.LoopbackExecutionContextTimeoutMS != 0 {
+			server["loopback_execution_context_timeout_ms"] = c.Server.LoopbackExecutionContextTimeoutMS
 		}
-		if c.opts.Server.WSConnectErrorSettleTimeoutMS != 0 {
-			server["ws_connect_error_settle_timeout_ms"] = c.opts.Server.WSConnectErrorSettleTimeoutMS
+		if c.Server.WSConnectErrorSettleTimeoutMS != 0 {
+			server["ws_connect_error_settle_timeout_ms"] = c.Server.WSConnectErrorSettleTimeoutMS
 		}
-		for key, value := range c.opts.Server.Options {
+		for key, value := range c.Server.Options {
 			server[key] = value
 		}
 	}
-	upstream := map[string]any{"mode": c.opts.Upstream.Mode}
-	if c.opts.Upstream.NATSURL != "" {
-		upstream["nats_url"] = c.opts.Upstream.NATSURL
+	upstream := map[string]any{"mode": c.Upstream.Mode}
+	if c.Upstream.NATSURL != "" {
+		upstream["nats_url"] = c.Upstream.NATSURL
 	}
-	if c.opts.Upstream.NATSSubjectPrefix != "" {
-		upstream["nats_subject_prefix"] = c.opts.Upstream.NATSSubjectPrefix
+	if c.Upstream.NATSSubjectPrefix != "" {
+		upstream["nats_subject_prefix"] = c.Upstream.NATSSubjectPrefix
 	}
 	return map[string]any{
 		"upstream": upstream,
 		"client": map[string]any{
-			"routes": c.opts.Client.Routes,
+			"routes": c.Client.Routes,
 		},
 		"server":             server,
 		"custom_commands":    customCommands,
@@ -836,7 +852,7 @@ func (c *ModCDPClient) setCommandResultSchema(name string, schema map[string]any
 func (c *ModCDPClient) hydrateCustomSurface() {
 	c.schemaMu.Lock()
 	defer c.schemaMu.Unlock()
-	for _, command := range c.opts.CustomCommands {
+	for _, command := range c.CustomCommands {
 		if command.Name == "" {
 			continue
 		}
@@ -851,7 +867,7 @@ func (c *ModCDPClient) hydrateCustomSurface() {
 			c.setCommandResultSchema(name, schema)
 		}
 	}
-	for _, event := range c.opts.CustomEvents {
+	for _, event := range c.CustomEvents {
 		if event.Name == "" {
 			continue
 		}
@@ -1068,7 +1084,7 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 			return nil, err
 		}
 	}
-	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
+	if endpointKindForUpstream(c.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
 		rawResult, err := c.sendMessage(method, params, "")
 		var result any = rawResult
 		completedAt := time.Now().UnixMilli()
@@ -1091,7 +1107,7 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		}
 		return result, nil
 	}
-	command, err := wrapCommandIfNeeded(method, params, c.opts.Client.Routes, c.ExtSessionID, targetSessionID)
+	command, err := wrapCommandIfNeeded(method, params, c.Client.Routes, c.ExtSessionID, targetSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1212,37 +1228,37 @@ func (c *ModCDPClient) Close() {
 }
 
 func (c *ModCDPClient) browserLauncher() browserLauncherClient {
-	switch c.opts.Launch.Mode {
+	switch c.Launch.Mode {
 	case "local":
-		return NewLocalBrowserLauncher(c.opts.Launch.Options)
+		return NewLocalBrowserLauncher(c.Launch.Options)
 	case "remote":
-		return NewRemoteBrowserLauncher(c.opts.Launch.Options, c.opts.Upstream.WSURL)
+		return NewRemoteBrowserLauncher(c.Launch.Options, c.Upstream.WSURL)
 	case "bb":
-		return NewBrowserbaseBrowserLauncher(c.opts.Launch.Options)
+		return NewBrowserbaseBrowserLauncher(c.Launch.Options)
 	case "none":
-		return NewNoopBrowserLauncher(c.opts.Launch.Options)
+		return NewNoopBrowserLauncher(c.Launch.Options)
 	default:
 		return nil
 	}
 }
 
 func (c *ModCDPClient) upstreamTransport() upstreamTransportClient {
-	switch c.opts.Upstream.Mode {
+	switch c.Upstream.Mode {
 	case "ws":
-		return NewWebSocketUpstreamTransport(c.opts.Upstream.WSURL)
+		return NewWebSocketUpstreamTransport(c.Upstream.WSURL)
 	case "pipe":
 		return NewPipeUpstreamTransport(nil, nil, "")
 	case "reversews":
-		return NewReverseWebSocketUpstreamTransport(c.opts.Upstream.ReverseWSBind, c.opts.Upstream.ReverseWSWaitTimeoutMS)
+		return NewReverseWebSocketUpstreamTransport(c.Upstream.ReverseWSBind, c.Upstream.ReverseWSWaitTimeoutMS)
 	case "nativemessaging":
 		return NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
-			ManifestPath: c.opts.Upstream.NativeMessagingManifest,
-			HostName:     c.opts.Upstream.NativeMessagingHostName,
+			ManifestPath: c.Upstream.NativeMessagingManifest,
+			HostName:     c.Upstream.NativeMessagingHostName,
 		})
 	case "nats":
 		return NewNatsUpstreamTransport(NatsUpstreamTransportOptions{
-			URL:           c.opts.Upstream.NATSURL,
-			SubjectPrefix: c.opts.Upstream.NATSSubjectPrefix,
+			URL:           c.Upstream.NATSURL,
+			SubjectPrefix: c.Upstream.NATSSubjectPrefix,
 		})
 	default:
 		return nil
@@ -1250,27 +1266,27 @@ func (c *ModCDPClient) upstreamTransport() upstreamTransportClient {
 }
 
 func (c *ModCDPClient) extensionInjectorsForConfig() []extensionInjector {
-	if c.opts.Extension.Mode == "none" {
+	if c.Extension.Mode == "none" {
 		return nil
 	}
 	var injectors []extensionInjector
-	if c.opts.Extension.Mode == "auto" || c.opts.Extension.Mode == "discover" {
+	if c.Extension.Mode == "auto" || c.Extension.Mode == "discover" {
 		injector := NewDiscoveredExtensionInjector(ExtensionInjectorConfig{})
 		injectors = append(injectors, &injector)
 	}
-	if c.opts.Extension.Mode == "auto" || c.opts.Extension.Mode == "inject" {
-		if c.opts.Launch.Mode == "bb" {
+	if c.Extension.Mode == "auto" || c.Extension.Mode == "inject" {
+		if c.Launch.Mode == "bb" {
 			injector := NewBBBrowserExtensionInjector(ExtensionInjectorConfig{})
 			injectors = append(injectors, &injector)
 		}
-		if c.opts.Launch.Mode == "local" {
+		if c.Launch.Mode == "local" {
 			injector := NewLocalBrowserLaunchExtensionInjector(ExtensionInjectorConfig{})
 			injectors = append(injectors, &injector)
 		}
 		injector := NewExtensionsLoadUnpackedInjector(ExtensionInjectorConfig{})
 		injectors = append(injectors, &injector)
 	}
-	if c.opts.Extension.Mode == "auto" || c.opts.Extension.Mode == "borrow" {
+	if c.Extension.Mode == "auto" || c.Extension.Mode == "borrow" {
 		injector := NewBorrowedExtensionInjector(ExtensionInjectorConfig{})
 		injectors = append(injectors, &injector)
 	}
@@ -1294,7 +1310,7 @@ func (c *ModCDPClient) baseExtensionInjectorConfig(send SendCDP) ExtensionInject
 	var attachToTarget AttachToTarget
 	if send != nil {
 		attachToTarget = func(targetID string) string {
-			return c.ensureSessionIDForTarget(targetID, time.Duration(c.opts.Extension.ServiceWorkerProbeTimeoutMS)*time.Millisecond, true)
+			return c.ensureSessionIDForTarget(targetID, time.Duration(c.Extension.ServiceWorkerProbeTimeoutMS)*time.Millisecond, true)
 		}
 	}
 	return ExtensionInjectorConfig{
@@ -1305,21 +1321,21 @@ func (c *ModCDPClient) baseExtensionInjectorConfig(send SendCDP) ExtensionInject
 			contextID, _ := c.autoSessions.WaitForExecutionContext(sessionID, timeoutMS)
 			return contextID
 		},
-		ExtensionPath:                c.opts.Extension.Path,
-		ExtensionID:                  c.opts.Extension.ExtensionID,
-		WakePath:                     firstNonEmptyString(c.opts.Extension.WakePath, DefaultModCDPWakePath),
-		WakeURL:                      c.opts.Extension.WakeURL,
-		ServiceWorkerURLIncludes:     c.opts.Extension.ServiceWorkerURLIncludes,
-		ServiceWorkerURLSuffixes:     c.opts.Extension.ServiceWorkerURLSuffixes,
+		ExtensionPath:                c.Extension.Path,
+		ExtensionID:                  c.Extension.ExtensionID,
+		WakePath:                     firstNonEmptyString(c.Extension.WakePath, DefaultModCDPWakePath),
+		WakeURL:                      c.Extension.WakeURL,
+		ServiceWorkerURLIncludes:     c.Extension.ServiceWorkerURLIncludes,
+		ServiceWorkerURLSuffixes:     c.Extension.ServiceWorkerURLSuffixes,
 		TrustMatchedServiceWorker:    trustMatchedServiceWorker,
-		RequireServiceWorkerTarget:   c.opts.Extension.RequireServiceWorkerTarget || c.opts.Extension.Mode == "discover",
-		ServiceWorkerReadyExpression: c.opts.Extension.ServiceWorkerReadyExpression,
-		CDPSendTimeoutMS:             c.opts.Client.CDPSendTimeoutMS,
-		ExecutionContextTimeoutMS:    c.opts.Extension.ExecutionContextTimeoutMS,
-		ServiceWorkerProbeTimeoutMS:  c.opts.Extension.ServiceWorkerProbeTimeoutMS,
-		ServiceWorkerReadyTimeoutMS:  c.opts.Extension.ServiceWorkerReadyTimeoutMS,
-		ServiceWorkerPollIntervalMS:  c.opts.Extension.ServiceWorkerPollIntervalMS,
-		TargetSessionPollIntervalMS:  c.opts.Extension.TargetSessionPollIntervalMS,
+		RequireServiceWorkerTarget:   c.Extension.RequireServiceWorkerTarget || c.Extension.Mode == "discover",
+		ServiceWorkerReadyExpression: c.Extension.ServiceWorkerReadyExpression,
+		CDPSendTimeoutMS:             c.Client.CDPSendTimeoutMS,
+		ExecutionContextTimeoutMS:    c.Extension.ExecutionContextTimeoutMS,
+		ServiceWorkerProbeTimeoutMS:  c.Extension.ServiceWorkerProbeTimeoutMS,
+		ServiceWorkerReadyTimeoutMS:  c.Extension.ServiceWorkerReadyTimeoutMS,
+		ServiceWorkerPollIntervalMS:  c.Extension.ServiceWorkerPollIntervalMS,
+		TargetSessionPollIntervalMS:  c.Extension.TargetSessionPollIntervalMS,
 	}
 }
 
@@ -1328,7 +1344,7 @@ func (c *ModCDPClient) injectExtension(injectors []extensionInjector) (*Extensio
 		return nil, fmt.Errorf("extension.mode='none' cannot be used with a raw_cdp upstream")
 	}
 	send := func(method string, params map[string]any, sessionID string) (map[string]any, error) {
-		return c.sendMessageTimeout(method, params, sessionID, time.Duration(c.opts.Client.CDPSendTimeoutMS)*time.Millisecond)
+		return c.sendMessageTimeout(method, params, sessionID, time.Duration(c.Client.CDPSendTimeoutMS)*time.Millisecond)
 	}
 	var errors []string
 	for _, injector := range injectors {
@@ -1410,7 +1426,7 @@ func (c *ModCDPClient) measurePingLatency() error {
 		}
 		c.Latency = latency
 		return nil
-	case <-time.After(time.Duration(c.opts.Client.EventWaitTimeoutMS) * time.Millisecond):
+	case <-time.After(time.Duration(c.Client.EventWaitTimeoutMS) * time.Millisecond):
 		return fmt.Errorf("Mod.pong timed out")
 	}
 }
@@ -1429,7 +1445,7 @@ func numberAsInt64(value any) (int64, bool) {
 }
 
 func (c *ModCDPClient) sendMessage(method string, params map[string]any, sessionID string) (map[string]any, error) {
-	return c.sendMessageTimeout(method, params, sessionID, time.Duration(c.opts.Client.CDPSendTimeoutMS)*time.Millisecond)
+	return c.sendMessageTimeout(method, params, sessionID, time.Duration(c.Client.CDPSendTimeoutMS)*time.Millisecond)
 }
 
 func (c *ModCDPClient) sendMessageTimeout(method string, params map[string]any, sessionID string, timeout time.Duration) (map[string]any, error) {
@@ -1575,10 +1591,10 @@ func (c *ModCDPClient) handleEventMessage(msg map[string]any) {
 }
 
 func (c *ModCDPClient) trustServiceWorkerTarget() bool {
-	if c.opts.Extension.TrustServiceWorkerTarget || len(c.opts.Extension.ServiceWorkerURLIncludes) > 0 {
+	if c.Extension.TrustServiceWorkerTarget || len(c.Extension.ServiceWorkerURLIncludes) > 0 {
 		return true
 	}
-	for _, suffix := range c.opts.Extension.ServiceWorkerURLSuffixes {
+	for _, suffix := range c.Extension.ServiceWorkerURLSuffixes {
 		parts := 0
 		for _, part := range strings.Split(suffix, "/") {
 			if part != "" {
@@ -1602,7 +1618,7 @@ func (c *ModCDPClient) sessionIDForTarget(targetID string, timeout time.Duration
 		if sessionID != "" {
 			return sessionID
 		}
-		time.Sleep(time.Duration(c.opts.Extension.TargetSessionPollIntervalMS) * time.Millisecond)
+		time.Sleep(time.Duration(c.Extension.TargetSessionPollIntervalMS) * time.Millisecond)
 	}
 	return ""
 }
