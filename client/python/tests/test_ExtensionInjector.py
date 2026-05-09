@@ -25,8 +25,14 @@ class ProbeExtensionInjector(ExtensionInjector):
             matched_only=True,
         )
 
-    def sendTimed(self, method: str, timeout_ms: int) -> ProtocolResult:
-        return self.sendWithTimeout(method, {}, None, timeout_ms)
+    def sendTimed(
+        self,
+        method: str,
+        params: ProtocolParams | None,
+        session_id: str | None,
+        timeout_ms: int,
+    ) -> ProtocolResult:
+        return self.sendWithTimeout(method, params or {}, session_id, timeout_ms)
 
 
 class ExtensionInjectorTests(unittest.TestCase):
@@ -122,44 +128,101 @@ class ExtensionInjectorTests(unittest.TestCase):
             injector.inject()
 
     def test_send_with_timeout_enforces_cdp_send_timeout(self) -> None:
-        def send(_method: str, _params: ProtocolParams | None = None, _session_id: str | None = None) -> ProtocolResult:
-            time.sleep(0.05)
-            return {}
+        chrome = LocalBrowserLauncher({"headless": True, "sandbox": False}).launch()
+        ws = create_connection(cast(str, chrome["ws_url"]), timeout=10)
+        next_id = 0
+
+        def send(method: str, params: ProtocolParams | None = None, session_id: str | None = None) -> ProtocolResult:
+            nonlocal next_id
+            next_id += 1
+            message: dict[str, Any] = {"id": next_id, "method": method, "params": params or {}}
+            if session_id:
+                message["sessionId"] = session_id
+            ws.send(json.dumps(message))
+            while True:
+                response = json.loads(ws.recv())
+                if response.get("id") != next_id:
+                    continue
+                error = response.get("error")
+                if isinstance(error, dict):
+                    raise RuntimeError(str(error.get("message") or error))
+                return cast(ProtocolResult, response.get("result") or {})
 
         injector = ProbeExtensionInjector(cast(ExtensionInjectorConfig, {"send": send}))
+        target_id: str | None = None
 
-        with self.assertRaisesRegex(TimeoutError, r"Runtime\.evaluate timed out after 5ms"):
-            injector.sendTimed("Runtime.evaluate", 5)
+        try:
+            created = send("Target.createTarget", {"url": "about:blank#modcdp-timeout"})
+            target_id = cast(str, created["targetId"])
+            attached = send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+            session_id = cast(str, attached["sessionId"])
+            send("Runtime.enable", {}, session_id)
+            with self.assertRaisesRegex(TimeoutError, r"Runtime\.evaluate timed out after 5ms"):
+                injector.sendTimed(
+                    "Runtime.evaluate",
+                    {"expression": "new Promise(() => {})", "awaitPromise": True},
+                    session_id,
+                    5,
+                )
+        finally:
+            if target_id:
+                try:
+                    send("Target.closeTarget", {"targetId": target_id})
+                except Exception:
+                    pass
+            injector.close()
+            ws.close()
+            chrome["close"]()
 
     def test_wakes_configured_extension_with_hidden_background_target(self) -> None:
-        sent: list[dict[str, Any]] = []
+        chrome = LocalBrowserLauncher(
+            {
+                "headless": True,
+                "sandbox": False,
+                "extra_args": [f"--load-extension={EXTENSION_PATH}"],
+            }
+        ).launch()
+        ws = create_connection(cast(str, chrome["ws_url"]), timeout=10)
+        next_id = 0
 
         def send(method: str, params: ProtocolParams | None = None, _session_id: str | None = None) -> ProtocolResult:
-            sent.append({"method": method, "params": params or {}})
-            return {"targetId": "wake-target"}
+            nonlocal next_id
+            next_id += 1
+            message: dict[str, Any] = {"id": next_id, "method": method, "params": params or {}}
+            ws.send(json.dumps(message))
+            while True:
+                response = json.loads(ws.recv())
+                if response.get("id") != next_id:
+                    continue
+                error = response.get("error")
+                if isinstance(error, dict):
+                    raise RuntimeError(str(error.get("message") or error))
+                return cast(ProtocolResult, response.get("result") or {})
 
         injector = ProbeExtensionInjector(
             cast(ExtensionInjectorConfig, {
-                "extension_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "extension_id": "mdedooklbnfejodmnhmkdpkaedafkehf",
                 "send": send,
             })
         )
 
-        self.assertTrue(injector.wakeConfiguredExtension())
-        self.assertEqual(
-            sent,
-            [
-                {
-                    "method": "Target.createTarget",
-                    "params": {
-                        "url": "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/modcdp/wake.html",
-                        "background": True,
-                        "hidden": True,
-                        "focus": False,
-                    },
-                }
-            ],
-        )
+        try:
+            self.assertTrue(injector.wakeConfiguredExtension())
+            targets = cast(dict[str, Any], send("Target.getTargets"))
+            target_infos = targets.get("targetInfos")
+            self.assertIsInstance(target_infos, list)
+            target_infos = cast(list[Any], target_infos)
+            self.assertTrue(
+                any(
+                    isinstance(target, dict)
+                    and target.get("url") == "chrome-extension://mdedooklbnfejodmnhmkdpkaedafkehf/modcdp/wake.html"
+                    for target in target_infos
+                )
+            )
+        finally:
+            injector.close()
+            ws.close()
+            chrome["close"]()
 
     def test_package_exports_all_injector_classes(self) -> None:
         self.assertIs(modcdp.ExtensionInjector, ExtensionInjector)

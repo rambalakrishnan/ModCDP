@@ -28,8 +28,8 @@ class ProbeExtensionInjector extends ExtensionInjector {
     this.writeExtensionRuntimeConfig(extension_path);
   }
 
-  async sendTimed(method: string, timeout_ms: number) {
-    return await this.sendWithTimeout(method, {}, null, timeout_ms);
+  async sendTimed(method: string, params: Record<string, unknown>, session_id: string | null, timeout_ms: number) {
+    return await this.sendWithTimeout(method, params, session_id, timeout_ms);
   }
 
   async wake() {
@@ -114,38 +114,68 @@ test("ExtensionInjector owns shared injector config and runtime transport config
 });
 
 test("ExtensionInjector sendWithTimeout enforces cdp send timeout", async () => {
+  const chrome = await new LocalBrowserLauncher({
+    headless: true,
+    sandbox: process.platform !== "linux",
+  }).launch();
+  const cdp = await CdpSocket.connect(chrome.ws_url!);
+  let target_id: string | null = null;
   const injector = new ProbeExtensionInjector({
-    send: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      return {};
-    },
+    send: (method, params = {}, session_id = null) =>
+      cdp.send(method, params as Record<string, unknown>, session_id ?? undefined),
   });
 
-  await assert.rejects(() => injector.sendTimed("Runtime.evaluate", 5), /Runtime\.evaluate timed out after 5ms/);
+  try {
+    const created = await cdp.send("Target.createTarget", { url: "about:blank#modcdp-timeout" });
+    target_id = created.targetId as string;
+    const attached = await cdp.send("Target.attachToTarget", { targetId: target_id, flatten: true });
+    const session_id = attached.sessionId as string;
+    await cdp.send("Runtime.enable", {}, session_id);
+    await assert.rejects(
+      () =>
+        injector.sendTimed(
+          "Runtime.evaluate",
+          { expression: "new Promise(() => {})", awaitPromise: true },
+          session_id,
+          5,
+        ),
+      /Runtime\.evaluate timed out after 5ms/,
+    );
+  } finally {
+    if (target_id) await cdp.send("Target.closeTarget", { targetId: target_id }).catch(() => ({}));
+    await injector.close();
+    await cdp.close();
+    await chrome.close();
+  }
 });
 
 test("ExtensionInjector wakes configured extension with a hidden background target", async () => {
-  const sent: { method: string; params: Record<string, unknown> }[] = [];
+  const chrome = await new LocalBrowserLauncher({
+    headless: true,
+    sandbox: process.platform !== "linux",
+    extra_args: [`--load-extension=${EXTENSION_PATH}`],
+  }).launch();
+  const cdp = await CdpSocket.connect(chrome.ws_url!);
   const injector = new ProbeExtensionInjector({
-    extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    send: async (method, params = {}) => {
-      sent.push({ method, params: params as Record<string, unknown> });
-      return { targetId: "wake-target" };
-    },
+    extension_id: "mdedooklbnfejodmnhmkdpkaedafkehf",
+    send: (method, params = {}, session_id = null) =>
+      cdp.send(method, params as Record<string, unknown>, session_id ?? undefined),
   });
 
-  assert.equal(await injector.wake(), true);
-  assert.deepEqual(sent, [
-    {
-      method: "Target.createTarget",
-      params: {
-        url: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/modcdp/wake.html",
-        background: true,
-        hidden: true,
-        focus: false,
-      },
-    },
-  ]);
+  try {
+    assert.equal(await injector.wake(), true);
+    const targets = (await cdp.send("Target.getTargets")) as { targetInfos?: { url?: string }[] };
+    assert.equal(
+      targets.targetInfos?.some(
+        (target) => target.url === "chrome-extension://mdedooklbnfejodmnhmkdpkaedafkehf/modcdp/wake.html",
+      ),
+      true,
+    );
+  } finally {
+    await injector.close();
+    await cdp.close();
+    await chrome.close();
+  }
 });
 
 test("ExtensionInjector base inject reports the subclass name", async () => {

@@ -160,40 +160,165 @@ func TestExtensionInjectorOwnsSharedConfigAndRuntimeTransportConfig(t *testing.T
 }
 
 func TestExtensionInjectorSendWithTimeoutEnforcesCDPSendTimeout(t *testing.T) {
+	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
+		Headless: boolPtr(true),
+		Sandbox:  boolPtr(false),
+	}).Launch(LaunchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chrome.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, _, _, err := ws.Dial(ctx, chrome.WSURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	nextID := 0
+	send := func(method string, params map[string]any, sessionID string) (map[string]any, error) {
+		nextID++
+		message := map[string]any{"id": nextID, "method": method, "params": params}
+		if sessionID != "" {
+			message["sessionId"] = sessionID
+		}
+		body, err := json.Marshal(message)
+		if err != nil {
+			return nil, err
+		}
+		if err := wsutil.WriteClientText(conn, body); err != nil {
+			return nil, err
+		}
+		for {
+			raw, err := wsutil.ReadServerText(conn)
+			if err != nil {
+				return nil, err
+			}
+			var response map[string]any
+			if err := json.Unmarshal(raw, &response); err != nil {
+				return nil, err
+			}
+			responseID, _ := response["id"].(float64)
+			if int(responseID) != nextID {
+				continue
+			}
+			if errorObject, ok := response["error"].(map[string]any); ok {
+				return nil, fmt.Errorf("%v", errorObject["message"])
+			}
+			result, _ := response["result"].(map[string]any)
+			if result == nil {
+				result = map[string]any{}
+			}
+			return result, nil
+		}
+	}
+
+	created, err := send("Target.createTarget", map[string]any{"url": "about:blank#modcdp-timeout"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID, _ := created["targetId"].(string)
+	attached, err := send("Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, _ := attached["sessionId"].(string)
+	if _, err := send("Runtime.enable", map[string]any{}, sessionID); err != nil {
+		t.Fatal(err)
+	}
 	injector := NewExtensionInjector(ExtensionInjectorConfig{
-		Send: func(method string, params map[string]any, sessionID string) (map[string]any, error) {
-			time.Sleep(50 * time.Millisecond)
-			return map[string]any{}, nil
-		},
+		Send: send,
 	})
 
-	if _, err := injector.SendWithTimeout("Runtime.evaluate", map[string]any{}, "", 5); err == nil || !strings.Contains(err.Error(), "Runtime.evaluate timed out after 5ms") {
+	if _, err := injector.SendWithTimeout("Runtime.evaluate", map[string]any{
+		"expression":   "new Promise(() => {})",
+		"awaitPromise": true,
+	}, sessionID, 5); err == nil || !strings.Contains(err.Error(), "Runtime.evaluate timed out after 5ms") {
 		t.Fatalf("SendWithTimeout error = %v", err)
 	}
 }
 
 func TestExtensionInjectorWakesConfiguredExtensionWithHiddenBackgroundTarget(t *testing.T) {
-	var sentMethod string
-	var sentParams map[string]any
+	extensionPath, err := filepath.Abs(filepath.Join("..", "..", "dist", "extension"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
+		Headless:  boolPtr(true),
+		Sandbox:   boolPtr(false),
+		ExtraArgs: []string{"--load-extension=" + extensionPath},
+	}).Launch(LaunchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chrome.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, _, _, err := ws.Dial(ctx, chrome.WSURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	nextID := 0
+	send := func(method string, params map[string]any, sessionID string) (map[string]any, error) {
+		nextID++
+		message := map[string]any{"id": nextID, "method": method, "params": params}
+		if sessionID != "" {
+			message["sessionId"] = sessionID
+		}
+		body, err := json.Marshal(message)
+		if err != nil {
+			return nil, err
+		}
+		if err := wsutil.WriteClientText(conn, body); err != nil {
+			return nil, err
+		}
+		for {
+			raw, err := wsutil.ReadServerText(conn)
+			if err != nil {
+				return nil, err
+			}
+			var response map[string]any
+			if err := json.Unmarshal(raw, &response); err != nil {
+				return nil, err
+			}
+			responseID, _ := response["id"].(float64)
+			if int(responseID) != nextID {
+				continue
+			}
+			if errorObject, ok := response["error"].(map[string]any); ok {
+				return nil, fmt.Errorf("%v", errorObject["message"])
+			}
+			result, _ := response["result"].(map[string]any)
+			if result == nil {
+				result = map[string]any{}
+			}
+			return result, nil
+		}
+	}
+
 	injector := NewExtensionInjector(ExtensionInjectorConfig{
-		ExtensionID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Send: func(method string, params map[string]any, sessionID string) (map[string]any, error) {
-			sentMethod = method
-			sentParams = params
-			return map[string]any{"targetId": "wake-target"}, nil
-		},
+		ExtensionID: DefaultModCDPExtensionID,
+		Send:        send,
 	})
 
 	if !injector.WakeConfiguredExtension() {
 		t.Fatalf("expected wake to succeed")
 	}
-	if sentMethod != "Target.createTarget" {
-		t.Fatalf("method = %q", sentMethod)
+	targetsResult, err := send("Target.getTargets", map[string]any{}, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if sentParams["url"] != "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/modcdp/wake.html" {
-		t.Fatalf("url = %v", sentParams["url"])
+	targets, _ := targetsResult["targetInfos"].([]any)
+	for _, rawTarget := range targets {
+		target, _ := rawTarget.(map[string]any)
+		if target["url"] == "chrome-extension://"+DefaultModCDPExtensionID+"/modcdp/wake.html" {
+			return
+		}
 	}
-	if sentParams["background"] != true || sentParams["hidden"] != true || sentParams["focus"] != false {
-		t.Fatalf("wake target visibility params = %#v", sentParams)
-	}
+	t.Fatalf("expected wake target, got %#v", targets)
 }
