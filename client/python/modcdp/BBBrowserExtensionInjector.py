@@ -45,11 +45,16 @@ class BBBrowserExtensionInjector(ExtensionInjector):
         return {"extension_id": self.extension_id}
 
     def inject(self) -> ExtensionInjectionResult | None:
-        discovered = self._waitForReadyServiceWorker(
-            self.options.get("service_worker_ready_timeout_ms") or DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS,
-            matched_only=bool(self.options.get("trust_matched_service_worker")),
-        )
-        return {**discovered, "source": "bb"} if discovered else None
+        extension_id = self.options.get("extension_id")
+        self.options["extension_id"] = None
+        try:
+            discovered = self._waitForReadyServiceWorker(
+                self.options.get("service_worker_ready_timeout_ms") or DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS,
+                matched_only=bool(self.options.get("trust_matched_service_worker")),
+            )
+            return {**discovered, "source": "bb"} if discovered else None
+        finally:
+            self.options["extension_id"] = extension_id
 
     def close(self) -> None:
         if self.cleanup_dir:

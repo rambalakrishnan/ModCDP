@@ -64,6 +64,10 @@ func (i *BBBrowserExtensionInjector) GetLauncherConfig() LaunchOptions {
 }
 
 func (i *BBBrowserExtensionInjector) Inject() (*ExtensionInjectionResult, error) {
+	extensionID := i.Options.ExtensionID
+	i.Options.ExtensionID = ""
+	defer func() { i.Options.ExtensionID = extensionID }()
+
 	discovered, err := i.waitForReadyServiceWorker(i.Options.ServiceWorkerReadyTimeoutMS, i.Options.TrustMatchedServiceWorker)
 	if err != nil || discovered == nil {
 		return discovered, err

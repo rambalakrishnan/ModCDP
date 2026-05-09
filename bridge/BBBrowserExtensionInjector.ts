@@ -39,10 +39,16 @@ export class BBBrowserExtensionInjector extends ExtensionInjector {
   }
 
   async inject() {
-    const discovered = await this.waitForReadyServiceWorker(this.options.service_worker_ready_timeout_ms ?? 60_000, {
-      matched_only: this.options.trust_matched_service_worker,
-    });
-    return discovered ? { ...discovered, source: "bb" } : null;
+    const extension_id = this.options.extension_id;
+    this.options.extension_id = null;
+    try {
+      const discovered = await this.waitForReadyServiceWorker(this.options.service_worker_ready_timeout_ms ?? 60_000, {
+        matched_only: this.options.trust_matched_service_worker,
+      });
+      return discovered ? { ...discovered, source: "bb" } : null;
+    } finally {
+      this.options.extension_id = extension_id;
+    }
   }
 
   async close() {
