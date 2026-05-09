@@ -56,6 +56,7 @@ from .translate import (
     unwrap_event_if_needed,
     unwrap_response_if_needed,
 )
+from .BrowserLauncher import BrowserLaunchOptions
 from .types import (
     ModCDPAddCustomCommandParams,
     ModCDPAddCustomEventObjectParams,
@@ -74,7 +75,6 @@ from .types import (
     MessageParams,
     Handler,
     JsonValue,
-    LaunchOptions,
     PendingEntry,
     ProtocolParams,
     ProtocolPayload,
@@ -324,7 +324,7 @@ class ModCDPClient(CDPSurfaceMixin):
             "loopback_execution_context_timeout_ms": execution_context_timeout_ms,
             "ws_connect_error_settle_timeout_ms": ws_connect_error_settle_timeout_ms,
         }
-        self.launch_options = cast(LaunchOptions, dict(cast(Mapping[str, Any], self.launch.get("options") or {})))
+        self.launch_options = cast(BrowserLaunchOptions, dict(cast(Mapping[str, Any], self.launch.get("options") or {})))
         if self.launch.get("executable_path"):
             self.launch_options["executable_path"] = self.launch["executable_path"]
         if self.launch.get("user_data_dir"):
@@ -380,6 +380,8 @@ class ModCDPClient(CDPSurfaceMixin):
             self._launched_browser = launched
             self.cdp_url = cast(str | None, launched["cdp_url"])
         input_cdp_url = self.cdp_url
+        if input_cdp_url is None:
+            raise RuntimeError("upstream.mode=ws requires an upstream CDP endpoint.")
         self.cdp_url = websocket_url_for(input_cdp_url)
         self.upstream["ws_url"] = self.cdp_url
         if self.server is not None and "loopback_cdp_url" not in self.server:

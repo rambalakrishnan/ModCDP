@@ -174,8 +174,8 @@ func candidatePaths() []string {
 		stock = []string{"/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/opt/google/chrome/chrome"}
 	}
 
-	result := append([]string{}, canary...)
-	result = append(result, chromeForTestingCandidates()...)
+	result := append([]string{}, chromeForTestingCandidates()...)
+	result = append(result, canary...)
 	result = append(result, stock...)
 	return result
 }

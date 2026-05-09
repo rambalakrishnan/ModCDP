@@ -142,7 +142,7 @@ def _candidate_paths() -> list[str]:
     else:
         canary = ["/usr/bin/google-chrome-canary", "/usr/bin/google-chrome-unstable", "/opt/google/chrome-unstable/chrome"]
         stock = ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/opt/google/chrome/chrome"]
-    return [*canary, *_chrome_for_testing_candidates(), *stock]
+    return [*_chrome_for_testing_candidates(), *canary, *stock]
 
 
 def _close(process: subprocess.Popen[bytes], temp_profile_dir: tempfile.TemporaryDirectory[str] | None) -> None:

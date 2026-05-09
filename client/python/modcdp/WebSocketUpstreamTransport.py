@@ -19,6 +19,8 @@ class WebSocketUpstreamTransport(UpstreamTransport):
         self.ws: Any | None = None
 
     def connect(self) -> None:
+        if self.url is None:
+            raise RuntimeError("upstream.mode='ws' requires a websocket URL.")
         self.ws = create_connection(self.url, timeout=self.timeout_s)
 
     def send(self, message: dict[str, Any]) -> None:
