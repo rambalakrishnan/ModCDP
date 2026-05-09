@@ -89,7 +89,6 @@ from .types import (
     ProtocolPayload,
     ProtocolResult,
     TranslatedCommand,
-    WebSocketLike,
 )
 
 
@@ -348,7 +347,6 @@ class ModCDPClient(CDPSurfaceMixin):
         self.last_command_timing: ModCDPCommandTiming | None = None
         self.last_raw_timing: ModCDPRawTiming | None = None
 
-        self._ws: WebSocketLike | None = None
         self.transport: UpstreamTransport | None = None
         self._next_id = 0
         self._pending: dict[int, PendingEntry] = {}
@@ -368,7 +366,6 @@ class ModCDPClient(CDPSurfaceMixin):
         if self.client["hydrate_aliases"]:
             install_cdp_surface(self)
         self.Mod = _ModDomain(self)
-        self._reader_thread: threading.Thread | None = None
         self._closed = False
         self._launched_browser: Any | None = None
         self._extension_injectors: list[ExtensionInjector] = []
@@ -705,14 +702,9 @@ class ModCDPClient(CDPSurfaceMixin):
         try:
             if self.transport:
                 self.transport.close()
-            elif self._ws:
-                self._ws.close()
         except Exception:
             pass
-        if self._reader_thread is not None and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=1)
         self.transport = None
-        self._ws = None
         if self._launched_browser is not None:
             self._launched_browser["close"]()
             self._launched_browser = None
@@ -1053,11 +1045,8 @@ class ModCDPClient(CDPSurfaceMixin):
         msg: CdpMessage = {"id": msg_id, "method": method, "params": params or {}}
         if session_id:
             msg["sessionId"] = session_id
-        ws = self._ws
         try:
-            if ws is not None:
-                ws.send(json.dumps(msg))
-            elif self.transport is not None:
+            if self.transport is not None:
                 self.transport.send(cast(dict[str, Any], msg))
             else:
                 raise RuntimeError("ModCDP upstream is not connected")
@@ -1129,28 +1118,3 @@ class ModCDPClient(CDPSurfaceMixin):
                 def run_method_event(handler=handler, payload=validated_payload, event_name=method):
                     self._run_handler(handler, payload, event_name)
                 threading.Thread(target=run_method_event, daemon=True).start()
-
-    def _reader(self) -> None:
-        ws = self._ws
-        if ws is None:
-            return
-        try:
-            while True:
-                raw = ws.recv()
-                if not raw:
-                    break
-                if isinstance(raw, bytes):
-                    raw = raw.decode()
-                parsed: object = json.loads(raw)
-                if not isinstance(parsed, dict):
-                    continue
-                self._on_recv(cast(CdpMessage, parsed))
-        except Exception as e:
-            if not self._closed:
-                print(f"[ModCDPClient] reader exited: {e}")
-        finally:
-            with self._lock:
-                pending = list(self._pending.values())
-                self._pending.clear()
-            for _, done in pending:
-                done.put({"error": {"message": "connection closed"}})

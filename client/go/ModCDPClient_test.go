@@ -332,12 +332,6 @@ func TestModCDPClientCloseClearsTopLevelConnectionState(t *testing.T) {
 		t.Fatal("expected transport-owned websocket conn")
 	}
 	cdp.Close()
-	if cdp.conn != nil {
-		t.Fatal("Close left conn set")
-	}
-	if cdp.cancel != nil {
-		t.Fatal("Close left cancel set")
-	}
 	if cdp.transport != nil {
 		t.Fatal("Close left transport set")
 	}

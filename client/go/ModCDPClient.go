@@ -19,7 +19,6 @@
 package modcdp
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -34,7 +33,6 @@ import (
 	"time"
 
 	abxjsonschema "github.com/ArchiveBox/abxbus/abxbus-go/jsonschema"
-	"github.com/gobwas/ws/wsutil"
 )
 
 var (
@@ -291,10 +289,6 @@ type ModCDPClient struct {
 	opts                 Options
 	CDPURL               string
 	transport            upstreamTransportClient
-	conn                 net.Conn
-	writeMu              sync.Mutex
-	ctx                  context.Context
-	cancel               context.CancelFunc
 	mu                   sync.Mutex
 	nextID               int64
 	pending              map[int64]chan map[string]any
@@ -493,9 +487,6 @@ func (c *ModCDPClient) Connect() error {
 	if err := wsTransport.Connect(); err != nil {
 		return fmt.Errorf("websocket dial: %w", err)
 	}
-	c.ctx = wsTransport.ctx
-	c.cancel = wsTransport.cancel
-	c.conn = nil
 	wsTransport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
 	wsTransport.OnClose(func(err error) { c.rejectAll(err) })
 	if _, err := c.sendMessage("Target.setAutoAttach", map[string]any{
@@ -1129,17 +1120,6 @@ func (c *ModCDPClient) Close() {
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil
-		c.conn = nil
-		c.cancel = nil
-	} else {
-		if c.cancel != nil {
-			c.cancel()
-			c.cancel = nil
-		}
-		if c.conn != nil {
-			_ = c.conn.Close()
-			c.conn = nil
-		}
 	}
 	if c.launchedBrowser != nil {
 		c.launchedBrowser.Close()
@@ -1374,12 +1354,7 @@ func (c *ModCDPClient) sendMessageTimeout(method string, params map[string]any, 
 		msg["sessionId"] = sessionID
 	}
 	var err error
-	if c.conn != nil {
-		body, _ := json.Marshal(msg)
-		c.writeMu.Lock()
-		err = wsutil.WriteClientText(c.conn, body)
-		c.writeMu.Unlock()
-	} else if c.transport != nil {
+	if c.transport != nil {
 		err = c.transport.Send(msg)
 	} else {
 		err = fmt.Errorf("ModCDP upstream is not connected")
@@ -1450,21 +1425,6 @@ func (c *ModCDPClient) handleMessage(msg map[string]any) {
 		return
 	}
 	c.handleEventMessage(msg)
-}
-
-func (c *ModCDPClient) reader() {
-	for {
-		data, err := wsutil.ReadServerText(c.conn)
-		if err != nil {
-			c.rejectAll(err)
-			return
-		}
-		var msg map[string]any
-		if err := json.Unmarshal(data, &msg); err != nil {
-			continue
-		}
-		c.handleMessage(msg)
-	}
 }
 
 func (c *ModCDPClient) handleEventMessage(msg map[string]any) {
