@@ -42,6 +42,21 @@ test("nativemessaging upstream config owns manifest, host, wait timeout, loopbac
   await assert.rejects(() => transport.waitForPeer(), /Timed out waiting 5ms for native messaging host com\.modcdp\.updated/);
 });
 
+test("nativemessaging upstream close rejects pending peer waits", async () => {
+  const transport = new NativeMessagingUpstreamTransport({
+    host_name: "com.modcdp.close",
+    wait_timeout_ms: 5_000,
+  });
+  const pending = transport.waitForPeer();
+
+  await transport.close();
+
+  await assert.rejects(
+    () => pending,
+    /Native messaging transport for com\.modcdp\.close closed before a peer connected/,
+  );
+});
+
 test.skipIf(process.platform === "win32")(
   "nativemessaging upstream installs the launch-profile native host manifest and connects to a real extension",
   async () => {

@@ -22,7 +22,11 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
   url = "";
   private server: any = null;
   private socket: any = null;
-  private peer_waiters = new Set<() => void>();
+  private peer_waiters = new Set<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
   private wait_timeout_ms: number;
   private manifest_path: string | null;
   private manifest_paths: string[];
@@ -115,15 +119,13 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
   async waitForPeer() {
     if (this.socket && !this.socket.destroyed) return;
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () =>
-          reject(new Error(`Timed out waiting ${this.wait_timeout_ms}ms for native messaging host ${this.host_name}.`)),
-        this.wait_timeout_ms,
-      );
-      this.peer_waiters.add(() => {
-        clearTimeout(timeout);
-        resolve();
-      });
+      let waiter!: { resolve: () => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> };
+      const timeout = setTimeout(() => {
+        this.peer_waiters.delete(waiter);
+        reject(new Error(`Timed out waiting ${this.wait_timeout_ms}ms for native messaging host ${this.host_name}.`));
+      }, this.wait_timeout_ms);
+      waiter = { resolve, reject, timeout };
+      this.peer_waiters.add(waiter);
     });
   }
 
@@ -134,6 +136,11 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
     this.socket = null;
     if (this.server) await new Promise<void>((resolve) => this.server.close(() => resolve()));
     this.server = null;
+    for (const waiter of this.peer_waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error(`Native messaging transport for ${this.host_name} closed before a peer connected.`));
+    }
+    this.peer_waiters.clear();
   }
 
   private accept(socket: any) {
@@ -158,7 +165,10 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
       this.socket = null;
       this.emitClose(new Error("Native messaging host error"));
     });
-    for (const waiter of this.peer_waiters) waiter();
+    for (const waiter of this.peer_waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve();
+    }
     this.peer_waiters.clear();
   }
 
