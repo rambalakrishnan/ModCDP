@@ -222,6 +222,18 @@ func TestModCDPClientOptionsMarshalToSnakeCaseConfigShape(t *testing.T) {
 	}
 }
 
+func TestModCDPClientOptionsUnmarshalNullServerDisablesServerConfig(t *testing.T) {
+	var options Options
+	if err := json.Unmarshal([]byte(`{"server": null}`), &options); err != nil {
+		t.Fatal(err)
+	}
+	cdp := New(options)
+
+	if cdp.Server != nil {
+		t.Fatalf("Server = %#v", cdp.Server)
+	}
+}
+
 func TestModCDPClientPreservesExplicitEmptyServiceWorkerSuffixConfig(t *testing.T) {
 	cdp := New(Options{
 		Extension: ExtensionConfig{
@@ -236,6 +248,14 @@ func TestModCDPClientPreservesExplicitEmptyServiceWorkerSuffixConfig(t *testing.
 	injectorConfig := cdp.baseExtensionInjectorConfig(nil)
 	if len(injectorConfig.ServiceWorkerURLSuffixes) != 0 {
 		t.Fatalf("injector ServiceWorkerURLSuffixes = %#v", injectorConfig.ServiceWorkerURLSuffixes)
+	}
+}
+
+func TestModCDPClientPreservesExplicitNoneServerConfig(t *testing.T) {
+	cdp := New(Options{Server: ServerNone})
+
+	if cdp.Server != nil {
+		t.Fatalf("Server = %#v", cdp.Server)
 	}
 }
 

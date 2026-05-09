@@ -115,7 +115,10 @@ type ServerConfig struct {
 	LoopbackExecutionContextTimeoutMS int               `json:"loopback_execution_context_timeout_ms,omitempty"`
 	WSConnectErrorSettleTimeoutMS     int               `json:"ws_connect_error_settle_timeout_ms,omitempty"`
 	Options                           map[string]any    `json:"-"`
+	disabled                          bool
 }
+
+var ServerNone = &ServerConfig{disabled: true}
 
 type CustomEvent struct {
 	Name        string         `json:"name"`
@@ -221,6 +224,36 @@ type Options struct {
 	CustomCommands    []CustomCommand    `json:"custom_commands,omitempty"`
 	CustomEvents      []CustomEvent      `json:"custom_events,omitempty"`
 	CustomMiddlewares []CustomMiddleware `json:"custom_middlewares,omitempty"`
+	serverConfigured  bool
+}
+
+func (o *Options) UnmarshalJSON(data []byte) error {
+	type optionsAlias Options
+	var decoded optionsAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*o = Options(decoded)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	rawServer, hasServer := raw["server"]
+	if !hasServer {
+		return nil
+	}
+	o.serverConfigured = true
+	if strings.TrimSpace(string(rawServer)) == "null" {
+		o.Server = nil
+		return nil
+	}
+	var server ServerConfig
+	if err := json.Unmarshal(rawServer, &server); err != nil {
+		return err
+	}
+	o.Server = &server
+	return nil
 }
 
 type Handler func(data any)
@@ -404,7 +437,11 @@ func New(opts Options) *ModCDPClient {
 		value := true
 		opts.Client.HydrateAliases = &value
 	}
-	if opts.Server == nil {
+	if opts.Server != nil && opts.Server.disabled {
+		opts.Server = nil
+		opts.serverConfigured = true
+	}
+	if opts.Server == nil && !opts.serverConfigured {
 		opts.Server = &ServerConfig{}
 	}
 	if upstreamEndpointKind == UpstreamEndpointKindModCDPServer && opts.Server.Routes == nil {

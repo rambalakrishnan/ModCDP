@@ -113,6 +113,11 @@ class ModCDPClientTests(unittest.TestCase):
             ["/modcdp/service_worker.js"],
         )
 
+    def test_preserves_explicit_none_server_config(self) -> None:
+        cdp = ModCDPClient(server=None)
+
+        self.assertIsNone(cdp.server)
+
     def test_only_exposes_injector_attach_after_cdp_send_is_available(self) -> None:
         cdp = ModCDPClient()
         disconnected_config = cdp._base_extension_injector_config(None)

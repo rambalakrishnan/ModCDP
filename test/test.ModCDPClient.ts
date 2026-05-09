@@ -205,6 +205,12 @@ test("ModCDPClient defaults service worker suffix config to the ModCDP worker", 
   ]);
 });
 
+test("ModCDPClient preserves explicit null server config", () => {
+  const cdp = new ModCDPClient({ server: null });
+
+  assert.equal(cdp.server, null);
+});
+
 test("ModCDPClient only exposes injector attach after CDP send is available", () => {
   const cdp = new ModCDPClient();
   const disconnected_config = cdp._baseExtensionInjectorConfig(null);
