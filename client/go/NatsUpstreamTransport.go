@@ -36,13 +36,25 @@ type NatsUpstreamTransport struct {
 	peerOnce      sync.Once
 }
 
-func NewNatsUpstreamTransport(natsURL string) *NatsUpstreamTransport {
-	normalizedURL, subjectPrefix := normalizeNATSURL(firstNonEmptyString(natsURL, DefaultNATSURL), "")
+type NatsUpstreamTransportOptions struct {
+	URL           string
+	SubjectPrefix string
+	Role          string
+	WaitTimeoutMS int
+}
+
+func NewNatsUpstreamTransport(options NatsUpstreamTransportOptions) *NatsUpstreamTransport {
+	normalizedURL, subjectPrefix := normalizeNATSURL(firstNonEmptyString(options.URL, DefaultNATSURL), options.SubjectPrefix)
+	role := firstNonEmptyString(options.Role, "client")
+	waitTimeoutMS := options.WaitTimeoutMS
+	if waitTimeoutMS == 0 {
+		waitTimeoutMS = DefaultNATSWaitTimeoutMS
+	}
 	return &NatsUpstreamTransport{
 		URL:           normalizedURL,
 		SubjectPrefix: subjectPrefix,
-		Role:          "client",
-		WaitTimeoutMS: DefaultNATSWaitTimeoutMS,
+		Role:          role,
+		WaitTimeoutMS: waitTimeoutMS,
 		peerCh:        make(chan struct{}),
 	}
 }

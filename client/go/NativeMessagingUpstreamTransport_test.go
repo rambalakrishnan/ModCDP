@@ -9,12 +9,13 @@ import (
 )
 
 func TestNativeMessagingUpstreamTransportConfigOwnsManifestLoopbackAndInjectorConfig(t *testing.T) {
-	transport := NewNativeMessagingUpstreamTransport("/tmp/modcdp-native-host.json")
-	transport.Update(map[string]any{
-		"extension_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"ws_url":       "ws://127.0.0.1:9222/devtools/browser/test",
+	transport := NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
+		ManifestPath: "/tmp/modcdp-native-host.json",
+		HostName:     "com.modcdp.test",
+		ExtensionID:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
-	if transport.GetInjectorConfig().NativeHostName != DefaultNativeMessagingHostName {
+	transport.Update(map[string]any{"ws_url": "ws://127.0.0.1:9222/devtools/browser/test"})
+	if transport.GetInjectorConfig().NativeHostName != "com.modcdp.test" {
 		t.Fatalf("injector config = %#v", transport.GetInjectorConfig())
 	}
 	if transport.GetServerConfig()["loopback_cdp_url"] != "ws://127.0.0.1:9222/devtools/browser/test" {

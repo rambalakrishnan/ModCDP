@@ -14,8 +14,10 @@ import (
 )
 
 func TestNatsUpstreamTransportConfigOwnsURLSubjectPrefixAndInjectorConfig(t *testing.T) {
-	transport := NewNatsUpstreamTransport("ws://127.0.0.1:4223")
-	transport.Update(map[string]any{"nats_subject_prefix": "modcdp.one"})
+	transport := NewNatsUpstreamTransport(NatsUpstreamTransportOptions{
+		URL:           "ws://127.0.0.1:4223",
+		SubjectPrefix: "modcdp.one",
+	})
 	if transport.URL != "ws://127.0.0.1:4223/" {
 		t.Fatalf("URL = %q", transport.URL)
 	}

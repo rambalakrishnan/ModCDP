@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class NatsUpstreamTransportTests(unittest.TestCase):
     def test_config_owns_url_subject_prefix_and_injector_config(self) -> None:
-        transport = NatsUpstreamTransport("ws://127.0.0.1:4223", subject_prefix="modcdp.one")
+        transport = NatsUpstreamTransport({"url": "ws://127.0.0.1:4223", "subject_prefix": "modcdp.one"})
         self.assertEqual(transport.url, "ws://127.0.0.1:4223/")
         self.assertEqual(transport.subject_prefix, "modcdp.one")
         self.assertEqual(

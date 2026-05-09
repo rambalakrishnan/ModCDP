@@ -6,7 +6,8 @@ import struct
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 from .ExtensionInjector import DEFAULT_MODCDP_EXTENSION_ID
 from .UpstreamTransport import UpstreamTransport
@@ -22,18 +23,16 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
 
     def __init__(
         self,
-        manifest_path: str | None = None,
-        host_name: str = DEFAULT_NATIVE_MESSAGING_HOST_NAME,
-        extension_id: str = DEFAULT_MODCDP_EXTENSION_ID,
-        wait_timeout_ms: int = DEFAULT_NATIVE_MESSAGING_WAIT_TIMEOUT_MS,
+        options: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        self.manifest_path = manifest_path
-        self.manifest_paths: list[str] = []
-        self.include_default_manifest_paths = manifest_path is None
-        self.host_name = host_name
-        self.extension_id = extension_id
-        self.wait_timeout_ms = wait_timeout_ms
+        normalized_options = dict(options or {})
+        self.manifest_path = cast(str | None, normalized_options.get("manifest_path"))
+        self.manifest_paths = list(cast(list[str], normalized_options.get("manifest_paths") or []))
+        self.include_default_manifest_paths = self.manifest_path is None and not self.manifest_paths
+        self.host_name = str(normalized_options.get("host_name") or DEFAULT_NATIVE_MESSAGING_HOST_NAME)
+        self.extension_id = str(normalized_options.get("extension_id") or DEFAULT_MODCDP_EXTENSION_ID)
+        self.wait_timeout_ms = int(normalized_options.get("wait_timeout_ms") or DEFAULT_NATIVE_MESSAGING_WAIT_TIMEOUT_MS)
         self.socket: socket.socket | None = None
         self.server: socket.socket | None = None
         self.peer_seen = threading.Event()

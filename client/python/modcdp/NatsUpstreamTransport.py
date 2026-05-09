@@ -4,6 +4,7 @@ import json
 import socket
 import ssl
 import threading
+from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -23,17 +24,18 @@ class NatsUpstreamTransport(UpstreamTransport):
 
     def __init__(
         self,
-        url: str | None = None,
-        subject_prefix: str | None = None,
-        role: str = "client",
-        wait_timeout_ms: int = DEFAULT_NATS_WAIT_TIMEOUT_MS,
+        options: str | Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        normalized_url, normalized_subject_prefix = _normalize_nats_url(url or DEFAULT_NATS_URL, subject_prefix)
+        normalized_options = {"url": options} if isinstance(options, str) else dict(options or {})
+        normalized_url, normalized_subject_prefix = _normalize_nats_url(
+            cast(str | None, normalized_options.get("url")) or DEFAULT_NATS_URL,
+            cast(str | None, normalized_options.get("subject_prefix")),
+        )
         self.url = normalized_url
         self.subject_prefix = normalized_subject_prefix
-        self.role = role
-        self.wait_timeout_ms = wait_timeout_ms
+        self.role = str(normalized_options.get("role") or "client")
+        self.wait_timeout_ms = int(normalized_options.get("wait_timeout_ms") or DEFAULT_NATS_WAIT_TIMEOUT_MS)
         self.socket: WebSocket | socket.socket | None = None
         self.connected = False
         self.closed = False

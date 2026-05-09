@@ -12,9 +12,11 @@ from modcdp.NativeMessagingUpstreamTransport import DEFAULT_NATIVE_MESSAGING_HOS
 class NativeMessagingUpstreamTransportTests(unittest.TestCase):
     def test_config_owns_manifest_loopback_and_injector_config(self) -> None:
         transport = NativeMessagingUpstreamTransport(
-            manifest_path="/tmp/modcdp-native-host.json",
-            host_name="com.modcdp.test",
-            extension_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            {
+                "manifest_path": "/tmp/modcdp-native-host.json",
+                "host_name": "com.modcdp.test",
+                "extension_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            }
         )
         self.assertEqual(transport.getInjectorConfig(), {"native_host_name": "com.modcdp.test"})
         self.assertEqual(transport.getServerConfig(), {})

@@ -762,9 +762,14 @@ class ModCDPClient(CDPSurfaceMixin):
         if mode == "reversews":
             return ReverseWebSocketUpstreamTransport(str(self.upstream.get("reversews_bind") or "127.0.0.1:29292"))
         if mode == "nativemessaging":
-            return NativeMessagingUpstreamTransport(self.upstream.get("nativemessaging_manifest"))
+            return NativeMessagingUpstreamTransport({"manifest_path": self.upstream.get("nativemessaging_manifest")})
         if mode == "nats":
-            return NatsUpstreamTransport(self.upstream.get("nats_url"))
+            return NatsUpstreamTransport(
+                {
+                    "url": self.upstream.get("nats_url"),
+                    "subject_prefix": self.upstream.get("nats_subject_prefix"),
+                }
+            )
         raise RuntimeError(f"unknown upstream.mode={mode}")
 
     def _extension_injectors_for_config(self) -> list[ExtensionInjector]:

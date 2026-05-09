@@ -1156,11 +1156,16 @@ func (c *ModCDPClient) upstreamTransport() interface {
 	case "reversews":
 		return NewReverseWebSocketUpstreamTransport(c.opts.Upstream.ReverseWSBind)
 	case "nativemessaging":
-		return NewNativeMessagingUpstreamTransport(c.opts.Upstream.NativeMessagingManifest)
+		return NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
+			ManifestPath: c.opts.Upstream.NativeMessagingManifest,
+		})
 	case "nats":
-		return NewNatsUpstreamTransport(c.opts.Upstream.NATSURL)
+		return NewNatsUpstreamTransport(NatsUpstreamTransportOptions{
+			URL:           c.opts.Upstream.NATSURL,
+			SubjectPrefix: c.opts.Upstream.NATSSubjectPrefix,
+		})
 	default:
-		return NewNatsUpstreamTransport("")
+		return NewNatsUpstreamTransport(NatsUpstreamTransportOptions{})
 	}
 }
 

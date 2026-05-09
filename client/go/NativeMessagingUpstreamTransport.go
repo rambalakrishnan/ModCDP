@@ -49,13 +49,28 @@ type NativeMessagingUpstreamTransport struct {
 	closed                      bool
 }
 
-func NewNativeMessagingUpstreamTransport(manifestPath string) *NativeMessagingUpstreamTransport {
+type NativeMessagingUpstreamTransportOptions struct {
+	ManifestPath  string
+	ManifestPaths []string
+	HostName      string
+	ExtensionID   string
+	WaitTimeoutMS int
+}
+
+func NewNativeMessagingUpstreamTransport(options NativeMessagingUpstreamTransportOptions) *NativeMessagingUpstreamTransport {
+	hostName := firstNonEmptyString(options.HostName, DefaultNativeMessagingHostName)
+	extensionID := firstNonEmptyString(options.ExtensionID, DefaultModCDPExtensionID)
+	waitTimeoutMS := options.WaitTimeoutMS
+	if waitTimeoutMS == 0 {
+		waitTimeoutMS = DefaultNativeMessagingWaitTimeoutMS
+	}
 	return &NativeMessagingUpstreamTransport{
-		ManifestPath:                manifestPath,
-		IncludeDefaultManifestPaths: manifestPath == "",
-		HostName:                    DefaultNativeMessagingHostName,
-		ExtensionID:                 DefaultModCDPExtensionID,
-		WaitTimeoutMS:               DefaultNativeMessagingWaitTimeoutMS,
+		ManifestPath:                options.ManifestPath,
+		ManifestPaths:               append([]string{}, options.ManifestPaths...),
+		IncludeDefaultManifestPaths: options.ManifestPath == "" && len(options.ManifestPaths) == 0,
+		HostName:                    hostName,
+		ExtensionID:                 extensionID,
+		WaitTimeoutMS:               waitTimeoutMS,
 		peerCh:                      make(chan struct{}),
 	}
 }
