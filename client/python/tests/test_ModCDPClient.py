@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any, cast
 
 from websocket import create_connection
@@ -159,13 +159,26 @@ class ModCDPClientTests(unittest.TestCase):
                 if payload.get("sent_at") == sent_at:
                     pong.put(payload)
 
-            cdp.on("Mod.pong", on_pong)
+            muted: Queue[Mapping[str, Any]] = Queue()
+
+            def muted_pong(payload: Mapping[str, Any]) -> None:
+                muted.put(payload)
+
+            cdp.on("Mod.pong", muted_pong)
+            cdp.off("Mod.pong", muted_pong)
+            cdp.once("Mod.pong", on_pong)
             ping_result = cdp.Mod.ping(sent_at=sent_at)
             pong_payload = pong.get(timeout=10)
+            with self.assertRaises(Empty):
+                muted.get(timeout=0.2)
             self.assertEqual(ping_result["ok"], True)
             self.assertEqual(pong_payload["sent_at"], sent_at)
             self.assertIsInstance(pong_payload["received_at"], int | float)
             self.assertEqual(pong_payload["from"], "extension-service-worker")
+
+            cdp.Mod.ping(sent_at=sent_at + 1)
+            with self.assertRaises(Empty):
+                pong.get(timeout=0.2)
         finally:
             cdp.close()
 

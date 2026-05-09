@@ -21,8 +21,8 @@ func TestTypedCDPEventsWrapRawHandlers(t *testing.T) {
 			"url":      "https://example.com",
 		},
 	}
-	for _, handler := range cdp.handlers["Target.targetCreated"] {
-		handler(payload)
+	for _, entry := range cdp.handlers["Target.targetCreated"] {
+		entry.handler(payload)
 	}
 
 	typed := <-typedEvents

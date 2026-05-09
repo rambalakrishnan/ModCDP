@@ -94,8 +94,8 @@ func TestTypedCustomEventRegistrationAndHandler(t *testing.T) {
 		seen <- event["data"].(string)
 	})
 	if data, ok := cdp.validateEventData("Custom.someEvent", map[string]any{"data": "ok"}); ok {
-		for _, handler := range cdp.handlers["Custom.someEvent"] {
-			handler(data)
+		for _, entry := range cdp.handlers["Custom.someEvent"] {
+			entry.handler(data)
 		}
 	} else {
 		t.Fatal("expected valid typed event payload")

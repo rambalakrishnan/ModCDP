@@ -387,7 +387,13 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	}
 	sent_at := time.Now().UnixMilli()
 	pong := make(chan map[string]any, 1)
-	cdp.On("Mod.pong", func(payload any) {
+	muted := make(chan any, 1)
+	mutedHandler := func(payload any) {
+		muted <- payload
+	}
+	cdp.On("Mod.pong", mutedHandler)
+	cdp.Off("Mod.pong", mutedHandler)
+	cdp.Once("Mod.pong", func(payload any) {
 		event, _ := payload.(map[string]any)
 		if event == nil {
 			return
@@ -411,6 +417,19 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 		}
 		if _, ok := numberAsInt64(pong_payload["received_at"]); !ok {
 			t.Fatalf("Mod.pong received_at = %#v", pong_payload["received_at"])
+		}
+		select {
+		case payload := <-muted:
+			t.Fatalf("off handler received payload %#v", payload)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if _, err := cdp.Send("Mod.ping", map[string]any{"sent_at": sent_at + 1}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-pong:
+			t.Fatalf("once handler received second event %#v", event)
+		case <-time.After(200 * time.Millisecond):
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Mod.pong")

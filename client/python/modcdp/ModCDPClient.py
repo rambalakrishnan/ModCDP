@@ -322,6 +322,7 @@ class ModCDPClient(CDPSurfaceMixin):
         self._next_id = 0
         self._pending: dict[int, PendingEntry] = {}
         self._handlers: dict[str, list[Handler]] = {}
+        self._handler_wrappers: dict[tuple[str, Handler], Handler] = {}
         self._lock = threading.Lock()
         self.auto_sessions = AutoSessionRouter(
             lambda method, params=None, session_id=None: self._send_message(method, params or {}, session_id),
@@ -523,7 +524,29 @@ class ModCDPClient(CDPSurfaceMixin):
                 return handler(typed_payload)
 
             wrapped_handler = typed_handler
-        self._handlers.setdefault(event_name, []).append(wrapped_handler)
+        self._handler_wrappers[(event_name, handler)] = wrapped_handler
+        handlers = self._handlers.setdefault(event_name, [])
+        if wrapped_handler not in handlers:
+            handlers.append(wrapped_handler)
+        return self
+
+    def once(self, event: str | type[CDPEvent], handler: Handler) -> "ModCDPClient":
+        def wrapped_handler(payload: Any) -> Any:
+            self.off(event, wrapped_handler)
+            return handler(payload)
+
+        return self.on(event, wrapped_handler)
+
+    def off(self, event: str | type[CDPEvent], handler: Handler) -> "ModCDPClient":
+        event_name = cdp_event_name(event) if not isinstance(event, str) else event
+        if event_name is None:
+            raise TypeError("event must be a CDP event class or event name string")
+        wrapped_handler = self._handler_wrappers.pop((event_name, handler), handler)
+        handlers = self._handlers.get(event_name)
+        if handlers and wrapped_handler in handlers:
+            handlers.remove(wrapped_handler)
+            if not handlers:
+                self._handlers.pop(event_name, None)
         return self
 
     def __await__(self):

@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -224,6 +225,11 @@ type Options struct {
 
 type Handler func(data any)
 
+type handlerEntry struct {
+	handler Handler
+	pointer uintptr
+}
+
 type CDPEvent struct {
 	Method       string         `json:"method"`
 	Params       map[string]any `json:"params,omitempty"`
@@ -293,7 +299,7 @@ type ModCDPClient struct {
 	mu                   sync.Mutex
 	nextID               int64
 	pending              map[int64]chan map[string]any
-	handlers             map[string][]Handler
+	handlers             map[string][]handlerEntry
 	cdpHandlers          map[string][]func(CDPEvent)
 	commandParamsSchemas map[string]map[string]any
 	commandResultSchemas map[string]map[string]any
@@ -426,7 +432,7 @@ func New(opts Options) *ModCDPClient {
 	client := &ModCDPClient{
 		opts:                 opts,
 		pending:              map[int64]chan map[string]any{},
-		handlers:             map[string][]Handler{},
+		handlers:             map[string][]handlerEntry{},
 		cdpHandlers:          map[string][]func(CDPEvent){},
 		commandParamsSchemas: map[string]map[string]any{},
 		commandResultSchemas: map[string]map[string]any{},
@@ -1036,20 +1042,63 @@ func (c *ModCDPClient) SendRaw(method string, params map[string]any, sessionID .
 	return result, err
 }
 
-func (c *ModCDPClient) OnRaw(event string, handler Handler) {
-	c.On(event, handler)
+func (c *ModCDPClient) OnRaw(event string, handler Handler) *ModCDPClient {
+	return c.On(event, handler)
 }
 
-func (c *ModCDPClient) OnCDP(event string, handler func(CDPEvent)) {
+func (c *ModCDPClient) OnCDP(event string, handler func(CDPEvent)) *ModCDPClient {
 	c.handlersMu.Lock()
 	defer c.handlersMu.Unlock()
 	c.cdpHandlers[event] = append(c.cdpHandlers[event], handler)
+	return c
 }
 
-func (c *ModCDPClient) On(event string, handler Handler) {
+func (c *ModCDPClient) On(event string, handler Handler) *ModCDPClient {
 	c.handlersMu.Lock()
 	defer c.handlersMu.Unlock()
-	c.handlers[event] = append(c.handlers[event], handler)
+	pointer := handlerPointer(handler)
+	for _, existing := range c.handlers[event] {
+		if existing.pointer == pointer {
+			return c
+		}
+	}
+	c.handlers[event] = append(c.handlers[event], handlerEntry{handler: handler, pointer: pointer})
+	return c
+}
+
+func (c *ModCDPClient) Once(event string, handler Handler) *ModCDPClient {
+	var wrapped Handler
+	wrapped = func(data any) {
+		c.Off(event, wrapped)
+		handler(data)
+	}
+	return c.On(event, wrapped)
+}
+
+func (c *ModCDPClient) Off(event string, handler Handler) *ModCDPClient {
+	c.handlersMu.Lock()
+	defer c.handlersMu.Unlock()
+	pointer := handlerPointer(handler)
+	entries := c.handlers[event]
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if entry.pointer != pointer {
+			filtered = append(filtered, entry)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(c.handlers, event)
+	} else {
+		c.handlers[event] = filtered
+	}
+	return c
+}
+
+func handlerPointer(handler Handler) uintptr {
+	if handler == nil {
+		return 0
+	}
+	return reflect.ValueOf(handler).Pointer()
 }
 
 func (c *ModCDPClient) Close() {
@@ -1233,7 +1282,7 @@ func (c *ModCDPClient) sendRaw(command rawCommand) (any, error) {
 func (c *ModCDPClient) measurePingLatency() error {
 	sent_at := time.Now().UnixMilli()
 	ch := make(chan any, 1)
-	c.On("Mod.pong", func(data any) {
+	c.Once("Mod.pong", func(data any) {
 		select {
 		case ch <- data:
 		default:
@@ -1383,12 +1432,12 @@ func (c *ModCDPClient) handleEventMessage(msg map[string]any) {
 				return
 			}
 			c.handlersMu.Lock()
-			hs := append([]Handler(nil), c.handlers[event]...)
+			hs := append([]handlerEntry(nil), c.handlers[event]...)
 			cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
 			cdpHandlers = append(cdpHandlers, c.cdpHandlers[event]...)
 			c.handlersMu.Unlock()
 			for _, h := range hs {
-				go h(validatedData)
+				go h.handler(validatedData)
 			}
 			if bindingName == upstreamEventBindingName {
 				dataMap, _ := validatedData.(map[string]any)
@@ -1410,12 +1459,12 @@ func (c *ModCDPClient) handleEventMessage(msg map[string]any) {
 			validatedParamsMap = map[string]any{}
 		}
 		c.handlersMu.Lock()
-		hs := append([]Handler(nil), c.handlers[method]...)
+		hs := append([]handlerEntry(nil), c.handlers[method]...)
 		cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
 		cdpHandlers = append(cdpHandlers, c.cdpHandlers[method]...)
 		c.handlersMu.Unlock()
 		for _, h := range hs {
-			go h(validatedParams)
+			go h.handler(validatedParams)
 		}
 		if len(cdpHandlers) > 0 {
 			event := CDPEvent{Method: method, Params: validatedParamsMap, CDPSessionID: sessionID, SessionID: sessionID}
