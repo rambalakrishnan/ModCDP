@@ -86,6 +86,21 @@ class WebSocketUpstreamTransportTests(unittest.TestCase):
             transport.close()
             chrome["close"]()
 
+    def test_close_clears_connection_state(self) -> None:
+        chrome = LocalBrowserLauncher({"headless": True, "sandbox": False}).launch()
+        transport = WebSocketUpstreamTransport(chrome["cdp_url"])
+
+        try:
+            transport.connect()
+            self.assertIsNotNone(transport.ws)
+            transport.close()
+            self.assertIsNone(transport.ws)
+            with self.assertRaisesRegex(RuntimeError, "CDP websocket is not connected"):
+                transport.send({"id": 1, "method": "Browser.getVersion"})
+        finally:
+            transport.close()
+            chrome["close"]()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,3 +94,22 @@ test("ws upstream resolves a real HTTP CDP endpoint to the browser websocket", a
     await chrome.close();
   }
 }, 60_000);
+
+test("ws upstream close clears connection state", async () => {
+  const chrome = await new LocalBrowserLauncher({
+    headless: true,
+    sandbox: process.platform !== "linux",
+  }).launch();
+  const transport = new WebSocketUpstreamTransport(chrome.cdp_url);
+
+  try {
+    await transport.connect();
+    assert.ok(transport.ws);
+    await transport.close();
+    assert.equal(transport.ws, null);
+    assert.throws(() => transport.send({ id: 1, method: "Browser.getVersion" }), /CDP websocket is not connected/);
+  } finally {
+    await transport.close();
+    await chrome.close();
+  }
+}, 60_000);
