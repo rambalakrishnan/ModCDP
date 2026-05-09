@@ -42,6 +42,7 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
         self._close_generation = 0
         self.bound_port: int | None = None
         self.cdp_url: str | None = None
+        self.user_data_dir: str | None = None
         self.url = ""
 
     def update(self, config: dict[str, Any] | None = None) -> "NativeMessagingUpstreamTransport":
@@ -66,8 +67,9 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
             self.extension_id = extension_id
             should_install_native_host = True
         user_data_dir = config.get("user_data_dir")
-        if isinstance(user_data_dir, str) and user_data_dir:
+        if isinstance(user_data_dir, str) and user_data_dir and user_data_dir != self.user_data_dir:
             self._set_profile_manifest_paths(user_data_dir)
+            self.user_data_dir = user_data_dir
             should_install_native_host = True
         if should_install_native_host and self.bound_port is not None:
             self._install_native_host(self.bound_port)
@@ -196,10 +198,25 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
             _register_windows_native_messaging_host(self.host_name, manifest_paths[0])
 
     def _set_profile_manifest_paths(self, user_data_dir: str) -> None:
-        self.manifest_paths = [
+        previous_profile_manifest_paths = (
+            [
+                str(Path(self.user_data_dir) / "NativeMessagingHosts" / f"{self.host_name}.json"),
+                str(Path(self.user_data_dir) / "Default" / "NativeMessagingHosts" / f"{self.host_name}.json"),
+            ]
+            if self.user_data_dir
+            else []
+        )
+        profile_manifest_paths = [
             str(Path(user_data_dir) / "NativeMessagingHosts" / f"{self.host_name}.json"),
             str(Path(user_data_dir) / "Default" / "NativeMessagingHosts" / f"{self.host_name}.json"),
-            *self.manifest_paths,
+        ]
+        self.manifest_paths = [
+            *profile_manifest_paths,
+            *[
+                manifest_path
+                for manifest_path in self.manifest_paths
+                if manifest_path not in previous_profile_manifest_paths and manifest_path not in profile_manifest_paths
+            ],
         ]
 
 

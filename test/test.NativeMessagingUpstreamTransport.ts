@@ -45,6 +45,13 @@ test("nativemessaging upstream config owns manifest, host, wait timeout, loopbac
     (transport as unknown as { include_default_manifest_paths: boolean }).include_default_manifest_paths,
     true,
   );
+  transport.update({ user_data_dir: "/tmp/modcdp-profile-one" });
+  transport.update({ user_data_dir: "/tmp/modcdp-profile-one" });
+  transport.update({ user_data_dir: "/tmp/modcdp-profile-two" });
+  assert.deepEqual((transport as unknown as { manifest_paths: string[] }).manifest_paths, [
+    path.join("/tmp/modcdp-profile-two", "NativeMessagingHosts", "com.modcdp.updated.json"),
+    path.join("/tmp/modcdp-profile-two", "Default", "NativeMessagingHosts", "com.modcdp.updated.json"),
+  ]);
   await assert.rejects(
     () => transport.waitForPeer(),
     /Timed out waiting 5ms for native messaging host com\.modcdp\.updated/,

@@ -42,6 +42,16 @@ func TestNativeMessagingUpstreamTransportConfigOwnsManifestHostWaitTimeoutLoopba
 	if !transport.IncludeDefaultManifestPaths {
 		t.Fatal("IncludeDefaultManifestPaths should be true after clearing ManifestPath and ManifestPaths")
 	}
+	transport.Update(map[string]any{"user_data_dir": "/tmp/modcdp-profile-one"})
+	transport.Update(map[string]any{"user_data_dir": "/tmp/modcdp-profile-one"})
+	transport.Update(map[string]any{"user_data_dir": "/tmp/modcdp-profile-two"})
+	expectedManifestPaths := []string{
+		filepath.Join("/tmp/modcdp-profile-two", "NativeMessagingHosts", "com.modcdp.updated.json"),
+		filepath.Join("/tmp/modcdp-profile-two", "Default", "NativeMessagingHosts", "com.modcdp.updated.json"),
+	}
+	if strings.Join(transport.ManifestPaths, "\n") != strings.Join(expectedManifestPaths, "\n") {
+		t.Fatalf("ManifestPaths = %#v", transport.ManifestPaths)
+	}
 	if err := transport.WaitForPeer(); err == nil || !strings.Contains(err.Error(), "timed out waiting 5ms for native messaging host com.modcdp.updated") {
 		t.Fatalf("WaitForPeer error = %v", err)
 	}

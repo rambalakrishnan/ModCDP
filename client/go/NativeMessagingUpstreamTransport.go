@@ -44,6 +44,7 @@ type NativeMessagingUpstreamTransport struct {
 	Conn                        net.Conn
 	BoundPort                   int
 	CDPURL                      string
+	UserDataDir                 string
 	writeMu                     sync.Mutex
 	peerCh                      chan struct{}
 	peerOnce                    sync.Once
@@ -116,8 +117,9 @@ func (t *NativeMessagingUpstreamTransport) Update(config map[string]any) {
 		t.ExtensionID = extensionID
 		shouldInstallNativeHost = true
 	}
-	if userDataDir, _ := config["user_data_dir"].(string); userDataDir != "" {
+	if userDataDir, _ := config["user_data_dir"].(string); userDataDir != "" && userDataDir != t.UserDataDir {
 		t.setProfileManifestPaths(userDataDir)
+		t.UserDataDir = userDataDir
 		shouldInstallNativeHost = true
 	}
 	if shouldInstallNativeHost && t.BoundPort != 0 {
@@ -312,11 +314,27 @@ func (t *NativeMessagingUpstreamTransport) installNativeHost(port int) error {
 }
 
 func (t *NativeMessagingUpstreamTransport) setProfileManifestPaths(userDataDir string) {
+	previousProfileManifestPaths := map[string]bool{}
+	if t.UserDataDir != "" {
+		previousProfileManifestPaths[filepath.Join(t.UserDataDir, "NativeMessagingHosts", t.HostName+".json")] = true
+		previousProfileManifestPaths[filepath.Join(t.UserDataDir, "Default", "NativeMessagingHosts", t.HostName+".json")] = true
+	}
 	profileManifestPaths := []string{
 		filepath.Join(userDataDir, "NativeMessagingHosts", t.HostName+".json"),
 		filepath.Join(userDataDir, "Default", "NativeMessagingHosts", t.HostName+".json"),
 	}
-	t.ManifestPaths = append(profileManifestPaths, t.ManifestPaths...)
+	nextProfileManifestPaths := map[string]bool{}
+	for _, manifestPath := range profileManifestPaths {
+		nextProfileManifestPaths[manifestPath] = true
+	}
+	filteredManifestPaths := []string{}
+	for _, manifestPath := range t.ManifestPaths {
+		if previousProfileManifestPaths[manifestPath] || nextProfileManifestPaths[manifestPath] {
+			continue
+		}
+		filteredManifestPaths = append(filteredManifestPaths, manifestPath)
+	}
+	t.ManifestPaths = append(profileManifestPaths, filteredManifestPaths...)
 }
 
 func defaultNativeMessagingManifestPaths(hostName string) []string {

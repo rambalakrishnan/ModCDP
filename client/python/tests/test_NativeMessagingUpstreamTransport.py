@@ -42,6 +42,16 @@ class NativeMessagingUpstreamTransportTests(unittest.TestCase):
         self.assertFalse(transport.include_default_manifest_paths)
         transport.update({"manifest_path": None})
         self.assertTrue(transport.include_default_manifest_paths)
+        transport.update({"user_data_dir": "/tmp/modcdp-profile-one"})
+        transport.update({"user_data_dir": "/tmp/modcdp-profile-one"})
+        transport.update({"user_data_dir": "/tmp/modcdp-profile-two"})
+        self.assertEqual(
+            transport.manifest_paths,
+            [
+                str(Path("/tmp/modcdp-profile-two") / "NativeMessagingHosts" / "com.modcdp.updated.json"),
+                str(Path("/tmp/modcdp-profile-two") / "Default" / "NativeMessagingHosts" / "com.modcdp.updated.json"),
+            ],
+        )
         with self.assertRaisesRegex(RuntimeError, r"Timed out waiting 5ms for native messaging host com\.modcdp\.updated"):
             transport.waitForPeer()
 

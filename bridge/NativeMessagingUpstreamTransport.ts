@@ -75,9 +75,9 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
       this.extension_id = config.extension_id;
       should_install_native_host = true;
     }
-    if (config.user_data_dir) {
-      this.user_data_dir = config.user_data_dir;
+    if (config.user_data_dir && config.user_data_dir !== this.user_data_dir) {
       this.setProfileManifestPaths(config.user_data_dir);
+      this.user_data_dir = config.user_data_dir;
       should_install_native_host = true;
     }
     if (should_install_native_host && this.bound_port != null) this.installNativeHost(this.bound_port);
@@ -216,11 +216,23 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
   }
 
   private setProfileManifestPaths(user_data_dir: string) {
+    const previous_profile_manifest_paths = this.user_data_dir
+      ? [
+          path.join(this.user_data_dir, "NativeMessagingHosts", `${this.host_name}.json`),
+          path.join(this.user_data_dir, "Default", "NativeMessagingHosts", `${this.host_name}.json`),
+        ]
+      : [];
     const profile_manifest_paths = [
       path.join(user_data_dir, "NativeMessagingHosts", `${this.host_name}.json`),
       path.join(user_data_dir, "Default", "NativeMessagingHosts", `${this.host_name}.json`),
     ];
-    this.manifest_paths = [...profile_manifest_paths, ...this.manifest_paths];
+    this.manifest_paths = [
+      ...profile_manifest_paths,
+      ...this.manifest_paths.filter(
+        (manifest_path) =>
+          !previous_profile_manifest_paths.includes(manifest_path) && !profile_manifest_paths.includes(manifest_path),
+      ),
+    ];
   }
 }
 
