@@ -796,7 +796,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     return factories[this.launch.mode]();
   }
 
-  async _launchOptions(): Promise<BrowserLaunchOptions> {
+  _launchOptions(): BrowserLaunchOptions {
     return {
       ...this.launch.options,
       ...(this.launch.executable_path ? { executable_path: this.launch.executable_path } : {}),

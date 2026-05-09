@@ -14,6 +14,77 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+test("ModCDPClient normalizes nested config owners", () => {
+  const cdp = new ModCDPClient({
+    launch: {
+      mode: "local",
+      executable_path: "/tmp/chrome",
+      user_data_dir: "/tmp/profile",
+      options: { headless: true },
+    },
+    upstream: {
+      mode: "ws",
+      ws_url: "http://127.0.0.1:9222",
+      reversews_wait_timeout_ms: 456,
+      ws_connect_error_settle_timeout_ms: 321,
+    },
+    extension: {
+      mode: "discover",
+      path: "/tmp/ext",
+      extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      service_worker_url_includes: ["modcdp"],
+      service_worker_url_suffixes: ["/custom/service_worker.js"],
+      trust_service_worker_target: true,
+      require_service_worker_target: true,
+      execution_context_timeout_ms: 4321,
+      service_worker_probe_timeout_ms: 5432,
+      service_worker_ready_timeout_ms: 6543,
+      service_worker_poll_interval_ms: 76,
+      target_session_poll_interval_ms: 87,
+    },
+    client: {
+      routes: { "*.*": "direct_cdp" },
+      hydrate_aliases: false,
+      mirror_upstream_events: false,
+      cdp_send_timeout_ms: 1234,
+      event_wait_timeout_ms: 2345,
+    },
+    server: {
+      routes: { "*.*": "loopback_cdp" },
+      browser_token: "token-1",
+      cdp_send_timeout_ms: 9876,
+      loopback_execution_context_timeout_ms: 8765,
+      ws_connect_error_settle_timeout_ms: 7654,
+    },
+  });
+
+  assert.deepEqual(cdp.launch.options, { headless: true });
+  assert.equal(cdp._launchOptions().executable_path, "/tmp/chrome");
+  assert.equal(cdp._launchOptions().user_data_dir, "/tmp/profile");
+  assert.equal(cdp.upstream.reversews_wait_timeout_ms, 456);
+  assert.equal(cdp.upstream.ws_connect_error_settle_timeout_ms, 321);
+  assert.equal(cdp.extension.execution_context_timeout_ms, 4321);
+  assert.equal(cdp.extension.service_worker_probe_timeout_ms, 5432);
+  assert.equal(cdp.extension.service_worker_ready_timeout_ms, 6543);
+  assert.equal(cdp.extension.service_worker_poll_interval_ms, 76);
+  assert.equal(cdp.extension.target_session_poll_interval_ms, 87);
+  assert.equal(cdp.client.routes["*.*"], "direct_cdp");
+  assert.equal(cdp.client.hydrate_aliases, false);
+  assert.equal(cdp.client.mirror_upstream_events, false);
+  assert.equal(cdp.client.cdp_send_timeout_ms, 1234);
+  assert.equal(cdp.client.event_wait_timeout_ms, 2345);
+  assert.equal("routes" in cdp, false);
+  assert.equal("cdp_send_timeout_ms" in cdp, false);
+  assert.equal("service_worker_probe_timeout_ms" in cdp, false);
+
+  const params = cdp._serverConfigureParams();
+  assert.equal(params.client.routes["*.*"], "direct_cdp");
+  assert.equal(params.server.browser_token, "token-1");
+  assert.equal(params.server.cdp_send_timeout_ms, 9876);
+  assert.equal(params.server.loopback_execution_context_timeout_ms, 8765);
+  assert.equal(params.server.ws_connect_error_settle_timeout_ms, 7654);
+});
+
 test("ModCDPClient connects with nested launch/upstream/extension/client/server config", async () => {
   const cdp = new ModCDPClient({
     launch: {
