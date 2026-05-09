@@ -44,6 +44,15 @@ class NativeMessagingUpstreamTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"Timed out waiting 5ms for native messaging host com\.modcdp\.updated"):
             transport.waitForPeer()
 
+    def test_close_resets_peer_wait_state(self) -> None:
+        transport = NativeMessagingUpstreamTransport({"wait_timeout_ms": 5})
+
+        transport.peer_seen.set()
+        transport.waitForPeer()
+        transport.close()
+        with self.assertRaisesRegex(RuntimeError, r"Timed out waiting 5ms for native messaging host com\.modcdp\.bridge"):
+            transport.waitForPeer()
+
     def test_installs_launch_profile_native_host_manifest_and_connects_to_real_extension(self) -> None:
         cdp = ModCDPClient(
             launch={"mode": "local", "options": {"headless": True, "sandbox": False}},

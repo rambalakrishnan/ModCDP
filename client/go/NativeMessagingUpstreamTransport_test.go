@@ -47,6 +47,24 @@ func TestNativeMessagingUpstreamTransportConfigOwnsManifestHostWaitTimeoutLoopba
 	}
 }
 
+func TestNativeMessagingUpstreamTransportCloseResetsPeerWaitState(t *testing.T) {
+	transport := NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{WaitTimeoutMS: 5})
+
+	transport.peerOnce.Do(func() { close(transport.peerCh) })
+	if err := transport.WaitForPeer(); err != nil {
+		t.Fatalf("WaitForPeer before close = %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if err := transport.WaitForPeer(); err == nil || !strings.Contains(err.Error(), "timed out waiting 5ms for native messaging host com.modcdp.bridge") {
+		t.Fatalf("WaitForPeer after close = %v", err)
+	}
+	if !transport.closed {
+		t.Fatalf("closed after Close = %v", transport.closed)
+	}
+}
+
 func TestNativeMessagingUpstreamTransportInstallsLaunchProfileManifestAndConnectsToRealExtension(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("native messaging profile manifest path is not implemented on Windows")

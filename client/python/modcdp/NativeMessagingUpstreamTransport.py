@@ -106,6 +106,7 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
                 pass
         self.socket = None
         self.server = None
+        self.peer_seen.clear()
 
     def _accept_loop(self) -> None:
         server = self.server

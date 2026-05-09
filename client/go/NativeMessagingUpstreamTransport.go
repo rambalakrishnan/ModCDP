@@ -138,6 +138,7 @@ func (t *NativeMessagingUpstreamTransport) GetInjectorConfig() ExtensionInjector
 }
 
 func (t *NativeMessagingUpstreamTransport) Connect() error {
+	t.closed = false
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -185,6 +186,8 @@ func (t *NativeMessagingUpstreamTransport) Close() error {
 		_ = t.Listener.Close()
 		t.Listener = nil
 	}
+	t.peerCh = make(chan struct{})
+	t.peerOnce = sync.Once{}
 	return nil
 }
 
