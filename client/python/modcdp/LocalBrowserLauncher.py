@@ -76,11 +76,13 @@ class LocalBrowserLauncher(BrowserLauncher):
             try:
                 with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=0.5) as response:
                     version = json.loads(response.read())
-                    return {
+                    self.launched = {
                         "cdp_url": cdp_url,
                         "ws_url": version.get("webSocketDebuggerUrl") or cdp_url,
+                        "profile_dir": profile_dir,
                         "close": lambda: _close(process, temp_profile_dir),
                     }
+                    return self.launched
             except Exception:
                 time.sleep(poll_s)
         _close(process, temp_profile_dir)

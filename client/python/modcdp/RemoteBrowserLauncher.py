@@ -11,4 +11,5 @@ class RemoteBrowserLauncher(BrowserLauncher):
     def launch(self, options: BrowserLaunchOptions | None = None) -> LaunchedBrowser:
         if not self.cdp_url:
             raise RuntimeError("launch.mode='remote' requires upstream.ws_url.")
-        return {"cdp_url": self.cdp_url, "ws_url": self.cdp_url, "close": lambda: None}
+        self.launched = {"cdp_url": self.cdp_url, "ws_url": self.cdp_url, "close": lambda: None}
+        return self.launched

@@ -138,12 +138,18 @@ type CustomMiddleware struct {
 }
 
 type LaunchOptions struct {
-	ExecutablePath string
-	ExtraArgs      []string
-	Headless       *bool
-	Port           int
-	Sandbox        *bool
-	UserDataDir    string
+	ExecutablePath     string
+	ExtraArgs          []string
+	Headless           *bool
+	Port               int
+	Sandbox            *bool
+	UserDataDir        string
+	CDPURL             string
+	WSURL              string
+	BrowserbaseAPIKey  string
+	BaseURL            string
+	BrowserbaseBaseURL string
+	ExtensionID        string
 }
 
 type LaunchConfig struct {

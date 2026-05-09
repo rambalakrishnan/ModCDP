@@ -5,4 +5,5 @@ from .BrowserLauncher import BrowserLaunchOptions, BrowserLauncher, LaunchedBrow
 
 class NoopBrowserLauncher(BrowserLauncher):
     def launch(self, options: BrowserLaunchOptions | None = None) -> LaunchedBrowser:
-        return {"cdp_url": None, "ws_url": None, "close": lambda: None}
+        self.launched = {"cdp_url": None, "ws_url": None, "close": lambda: None}
+        return self.launched
