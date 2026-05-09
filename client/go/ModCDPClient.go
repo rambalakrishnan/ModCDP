@@ -885,6 +885,10 @@ func (c *ModCDPClient) extensionInjectorsForConfig() []extensionInjector {
 		injectors = append(injectors, &injector)
 	}
 	if c.opts.Extension.Mode == "auto" || c.opts.Extension.Mode == "inject" {
+		if c.opts.Launch.Mode == "bb" {
+			injector := NewBBBrowserExtensionInjector(ExtensionInjectorConfig{})
+			injectors = append(injectors, &injector)
+		}
 		if c.opts.Launch.Mode == "local" {
 			injector := NewLocalBrowserLaunchExtensionInjector(ExtensionInjectorConfig{})
 			injectors = append(injectors, &injector)
