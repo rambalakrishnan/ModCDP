@@ -122,6 +122,23 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 	}
 }
 
+func TestModCDPClientPreservesExplicitEmptyServiceWorkerSuffixConfig(t *testing.T) {
+	cdp := New(Options{
+		Extension: ExtensionConfig{
+			Mode:                     "borrow",
+			ServiceWorkerURLSuffixes: []string{},
+		},
+	})
+
+	if len(cdp.opts.Extension.ServiceWorkerURLSuffixes) != 0 {
+		t.Fatalf("ServiceWorkerURLSuffixes = %#v", cdp.opts.Extension.ServiceWorkerURLSuffixes)
+	}
+	injectorConfig := cdp.baseExtensionInjectorConfig(nil)
+	if len(injectorConfig.ServiceWorkerURLSuffixes) != 0 {
+		t.Fatalf("injector ServiceWorkerURLSuffixes = %#v", injectorConfig.ServiceWorkerURLSuffixes)
+	}
+}
+
 func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	cdp := New(Options{
 		Launch: LaunchConfig{

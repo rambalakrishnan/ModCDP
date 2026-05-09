@@ -91,6 +91,12 @@ class ModCDPClientTests(unittest.TestCase):
         self.assertEqual(params["server"]["loopback_execution_context_timeout_ms"], 8765)
         self.assertEqual(params["server"]["ws_connect_error_settle_timeout_ms"], 7654)
 
+    def test_preserves_explicit_empty_service_worker_suffix_config(self) -> None:
+        cdp = ModCDPClient(extension={"mode": "borrow", "service_worker_url_suffixes": []})
+
+        self.assertEqual(cdp.extension["service_worker_url_suffixes"], [])
+        self.assertEqual(cdp._base_extension_injector_config(None)["service_worker_url_suffixes"], [])
+
     def test_connects_with_local_launch_and_injector_chain(self) -> None:
         cdp = ModCDPClient(
             launch={"mode": "local", "options": {"headless": True, "sandbox": False}},

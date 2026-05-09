@@ -279,6 +279,7 @@ class ModCDPClient(CDPSurfaceMixin):
         extension_mode = extension_input.get("mode") or (
             "auto" if self.upstream_endpoint_kind == "raw_cdp" else "none"
         )
+        raw_service_worker_url_suffixes = extension_input.get("service_worker_url_suffixes")
         self.extension: dict[str, Any] = {
             "mode": extension_mode,
             "path": extension_input.get("path") or default_extension_path(),
@@ -289,8 +290,9 @@ class ModCDPClient(CDPSurfaceMixin):
             "service_worker_url_suffixes": list(
                 cast(
                     Sequence[str],
-                    extension_input.get("service_worker_url_suffixes")
-                    or DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES,
+                    DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES
+                    if raw_service_worker_url_suffixes is None
+                    else raw_service_worker_url_suffixes,
                 )
             ),
             "trust_service_worker_target": bool(extension_input.get("trust_service_worker_target", False)),

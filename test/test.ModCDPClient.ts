@@ -77,6 +77,18 @@ test("ModCDPClient connects with nested launch/upstream/extension/client/server 
   }
 }, 60_000);
 
+test("ModCDPClient preserves explicit empty service worker suffix config", async () => {
+  const cdp = new ModCDPClient({
+    extension: {
+      mode: "borrow",
+      service_worker_url_suffixes: [],
+    },
+  });
+
+  assert.deepEqual(cdp.extension.service_worker_url_suffixes, []);
+  assert.deepEqual((await cdp._baseExtensionInjectorConfig()).service_worker_url_suffixes, []);
+});
+
 test("ModCDPClient.close does not close a remote browser it did not launch", async () => {
   const chrome = await new LocalBrowserLauncher({
     headless: true,
