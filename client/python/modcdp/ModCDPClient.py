@@ -39,6 +39,16 @@ from pydantic_core import to_jsonable_python
 from .jsonschema import type_adapter_from_json_schema
 from .cdp.surface import AwaitableDict, CDPEvent, CDPSurfaceMixin, cdp_event_name, install_cdp_surface
 from .BrowserbaseBrowserLauncher import BrowserbaseBrowserLauncher
+from .BBBrowserExtensionInjector import BBBrowserExtensionInjector
+from .BorrowedExtensionInjector import BorrowedExtensionInjector
+from .DiscoveredExtensionInjector import DiscoveredExtensionInjector
+from .ExtensionInjector import (
+    DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES,
+    ExtensionInjector,
+    ExtensionInjectorConfig,
+)
+from .ExtensionsLoadUnpackedInjector import ExtensionsLoadUnpackedInjector
+from .LocalBrowserLaunchExtensionInjector import LocalBrowserLaunchExtensionInjector
 from .LocalBrowserLauncher import LocalBrowserLauncher
 from .NoopBrowserLauncher import NoopBrowserLauncher
 from .RemoteBrowserLauncher import RemoteBrowserLauncher
@@ -306,7 +316,7 @@ class ModCDPClient(CDPSurfaceMixin):
         self.custom_events: list[ModCDPAddCustomEventParams] = list(custom_events or [])
         self.custom_middlewares: list[ModCDPAddMiddlewareParams] = list(custom_middlewares or [])
         self.service_worker_url_includes: list[str] = list(cast(Sequence[str], self.extension.get("service_worker_url_includes") or []))
-        self.service_worker_url_suffixes: list[str] = list(cast(Sequence[str], self.extension.get("service_worker_url_suffixes") or ["/service_worker.js", "/background.js"]))
+        self.service_worker_url_suffixes: list[str] = list(cast(Sequence[str], self.extension.get("service_worker_url_suffixes") or DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES))
         self.trust_service_worker_target = bool(self.extension.get("trust_service_worker_target", False))
         self.require_service_worker_target = bool(self.extension.get("require_service_worker_target", False))
         self.service_worker_ready_expression = cast(str | None, self.extension.get("service_worker_ready_expression"))
@@ -359,6 +369,7 @@ class ModCDPClient(CDPSurfaceMixin):
         self._closed = False
         self._launched_browser: Any | None = None
         self._prepared_extension_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._extension_injectors: list[ExtensionInjector] = []
         self._cdp = _RawCDP(self)
         self._hydrate_custom_surface()
 
@@ -368,17 +379,23 @@ class ModCDPClient(CDPSurfaceMixin):
             self.transport = self._upstream_transport()
             self.transport.connect()
             return self
+        launcher = self._browser_launcher()
+        launcher.update(self.launch_options)
+        injectors = self._extension_injectors_for_config()
+        self._extension_injectors = injectors
+        for injector in injectors:
+            injector.update(self._base_extension_injector_config(None))
+            injector.update(launcher.getInjectorConfig())
+            injector.prepare()
+            launcher.update(injector.getLauncherConfig())
         if self.cdp_url is None:
             if self.launch.get("mode") != "local":
                 raise RuntimeError("upstream.mode=ws requires upstream.ws_url or launch.mode='local'.")
-            self._prepare_extension_path()
-            launched = self._browser_launcher().launch(
-                self.launch_options
-                if self.extension.get("mode") == "none" or not self.extension_path
-                else {**self.launch_options, "extra_args": [*list(self.launch_options.get("extra_args") or []), f"--load-extension={self.extension_path}"]}
-            )
+            launched = launcher.launch()
             self._launched_browser = launched
             self.cdp_url = cast(str | None, launched["cdp_url"])
+            for injector in injectors:
+                injector.update(launcher.getInjectorConfig())
         input_cdp_url = self.cdp_url
         if input_cdp_url is None:
             raise RuntimeError("upstream.mode=ws requires an upstream CDP endpoint.")
@@ -406,8 +423,7 @@ class ModCDPClient(CDPSurfaceMixin):
         extension_started_at = int(time.time() * 1000)
         if self.extension.get("mode") == "none":
             raise RuntimeError("extension.mode='none' cannot be used with a raw_cdp upstream.")
-        self._prepare_extension_path()
-        ext = self._ensure_extension()
+        ext = self._inject_extension(injectors)
         extension_completed_at = int(time.time() * 1000)
         self.extension_id = ext["extension_id"]
         self.ext_target_id = ext["target_id"]
@@ -587,6 +603,12 @@ class ModCDPClient(CDPSurfaceMixin):
     def close(self) -> None:
         if self._closed:
             return
+        for injector in self._extension_injectors:
+            try:
+                injector.close()
+            except Exception:
+                pass
+        self._extension_injectors = []
         if self._ws is not None:
             try:
                 with self._lock:
@@ -681,6 +703,85 @@ class ModCDPClient(CDPSurfaceMixin):
         if mode == "nats":
             return NatsUpstreamTransport(self.upstream.get("nats_url"))
         raise RuntimeError(f"unknown upstream.mode={mode}")
+
+    def _extension_injectors_for_config(self) -> list[ExtensionInjector]:
+        mode = self.extension.get("mode")
+        if mode == "none":
+            return []
+        injectors: list[ExtensionInjector] = []
+        if mode in ("auto", "discover"):
+            injectors.append(DiscoveredExtensionInjector())
+        if mode in ("auto", "inject"):
+            if self.launch.get("mode") == "bb":
+                injectors.append(BBBrowserExtensionInjector())
+            if self.launch.get("mode") == "local":
+                injectors.append(LocalBrowserLaunchExtensionInjector())
+            injectors.append(ExtensionsLoadUnpackedInjector())
+        if mode in ("auto", "borrow"):
+            injectors.append(BorrowedExtensionInjector())
+        return injectors
+
+    def _base_extension_injector_config(self, send: Any | None) -> ExtensionInjectorConfig:
+        trust_matched_service_worker = (
+            self.trust_service_worker_target
+            or len(self.service_worker_url_includes) > 0
+            or any(len([part for part in suffix.split("/") if part]) > 1 for suffix in self.service_worker_url_suffixes)
+        )
+
+        def send_cdp(method: str, params: ProtocolParams | None = None, session_id: str | None = None) -> ProtocolResult:
+            if send is None:
+                raise RuntimeError("Extension injector CDP send is not connected.")
+            return self._send_message(
+                method,
+                params or {},
+                session_id,
+                timeout=self.cdp_send_timeout_ms / 1000,
+            )
+
+        def attach_to_target(target_id: str) -> str | None:
+            return self._ensure_session_id_for_target(
+                target_id,
+                timeout=self.service_worker_probe_timeout_ms / 1000,
+                allow_attach=True,
+            )
+
+        return {
+            "send": send_cdp if send is not None else None,
+            "sessionIdForTarget": lambda target_id: self._target_sessions.get(target_id),
+            "attachToTarget": attach_to_target if send is not None else None,
+            "waitForExecutionContext": None,
+            "extension_path": self.extension_path,
+            "extension_id": cast(str | None, self.extension.get("extension_id")),
+            "wake_path": cast(str | None, self.extension.get("wake_path") or "/modcdp/wake.html"),
+            "wake_url": cast(str | None, self.extension.get("wake_url")),
+            "service_worker_url_includes": self.service_worker_url_includes,
+            "service_worker_url_suffixes": self.service_worker_url_suffixes,
+            "trust_matched_service_worker": trust_matched_service_worker,
+            "require_service_worker_target": self.require_service_worker_target or self.extension.get("mode") == "discover",
+            "service_worker_ready_expression": self.service_worker_ready_expression,
+            "cdp_send_timeout_ms": self.cdp_send_timeout_ms,
+            "execution_context_timeout_ms": self.execution_context_timeout_ms,
+            "service_worker_probe_timeout_ms": self.service_worker_probe_timeout_ms,
+            "service_worker_ready_timeout_ms": self.service_worker_ready_timeout_ms,
+            "service_worker_poll_interval_ms": self.service_worker_poll_interval_ms,
+            "target_session_poll_interval_ms": self.target_session_poll_interval_ms,
+        }
+
+    def _inject_extension(self, injectors: list[ExtensionInjector] | None = None) -> ExtensionInfo:
+        injectors = injectors or self._extension_injectors_for_config()
+        errors: list[str] = []
+        for injector in injectors:
+            injector.update(self._base_extension_injector_config(self._send_message))
+            try:
+                injector.prepare()
+                result = injector.inject()
+                if result:
+                    return cast(ExtensionInfo, result)
+            except Exception as error:
+                injector.last_error = error
+                errors.append(f"{type(injector).__name__}: {error}")
+        detail = f"\n\n{chr(10).join(errors)}" if errors else ""
+        raise RuntimeError(f"Cannot install, discover, or borrow the ModCDP extension in the running browser.{detail}")
 
     # --- internals ---------------------------------------------------------
 

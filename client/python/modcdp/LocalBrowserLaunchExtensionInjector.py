@@ -38,7 +38,7 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
         self.cleanup_dir = tempfile.TemporaryDirectory(prefix="modcdp-extension-")
         with zipfile.ZipFile(extension_path) as archive:
             archive.extractall(self.cleanup_dir.name)
-        self.unpacked_extension_path = self.cleanup_dir.name
+        self.unpacked_extension_path = _extension_root(self.cleanup_dir.name)
         self.writeExtensionRuntimeConfig(self.unpacked_extension_path)
         self.resolveExtensionId()
         super().prepare()
@@ -87,3 +87,12 @@ def extensionIdFromManifestKey(extension_path: str) -> str | None:
     digest = hashlib.sha256(base64.b64decode(key)).digest()[:16]
     alphabet = "abcdefghijklmnop"
     return "".join(alphabet[byte >> 4] + alphabet[byte & 0x0F] for byte in digest)
+
+
+def _extension_root(unpacked_path: str) -> str:
+    if (Path(unpacked_path) / "manifest.json").exists():
+        return unpacked_path
+    nested = Path(unpacked_path) / "extension"
+    if (nested / "manifest.json").exists():
+        return str(nested)
+    return unpacked_path

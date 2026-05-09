@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import time
 import zipfile
+from pathlib import Path
 
 from .ExtensionInjector import DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS, DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS, DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult
 
@@ -32,7 +33,7 @@ class ExtensionsLoadUnpackedInjector(ExtensionInjector):
         self.cleanup_dir = tempfile.TemporaryDirectory(prefix="modcdp-extension-")
         with zipfile.ZipFile(extension_path) as archive:
             archive.extractall(self.cleanup_dir.name)
-        self.unpacked_extension_path = self.cleanup_dir.name
+        self.unpacked_extension_path = _extension_root(self.cleanup_dir.name)
         self.writeExtensionRuntimeConfig(self.unpacked_extension_path)
         super().prepare()
 
@@ -77,3 +78,12 @@ class ExtensionsLoadUnpackedInjector(ExtensionInjector):
         if self.cleanup_dir:
             self.cleanup_dir.cleanup()
             self.cleanup_dir = None
+
+
+def _extension_root(unpacked_path: str) -> str:
+    if (Path(unpacked_path) / "manifest.json").exists():
+        return unpacked_path
+    nested = Path(unpacked_path) / "extension"
+    if (nested / "manifest.json").exists():
+        return str(nested)
+    return unpacked_path
