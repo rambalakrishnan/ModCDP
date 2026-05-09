@@ -136,7 +136,7 @@ pnpm run proxy -- --launch=local --upstream=nats --upstream-nats-url=ws://127.0.
 # ✨ All ModCDP commands now work through playwright! you can modify/extend playwright behavior to your heart's content
 ```
 
-The proxy uses the same `--launch`, `--extension`, `--client-routes`, `--server-routes`, and `--upstream*` option groups as `ModCDPClient`. `ws` keeps a transparent websocket-to-websocket fast path; `pipe`, `nativemessaging`, and `nats` proxy downstream CDP-shaped messages through the selected `ModCDPClient` upstream transport.
+The proxy uses the same `--launch`, `--extension`, `--upstream*`, `--client='{"routes": {...}}'`, and `--server='{"routes": {...}}'` option groups as `ModCDPClient`. `--client-routes='{...}'` and `--server-routes='{...}'` are accepted as route-only shorthands. `ws` keeps a transparent websocket-to-websocket fast path; `pipe`, `nativemessaging`, and `nats` proxy downstream CDP-shaped messages through the selected `ModCDPClient` upstream transport.
 
 ### Reverse proxy mode
 
@@ -182,8 +182,13 @@ bridge/
   ReverseWebSocketUpstreamTransport.ts
   NativeMessagingUpstreamTransport.ts
   NatsUpstreamTransport.ts
+  ExtensionInjector.ts
+  DiscoveredExtensionInjector.ts
+  LocalBrowserLaunchExtensionInjector.ts
+  BBBrowserExtensionInjector.ts
+  ExtensionsLoadUnpackedInjector.ts
+  BorrowedExtensionInjector.ts
   translate.ts           Pure stateless wrap/unwrap (used by both Node + SW)
-  injector.ts            Discover existing SW or Extensions.loadUnpacked it
   proxy.ts               Local CDP proxy (upgrades any vanilla CDP client)
 client/
   js/ModCDPClient.ts + demo.ts
@@ -196,7 +201,7 @@ dist/                     Built JS output used by the extension and Node CLI scr
 
 - Stock Google Chrome can be used without relaunch flags: visit `chrome://inspect/#remote-debugging` to expose the current browser at `http://127.0.0.1:9222`, and load/install the ModCDP extension in that profile. Pass that endpoint as `upstream: { mode: "ws", ws_url: "http://127.0.0.1:9222" }`.
 - Automated/test browsers can still preload the extension with `--load-extension=<path>`. `Extensions.loadUnpacked` is used as a fallback when the connected browser exposes it over CDP.
-- Node ≥ 22, Python ≥ 3.11 with `websocket-client`, Go ≥ 1.24 with `gobwas/ws`.
+- Node ≥ 22, Python ≥ 3.11 with `websocket-client`, Go ≥ 1.25 with `gobwas/ws`.
 
 ---
 
@@ -206,7 +211,7 @@ dist/                     Built JS output used by the extension and Node CLI scr
 ### Connect
 
 1. Select a `launch` class and an `upstream` transport. `launch.mode="local"` starts a local browser, `launch.mode="remote"` uses the supplied `upstream.ws_url`, and `launch.mode="none"` leaves browser lifecycle outside ModCDP.
-2. `bridge/injector.js` either discovers an existing ModCDP service worker target or installs the extension via `Extensions.loadUnpacked` when the connected browser permits it.
+2. The configured extension injector classes try discovery, launch-arg injection, Browserbase upload, `Extensions.loadUnpacked`, or borrowing in the configured order.
 3. Attach a session to that SW target and `Runtime.enable` on it.
 4. Call `globalThis.ModCDP.configure(...)` to push the resolved loopback websocket and any explicit server route overrides into the SW. The clients do this automatically by default.
 
@@ -234,7 +239,7 @@ In reverse mode, the same `publishEvent(...)` path also sends CDP-shaped event m
 
 - A guaranteed JS execution context that's not a page, with the right permissions
 - A way to push named events back through the same CDP socket your client already speaks
-- Zero extra IPC, native messaging, or sidecar processes
+- The same command/event surface whether the bytes arrive by websocket, pipe, native messaging, reverse websocket, or NATS.
 
 </details>
 
@@ -245,10 +250,10 @@ In reverse mode, the same `publishEvent(...)` path also sends CDP-shaped event m
 type CDPUpstream = "service_worker" | "direct_cdp" | "auto" | "loopback_cdp" | "chrome_debugger";
 
 // client-side defaults
-const clientRoutes = { "Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "service_worker" } as const;
+const client_routes = { "Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "service_worker" } as const;
 
 // server-side defaults (inside the SW)
-const serverRoutes = { "Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "auto" } as const;
+const server_routes = { "Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "auto" } as const;
 ```
 
 - **`service_worker`** — handle in the extension SW.
@@ -259,7 +264,7 @@ const serverRoutes = { "Mod.*": "service_worker", "Custom.*": "service_worker", 
 
 Route resolution is **deterministic across all three language clients**: exact-method match → longest-prefix wildcard → `*.*` fallback. This avoids map-iteration nondeterminism (Go) and key-insertion-order shadowing (JS/Python).
 
-When `auto` discovery is enabled, the SW only trusts `127.0.0.1:9222` after verifying a per-connection `browser_token` round-trip — it won't accidentally connect to a different browser that happens to have the same extension installed.
+When server-side `auto` routing tries loopback CDP discovery, the SW only trusts `127.0.0.1:9222` after verifying a per-connection `server.browser_token` against its own service-worker target. It will not accidentally route loopback commands through a different browser that happens to have the same extension installed.
 
 </details>
 
