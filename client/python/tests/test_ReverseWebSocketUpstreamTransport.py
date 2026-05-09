@@ -65,6 +65,11 @@ class ReverseWebSocketUpstreamTransportTests(unittest.TestCase):
             cdp.connect()
             self.assertEqual(cdp.transport.mode if cdp.transport else None, "reversews")
             self.assertEqual(cdp.upstream_endpoint_kind, "modcdp_server")
+            self.assertIsInstance(cdp.transport, ReverseWebSocketUpstreamTransport)
+            self.assertEqual(
+                cdp.transport.peer_info.get("extension_id") if cdp.transport.peer_info else None,
+                "mdedooklbnfejodmnhmkdpkaedafkehf",
+            )
             version = cdp.send("Browser.getVersion")
             self.assertIsInstance(version["product"], str)
         finally:

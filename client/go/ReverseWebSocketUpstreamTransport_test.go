@@ -104,6 +104,13 @@ func TestReverseWebSocketUpstreamTransportAcceptsRealExtensionReverseConnectionA
 	if cdp.transport == nil {
 		t.Fatal("expected reverse transport to be connected")
 	}
+	transport, ok := cdp.transport.(*ReverseWebSocketUpstreamTransport)
+	if !ok {
+		t.Fatalf("transport = %T", cdp.transport)
+	}
+	if transport.PeerInfo["extension_id"] != DefaultModCDPExtensionID {
+		t.Fatalf("extension_id = %#v", transport.PeerInfo["extension_id"])
+	}
 	result, err := cdp.Send("Browser.getVersion", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
