@@ -341,23 +341,42 @@ class ModCDPClient(CDPSurfaceMixin):
             launcher = self._browser_launcher()
             launcher.update(self.launch_options)
             transport = self._upstream_transport()
+            transport.update(
+                {
+                    "ws_url": self.upstream.get("ws_url"),
+                    "cdp_url": self.upstream.get("ws_url"),
+                    "nats_url": self.upstream.get("nats_url"),
+                    "nats_subject_prefix": self.upstream.get("nats_subject_prefix"),
+                    "reversews_bind": self.upstream.get("reversews_bind"),
+                    "manifest_path": self.upstream.get("nativemessaging_manifest"),
+                    "extension_id": self.extension.get("extension_id"),
+                }
+            )
             injectors = self._extension_injectors_for_config()
             self._extension_injectors = injectors
-            transport.connect()
-            self.transport = transport
-            transport.on_recv(lambda message: self._on_recv(cast(CdpMessage, message)))
-            transport.on_close(lambda error: self._reject_all(error))
             for injector in injectors:
                 injector.update(self._base_extension_injector_config(None))
                 injector.update(cast(ExtensionInjectorConfig, transport.getInjectorConfig()))
                 injector.prepare()
                 launcher.update(injector.getLauncherConfig())
+                transport.update(injector.getTransportConfig())
+            launcher.update(transport.getLauncherConfig())
+            transport.update(launcher.getTransportConfig())
+            transport.connect()
+            self.transport = transport
+            transport.on_recv(lambda message: self._on_recv(cast(CdpMessage, message)))
+            transport.on_close(lambda error: self._reject_all(error))
             if self.launch.get("mode") != "none":
                 launched = launcher.launch()
                 self._launched_browser = launched
                 self.cdp_url = cast(str | None, launched.get("ws_url") or launched.get("cdp_url"))
-                if self.server is not None and self.cdp_url and "loopback_cdp_url" not in self.server:
-                    self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
+                transport.update(launcher.getTransportConfig())
+                for injector in injectors:
+                    transport.update(injector.getTransportConfig())
+                server_config = {"loopback_cdp_url": self.cdp_url} if self.cdp_url else {}
+                server_config.update(transport.getServerConfig())
+                if self.server is not None and server_config.get("loopback_cdp_url") and "loopback_cdp_url" not in self.server:
+                    self.server = {**self.server, **server_config}
             transport_connected_at = int(time.time() * 1000)
             transport.wait_for_peer()
             if self.server is not None:
