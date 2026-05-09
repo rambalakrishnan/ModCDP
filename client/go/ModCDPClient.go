@@ -298,29 +298,30 @@ type ModCDPClient struct {
 	WebAuthn             WebAuthnDomain
 	Mod                  ModDomain
 
-	opts                 Options
-	CDPURL               string
-	transport            upstreamTransportClient
-	mu                   sync.Mutex
-	nextID               int64
-	pending              map[int64]chan map[string]any
-	handlers             map[string][]handlerEntry
-	cdpHandlers          map[string][]func(CDPEvent)
-	commandParamsSchemas map[string]map[string]any
-	commandResultSchemas map[string]map[string]any
-	event_schemas        map[string]map[string]any
-	schemaMu             sync.RWMutex
-	handlersMu           sync.Mutex
-	autoSessions         *AutoSessionRouter
-	ExtensionID          string
-	ExtTargetID          string
-	ExtSessionID         string
-	Latency              map[string]any
-	ConnectTiming        map[string]any
-	LastCommandTiming    map[string]any
-	LastRawTiming        map[string]any
-	launchedBrowser      *LaunchedBrowser
-	extensionInjectors   []extensionInjector
+	opts                    Options
+	CDPURL                  string
+	transport               upstreamTransportClient
+	mu                      sync.Mutex
+	nextID                  int64
+	pending                 map[int64]chan map[string]any
+	handlers                map[string][]handlerEntry
+	cdpHandlers             map[string][]func(CDPEvent)
+	commandParamsSchemas    map[string]map[string]any
+	commandResultSchemas    map[string]map[string]any
+	commandResultUnwrapKeys map[string]string
+	event_schemas           map[string]map[string]any
+	schemaMu                sync.RWMutex
+	handlersMu              sync.Mutex
+	autoSessions            *AutoSessionRouter
+	ExtensionID             string
+	ExtTargetID             string
+	ExtSessionID            string
+	Latency                 map[string]any
+	ConnectTiming           map[string]any
+	LastCommandTiming       map[string]any
+	LastRawTiming           map[string]any
+	launchedBrowser         *LaunchedBrowser
+	extensionInjectors      []extensionInjector
 }
 
 type extensionInjector interface {
@@ -435,13 +436,14 @@ func New(opts Options) *ModCDPClient {
 		opts.Upstream.ReverseWSWaitTimeoutMS = DefaultReverseWSWaitTimeoutMS
 	}
 	client := &ModCDPClient{
-		opts:                 opts,
-		pending:              map[int64]chan map[string]any{},
-		handlers:             map[string][]handlerEntry{},
-		cdpHandlers:          map[string][]func(CDPEvent){},
-		commandParamsSchemas: map[string]map[string]any{},
-		commandResultSchemas: map[string]map[string]any{},
-		event_schemas:        map[string]map[string]any{},
+		opts:                    opts,
+		pending:                 map[int64]chan map[string]any{},
+		handlers:                map[string][]handlerEntry{},
+		cdpHandlers:             map[string][]func(CDPEvent){},
+		commandParamsSchemas:    map[string]map[string]any{},
+		commandResultSchemas:    map[string]map[string]any{},
+		commandResultUnwrapKeys: map[string]string{},
+		event_schemas:           map[string]map[string]any{},
 	}
 	client.Mod = ModDomain{client: client}
 	client.autoSessions = NewAutoSessionRouter(
@@ -811,6 +813,26 @@ func cloneSchema(schema map[string]any) map[string]any {
 	return normalized
 }
 
+func resultUnwrapKeyFromSchema(schema map[string]any) string {
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) != 1 {
+		return ""
+	}
+	for key := range properties {
+		return key
+	}
+	return ""
+}
+
+func (c *ModCDPClient) setCommandResultSchema(name string, schema map[string]any) {
+	c.commandResultSchemas[name] = schema
+	if unwrapKey := resultUnwrapKeyFromSchema(schema); unwrapKey != "" {
+		c.commandResultUnwrapKeys[name] = unwrapKey
+	} else {
+		delete(c.commandResultUnwrapKeys, name)
+	}
+}
+
 func (c *ModCDPClient) hydrateCustomSurface() {
 	c.schemaMu.Lock()
 	defer c.schemaMu.Unlock()
@@ -826,7 +848,7 @@ func (c *ModCDPClient) hydrateCustomSurface() {
 			c.commandParamsSchemas[name] = schema
 		}
 		if schema := cloneSchema(command.ResultSchema); schema != nil {
-			c.commandResultSchemas[name] = schema
+			c.setCommandResultSchema(name, schema)
 		}
 	}
 	for _, event := range c.opts.CustomEvents {
@@ -866,7 +888,7 @@ func (c *ModCDPClient) registerCustomCommandParams(params map[string]any) (strin
 			return "", false, fmt.Errorf("result_schema must be a JSON Schema object")
 		}
 		if schema := cloneSchema(schemaObject); schema != nil {
-			c.commandResultSchemas[name] = schema
+			c.setCommandResultSchema(name, schema)
 		}
 	}
 	expression, _ := params["expression"].(string)
@@ -917,6 +939,23 @@ func (c *ModCDPClient) validateCommandResult(method string, result any) error {
 		return fmt.Errorf("%s result did not match result_schema: %w", method, err)
 	}
 	return nil
+}
+
+func (c *ModCDPClient) validateAndUnwrapCommandResult(method string, result any) (any, error) {
+	if err := c.validateCommandResult(method, result); err != nil {
+		return nil, err
+	}
+	c.schemaMu.RLock()
+	unwrapKey := c.commandResultUnwrapKeys[method]
+	c.schemaMu.RUnlock()
+	if unwrapKey == "" {
+		return result, nil
+	}
+	resultObject, ok := result.(map[string]any)
+	if !ok {
+		return result, nil
+	}
+	return resultObject[unwrapKey], nil
 }
 
 func (c *ModCDPClient) validateEventData(event string, data any) (any, bool) {
@@ -1030,7 +1069,8 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		}
 	}
 	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
-		result, err := c.sendMessage(method, params, "")
+		rawResult, err := c.sendMessage(method, params, "")
+		var result any = rawResult
 		completedAt := time.Now().UnixMilli()
 		c.LastCommandTiming = map[string]any{
 			"method":       method,
@@ -1043,7 +1083,9 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 			return nil, err
 		}
 		if validateSchema {
-			if err := c.validateCommandResult(method, result); err != nil {
+			var err error
+			result, err = c.validateAndUnwrapCommandResult(method, result)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -1066,7 +1108,9 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		return nil, err
 	}
 	if validateSchema {
-		if err := c.validateCommandResult(method, result); err != nil {
+		var err error
+		result, err = c.validateAndUnwrapCommandResult(method, result)
+		if err != nil {
 			return nil, err
 		}
 	}

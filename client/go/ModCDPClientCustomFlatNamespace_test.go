@@ -1,10 +1,145 @@
 package modcdp
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
 
 	abxjsonschema "github.com/ArchiveBox/abxbus/abxbus-go/jsonschema"
 )
+
+func TestCustomCommandsInstallFlatNamespaceThroughRealServiceWorker(t *testing.T) {
+	type ParamsSchema struct {
+		ID string `json:"id"`
+	}
+	type ResultSchema struct {
+		Success bool `json:"success"`
+	}
+
+	extensionPath, err := filepath.Abs(filepath.Join("..", "..", "dist", "extension"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdp := New(Options{
+		Launch: LaunchConfig{
+			Mode: "local",
+			Options: LaunchOptions{
+				Headless: boolPtr(true),
+				Sandbox:  boolPtr(false),
+			},
+		},
+		Upstream: UpstreamConfig{Mode: "ws"},
+		Extension: ExtensionConfig{
+			Mode:                     "auto",
+			Path:                     extensionPath,
+			ServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
+			TrustServiceWorkerTarget: true,
+		},
+		Client: ClientConfig{Routes: map[string]string{
+			"Mod.*":    "service_worker",
+			"Custom.*": "service_worker",
+			"*.*":      "direct_cdp",
+		}},
+		Server: &ServerConfig{Routes: map[string]string{"*.*": "loopback_cdp"}},
+	})
+	defer cdp.Close()
+
+	if err := cdp.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	registered, err := cdp.Mod.AddCustomCommand(CustomCommand{
+		Name:         "Custom.doSomething",
+		ParamsSchema: abxjsonschema.SchemaFor[ParamsSchema](),
+		ResultSchema: abxjsonschema.SchemaFor[ResultSchema](),
+		Expression:   "async ({ id }) => ({ success: id === 'abc' })",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, ok := registered.(map[string]any)
+	if !ok || registration["name"] != "Custom.doSomething" || registration["registered"] != true {
+		t.Fatalf("unexpected custom command registration: %#v", registered)
+	}
+	result, err := cdp.Send("Custom.doSomething", map[string]any{"id": "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != true {
+		t.Fatalf("Custom.doSomething = %#v", result)
+	}
+	if _, err := cdp.Send("Custom.doSomething", map[string]any{"id": 123}); err == nil {
+		t.Fatal("expected custom command params schema to reject non-string id")
+	}
+}
+
+func TestCustomEventsValidateRawStringHandlersThroughRealServiceWorker(t *testing.T) {
+	type EventSchema struct {
+		Data string `json:"data"`
+	}
+
+	extensionPath, err := filepath.Abs(filepath.Join("..", "..", "dist", "extension"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdp := New(Options{
+		Launch: LaunchConfig{
+			Mode: "local",
+			Options: LaunchOptions{
+				Headless: boolPtr(true),
+				Sandbox:  boolPtr(false),
+			},
+		},
+		Upstream: UpstreamConfig{Mode: "ws"},
+		Extension: ExtensionConfig{
+			Mode:                     "auto",
+			Path:                     extensionPath,
+			ServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
+			TrustServiceWorkerTarget: true,
+		},
+		Client: ClientConfig{Routes: map[string]string{
+			"Mod.*":    "service_worker",
+			"Custom.*": "service_worker",
+			"*.*":      "direct_cdp",
+		}},
+		Server: &ServerConfig{Routes: map[string]string{"*.*": "loopback_cdp"}},
+	})
+	defer cdp.Close()
+
+	if err := cdp.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	registered, err := cdp.Mod.AddCustomEvent(CustomEvent{
+		Name:        "Custom.someEvent",
+		EventSchema: abxjsonschema.SchemaFor[EventSchema](),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, ok := registered.(map[string]any)
+	if !ok || registration["name"] != "Custom.someEvent" || registration["registered"] != true {
+		t.Fatalf("unexpected custom event registration: %#v", registered)
+	}
+	seen := make(chan string, 1)
+	cdp.On("Custom.someEvent", func(data any) {
+		event, _ := data.(map[string]any)
+		if event != nil {
+			seen <- event["data"].(string)
+		}
+	})
+	if _, err := cdp.Mod.Evaluate(map[string]any{
+		"expression": "async () => await globalThis.ModCDP.emit('Custom.someEvent', { data: 'ok' })",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-seen:
+		if got != "ok" {
+			t.Fatalf("Custom.someEvent data = %q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for Custom.someEvent")
+	}
+}
 
 func TestSchemaOnlyAddCustomCommandRegistersWithoutConnection(t *testing.T) {
 	cdp := New(Options{})
