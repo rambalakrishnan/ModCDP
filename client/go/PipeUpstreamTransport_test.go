@@ -1,6 +1,9 @@
 package modcdp
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 func TestPipeUpstreamTransportConstructorUpdateLauncherConfigAndUnconnectedErrorsMatchTransportSurface(t *testing.T) {
 	transport := NewPipeUpstreamTransport(nil, nil, "pipe://constructor")
@@ -49,7 +52,7 @@ func TestPipeUpstreamTransportLaunchesRealBrowserAndUsesPIDScopedPipeURL(t *test
 	if cdp.transport == nil {
 		t.Fatal("expected pipe transport")
 	}
-	if cdp.CDPURL == "" || cdp.CDPURL[:7] != "pipe://" {
+	if !regexp.MustCompile(`^pipe://\d+$`).MatchString(cdp.CDPURL) {
 		t.Fatalf("CDPURL = %q", cdp.CDPURL)
 	}
 	pipeTransport, ok := cdp.transport.(*PipeUpstreamTransport)
