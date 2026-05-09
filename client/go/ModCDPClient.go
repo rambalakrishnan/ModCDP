@@ -1247,12 +1247,16 @@ func isKnownExtensionMode(mode string) bool {
 
 func (c *ModCDPClient) baseExtensionInjectorConfig(send SendCDP) ExtensionInjectorConfig {
 	trustMatchedServiceWorker := c.trustServiceWorkerTarget()
+	var attachToTarget AttachToTarget
+	if send != nil {
+		attachToTarget = func(targetID string) string {
+			return c.ensureSessionIDForTarget(targetID, time.Duration(c.opts.Extension.ServiceWorkerProbeTimeoutMS)*time.Millisecond, true)
+		}
+	}
 	return ExtensionInjectorConfig{
 		Send:               send,
 		SessionIDForTarget: func(targetID string) string { return c.autoSessions.SessionIDForTarget(targetID) },
-		AttachToTarget: func(targetID string) string {
-			return c.ensureSessionIDForTarget(targetID, time.Duration(c.opts.Extension.ServiceWorkerProbeTimeoutMS)*time.Millisecond, true)
-		},
+		AttachToTarget:     attachToTarget,
 		WaitForExecutionContext: func(sessionID string, timeoutMS int) int {
 			contextID, _ := c.autoSessions.WaitForExecutionContext(sessionID, timeoutMS)
 			return contextID

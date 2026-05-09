@@ -315,6 +315,27 @@ func TestModCDPClientRejectsUnknownComponentModesAtTheirOwningFactoryBoundary(t 
 	}
 }
 
+func TestModCDPClientOnlyExposesInjectorAttachAfterCDPSendIsAvailable(t *testing.T) {
+	cdp := New(Options{})
+	disconnectedConfig := cdp.baseExtensionInjectorConfig(nil)
+	if disconnectedConfig.Send != nil {
+		t.Fatalf("disconnected Send = %#v", disconnectedConfig.Send)
+	}
+	if disconnectedConfig.AttachToTarget != nil {
+		t.Fatalf("disconnected AttachToTarget = %#v", disconnectedConfig.AttachToTarget)
+	}
+
+	connectedConfig := cdp.baseExtensionInjectorConfig(func(method string, params map[string]any, sessionID string) (map[string]any, error) {
+		return map[string]any{}, nil
+	})
+	if connectedConfig.Send == nil {
+		t.Fatal("connected Send is nil")
+	}
+	if connectedConfig.AttachToTarget == nil {
+		t.Fatal("connected AttachToTarget is nil")
+	}
+}
+
 func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	cdp := New(Options{
 		Launch: LaunchConfig{

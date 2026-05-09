@@ -851,7 +851,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     return {
       send,
       sessionIdForTarget: (target_id) => this.auto_sessions.sessionIdForTarget(target_id),
-      attachToTarget: send ? (target_id) => this.auto_sessions.attachToTarget(target_id) : async () => null,
+      attachToTarget: send ? (target_id) => this.auto_sessions.attachToTarget(target_id) : null,
       waitForExecutionContext: (session_id, timeout_ms) =>
         this.auto_sessions.waitForExecutionContext(session_id, { timeout_ms }),
       extension_path: this.extension.path,

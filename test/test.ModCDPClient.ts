@@ -205,6 +205,17 @@ test("ModCDPClient defaults service worker suffix config to the ModCDP worker", 
   ]);
 });
 
+test("ModCDPClient only exposes injector attach after CDP send is available", () => {
+  const cdp = new ModCDPClient();
+  const disconnected_config = cdp._baseExtensionInjectorConfig(null);
+  assert.equal(disconnected_config.send, null);
+  assert.equal(disconnected_config.attachToTarget, null);
+
+  const connected_config = cdp._baseExtensionInjectorConfig(async () => ({}));
+  assert.equal(typeof connected_config.send, "function");
+  assert.equal(typeof connected_config.attachToTarget, "function");
+});
+
 test("ModCDPClient defaults launched ModCDP-server upstreams to extension auto", () => {
   for (const mode of ["nativemessaging", "reversews", "nats"] as const) {
     const launched = new ModCDPClient({ launch: { mode: "local" }, upstream: { mode } });
