@@ -46,11 +46,11 @@ export class LocalBrowserLaunchExtensionInjector extends ExtensionInjector {
   getLauncherConfig(): BrowserLaunchOptions {
     const extension_path = this.unpacked_extension_path;
     if (!extension_path) return {};
-    const wake_url = this.configuredWakeUrl();
-    return { extra_args: [`--load-extension=${extension_path}`, ...(wake_url ? [wake_url] : [])] };
+    return { extra_args: [`--load-extension=${extension_path}`] };
   }
 
   async inject() {
+    await this.wakeConfiguredExtension();
     const timeout_ms = Math.min(this.options.service_worker_probe_timeout_ms ?? 10_000, 3_000);
     const discovered = await this.waitForReadyServiceWorker(timeout_ms, {
       matched_only: this.options.trust_matched_service_worker,
