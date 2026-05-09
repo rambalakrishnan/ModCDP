@@ -71,6 +71,17 @@ class NatsUpstreamTransportTests(unittest.TestCase):
         self.assertIsInstance(error, RuntimeError)
         self.assertRegex(str(error), r"NATS transport for modcdp\.close closed before a peer connected")
 
+    def test_close_resets_peer_wait_state(self) -> None:
+        transport = NatsUpstreamTransport({"wait_timeout_ms": 5})
+        transport._handle_payload('{"type":"modcdp.nats.hello","role":"browser","version":1}')
+
+        transport.waitForPeer()
+        transport.close()
+
+        with self.assertRaisesRegex(RuntimeError, "Timed out waiting 5ms for NATS ModCDP peer"):
+            transport.waitForPeer()
+        self.assertTrue(transport.closed)
+
     def test_reconnect_after_close_resets_closed_state_with_real_nats_server(self) -> None:
         nats = _start_nats_server()
         transport = NatsUpstreamTransport({"url": nats["url"], "subject_prefix": f"modcdp.reconnect.{int(time.time() * 1000)}"})

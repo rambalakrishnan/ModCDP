@@ -50,6 +50,18 @@ test("nats upstream close rejects pending peer waits", async () => {
   await assert.rejects(() => pending, /NATS transport for modcdp\.close closed before a peer connected/);
 });
 
+test("nats upstream close resets peer wait state", async () => {
+  const transport = new NatsUpstreamTransport({ wait_timeout_ms: 5 });
+  (transport as unknown as { handlePayload: (payload: string) => void }).handlePayload(
+    `{"type":"modcdp.nats.hello","role":"browser","version":1}`,
+  );
+
+  await transport.waitForPeer();
+  await transport.close();
+
+  await assert.rejects(() => transport.waitForPeer(), /Timed out waiting 5ms for NATS ModCDP peer/);
+});
+
 test("nats upstream reconnects after close against a real NATS server", async () => {
   const nats = await startNatsServer();
   const transport = new NatsUpstreamTransport({
