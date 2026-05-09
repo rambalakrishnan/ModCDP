@@ -18,6 +18,15 @@ describe("BBBrowserExtensionInjector", () => {
 
     assert.equal(injector.getLauncherConfig().extension_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
+
+  it("does not upload when no extension path or id is configured", async () => {
+    const injector = new BBBrowserExtensionInjector();
+
+    await injector.prepare();
+
+    assert.deepEqual(injector.getLauncherConfig(), {});
+    assert.equal((injector as unknown as { zip_path: string | null }).zip_path, null);
+  });
 });
 
 describe.skipIf(hasBrowserbaseEnv)("BBBrowserExtensionInjector without credentials", () => {

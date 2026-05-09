@@ -22,6 +22,20 @@ func TestBBBrowserExtensionInjectorUsesConfiguredExtensionID(t *testing.T) {
 	}
 }
 
+func TestBBBrowserExtensionInjectorDoesNotUploadWhenNoExtensionPathOrIDIsConfigured(t *testing.T) {
+	injector := NewBBBrowserExtensionInjector(ExtensionInjectorConfig{})
+	if err := injector.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	launchConfig := injector.GetLauncherConfig()
+	if launchConfig.ExtensionID != "" {
+		t.Fatalf("ExtensionID = %q", launchConfig.ExtensionID)
+	}
+	if injector.ZipPath != "" {
+		t.Fatalf("ZipPath = %q", injector.ZipPath)
+	}
+}
+
 func TestBBBrowserExtensionInjectorRequiresAPIKeyWhenExtensionUploadIsNeeded(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("BROWSERBASE_API_KEY")) != "" {
 		t.Skip("BROWSERBASE_API_KEY is set")

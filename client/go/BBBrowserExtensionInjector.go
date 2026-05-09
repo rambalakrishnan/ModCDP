@@ -36,12 +36,7 @@ func (i *BBBrowserExtensionInjector) Prepare() error {
 	}
 	extensionPath := i.Options.ExtensionPath
 	if extensionPath == "" {
-		zipPath, cleanupPath, err := bundledExtensionZipFile()
-		if err != nil {
-			return err
-		}
-		i.ZipPath = zipPath
-		i.CleanupPath = cleanupPath
+		return nil
 	} else if strings.HasSuffix(extensionPath, ".zip") {
 		i.ZipPath = extensionPath
 	} else {
@@ -59,19 +54,6 @@ func (i *BBBrowserExtensionInjector) Prepare() error {
 	}
 	i.ExtensionID = extensionID
 	return nil
-}
-
-func bundledExtensionZipFile() (string, string, error) {
-	dir, err := os.MkdirTemp("", "modcdp-bb-extension-")
-	if err != nil {
-		return "", "", err
-	}
-	zipPath := filepath.Join(dir, "extension.zip")
-	if err := os.WriteFile(zipPath, bundledExtensionZip, 0o644); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", "", err
-	}
-	return zipPath, dir, nil
 }
 
 func (i *BBBrowserExtensionInjector) GetLauncherConfig() LaunchOptions {

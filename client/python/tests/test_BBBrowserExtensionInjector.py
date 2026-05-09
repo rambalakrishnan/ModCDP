@@ -17,6 +17,12 @@ class BBBrowserExtensionInjectorTests(unittest.TestCase):
         injector.prepare()
         self.assertEqual(injector.getLauncherConfig().get("extension_id"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
+    def test_does_not_upload_when_no_extension_path_or_id_is_configured(self) -> None:
+        injector = BBBrowserExtensionInjector()
+        injector.prepare()
+        self.assertEqual(injector.getLauncherConfig(), {})
+        self.assertIsNone(injector.zip_path)
+
     @unittest.skipIf(os.environ.get("BROWSERBASE_API_KEY", "").strip(), "BROWSERBASE_API_KEY is set")
     def test_requires_browserbase_api_key_when_extension_upload_is_needed(self) -> None:
         injector = BBBrowserExtensionInjector({"extension_path": str(EXTENSION_PATH)})
