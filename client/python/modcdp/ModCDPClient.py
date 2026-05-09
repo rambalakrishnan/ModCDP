@@ -588,16 +588,13 @@ class ModCDPClient(CDPSurfaceMixin):
         }
         return AwaitableDict(result) if isinstance(result, dict) else AwaitableValue(result)
 
-    def raw_send(self, method: str, params: ProtocolParams | None = None) -> ProtocolResult:
-        return self._send_message(method, params or {}, record_raw_timing=True)
-
-    def send_raw(
+    def sendRaw(
         self,
         method: str,
         params: Mapping[str, Any] | None = None,
         session_id: str | None = None,
     ) -> ProtocolResult:
-        result = self._send_command(method, params, session_id=session_id)
+        result = self._send_message(method, cast(ProtocolParams, dict(params or {})), session_id, record_raw_timing=True)
         if not isinstance(result, dict):
             raise RuntimeError(f"{method} returned non-object value: {result!r}")
         return result

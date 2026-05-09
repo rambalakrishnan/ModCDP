@@ -23,7 +23,7 @@ class PipeUpstreamTransportTests(unittest.TestCase):
             self.assertEqual(cdp.upstream_endpoint_kind, "raw_cdp")
             self.assertRegex(cdp.cdp_url or "", r"^pipe://\d+$")
             self.assertEqual(cdp.transport.url if cdp.transport else None, cdp.cdp_url)
-            version = cdp.raw_send("Browser.getVersion")
+            version = cdp.sendRaw("Browser.getVersion")
             self.assertIsInstance(version["product"], str)
         finally:
             cdp.close()

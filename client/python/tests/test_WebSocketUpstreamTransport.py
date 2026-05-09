@@ -30,7 +30,7 @@ class WebSocketUpstreamTransportTests(unittest.TestCase):
             self.assertEqual(cdp.transport.mode if cdp.transport else None, "ws")
             self.assertEqual(cdp.upstream_endpoint_kind, "raw_cdp")
             self.assertRegex(cdp.cdp_url or "", r"^ws://")
-            version = cdp.send_raw("Browser.getVersion")
+            version = cdp.sendRaw("Browser.getVersion")
             self.assertIsInstance(version["product"], str)
         finally:
             cdp.close()
