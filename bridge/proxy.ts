@@ -84,7 +84,7 @@ export async function startProxy({
   launch = { mode: "remote" },
   upstream = { mode: "ws", ws_url: DEFAULT_UPSTREAM },
   extension = { mode: "auto", path: DEFAULT_EXTENSION_PATH },
-  clientRoutes = undefined,
+  client: clientOptions = {},
   server: serverOptions = {},
   forwardMirroredUpstreamEvents = false,
   upstreamMonitorIntervalMs = DEFAULT_UPSTREAM_MONITOR_INTERVAL_MS,
@@ -92,7 +92,7 @@ export async function startProxy({
 }: {
   host?: string;
   port?: number;
-  launch?: { mode?: string; executable_path?: string | null; user_data_dir?: string | null };
+  launch?: { mode?: string; executable_path?: string | null; user_data_dir?: string | null; options?: Record<string, unknown> };
   upstream?: {
     mode?: string;
     ws_url?: string | null;
@@ -102,7 +102,7 @@ export async function startProxy({
     nativemessaging_manifest?: string | null;
   };
   extension?: { mode?: string; path?: string | null };
-  clientRoutes?: Record<string, string> | undefined;
+  client?: Record<string, unknown>;
   server?: Record<string, unknown> | null;
   forwardMirroredUpstreamEvents?: boolean;
   upstreamMonitorIntervalMs?: number;
@@ -216,7 +216,7 @@ export async function startProxy({
         launch,
         upstream: { ...upstream, mode: upstreamMode, ws_url: upstreamWsUrl },
         extension,
-        clientRoutes,
+        client: clientOptions,
         server: serverOptions,
       }).catch((err) => {
         log("client-managed connection failed:", err.message);
@@ -230,7 +230,7 @@ export async function startProxy({
       launch,
       upstream: { ...upstream, mode: upstreamMode, ws_url: upstreamWsUrl },
       extension,
-      clientRoutes,
+      client: clientOptions,
       server: serverOptions,
       forwardMirroredUpstreamEvents,
       onUpstreamClosed: () => {
@@ -600,15 +600,15 @@ async function handleConnection(
     launch,
     upstream,
     extension,
-    clientRoutes,
+    client: clientOptions,
     server,
     forwardMirroredUpstreamEvents,
     onUpstreamClosed,
   }: {
-    launch: { mode?: string; executable_path?: string | null; user_data_dir?: string | null };
+    launch: { mode?: string; executable_path?: string | null; user_data_dir?: string | null; options?: Record<string, unknown> };
     upstream: { mode?: string; ws_url?: string | null };
     extension: { mode?: string; path?: string | null };
-    clientRoutes?: Record<string, string> | undefined;
+    client?: Record<string, unknown>;
     server?: Record<string, unknown> | null;
     forwardMirroredUpstreamEvents: boolean;
     onUpstreamClosed: () => void;
@@ -619,6 +619,7 @@ async function handleConnection(
       mode: launch.mode as "local" | "remote" | "bb" | "none",
       executable_path: launch.executable_path,
       user_data_dir: launch.user_data_dir,
+      options: launch.options as any,
     },
     upstream: { mode: "ws", ws_url: upstream.ws_url },
     extension: {
@@ -627,7 +628,7 @@ async function handleConnection(
       service_worker_url_suffixes: ["/modcdp/service_worker.js"],
       trust_service_worker_target: true,
     },
-    client: { ...(clientRoutes ? { routes: clientRoutes } : {}), hydrate_aliases: false },
+    client: { hydrate_aliases: false, ...clientOptions },
     server: server as any,
   });
   await cdp.connect();
@@ -716,10 +717,10 @@ async function handleClientManagedConnection(
     launch,
     upstream,
     extension,
-    clientRoutes,
+    client: clientOptions,
     server,
   }: {
-    launch: { mode?: string; executable_path?: string | null; user_data_dir?: string | null };
+    launch: { mode?: string; executable_path?: string | null; user_data_dir?: string | null; options?: Record<string, unknown> };
     upstream: {
       mode?: string;
       ws_url?: string | null;
@@ -728,7 +729,7 @@ async function handleClientManagedConnection(
       nativemessaging_manifest?: string | null;
     };
     extension: { mode?: string; path?: string | null };
-    clientRoutes?: Record<string, string> | undefined;
+    client?: Record<string, unknown>;
     server?: Record<string, unknown> | null;
   },
 ) {
@@ -737,6 +738,7 @@ async function handleClientManagedConnection(
       mode: (launch.mode ?? "none") as "local" | "remote" | "bb" | "none",
       executable_path: launch.executable_path,
       user_data_dir: launch.user_data_dir,
+      options: launch.options as any,
     },
     upstream: {
       mode: upstream.mode as "pipe" | "nativemessaging" | "nats",
@@ -751,7 +753,7 @@ async function handleClientManagedConnection(
       service_worker_url_suffixes: ["/modcdp/service_worker.js"],
       trust_service_worker_target: true,
     },
-    client: { ...(clientRoutes ? { routes: clientRoutes } : {}), hydrate_aliases: false },
+    client: { hydrate_aliases: false, ...clientOptions },
     server: server as any,
   });
   await cdp.connect();
@@ -1011,6 +1013,18 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       ? path.resolve(argv["extension-path"])
       : DEFAULT_EXTENSION_PATH;
   const forwardMirroredUpstreamEvents = argv["forward-mirrored-upstream-events"] === "true";
+  const clientConfig =
+    typeof argv.client === "string" && argv.client !== "true"
+      ? JSON.parse(argv.client)
+      : typeof argv["client-routes"] === "string" && argv["client-routes"] !== "true"
+        ? { routes: JSON.parse(argv["client-routes"]) }
+        : {};
+  const serverConfig =
+    typeof argv.server === "string" && argv.server !== "true"
+      ? JSON.parse(argv.server)
+      : typeof argv["server-routes"] === "string" && argv["server-routes"] !== "true"
+        ? { routes: JSON.parse(argv["server-routes"]) }
+        : {};
   startProxy({
     host,
     port,
@@ -1051,14 +1065,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
           : null,
     },
     extension: { mode: String(argv.extension || "auto"), path: extensionPath },
-    clientRoutes:
-      typeof argv["client-routes"] === "string" && argv["client-routes"] !== "true"
-        ? JSON.parse(argv["client-routes"])
-        : undefined,
-    server:
-      typeof argv["server-routes"] === "string" && argv["server-routes"] !== "true"
-        ? { routes: JSON.parse(argv["server-routes"]) }
-        : {},
+    client: clientConfig,
+    server: serverConfig,
     forwardMirroredUpstreamEvents,
   }).catch((e) => {
     console.error(e);
