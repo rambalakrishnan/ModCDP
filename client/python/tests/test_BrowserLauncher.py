@@ -14,16 +14,22 @@ class BrowserLauncherTests(unittest.TestCase):
                 "user_data_dir": "/tmp/modcdp-browser-launcher",
                 "browserbase_api_key": "test-key",
                 "extension_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "args": ["--load-extension=/tmp/args-one"],
                 "extra_args": ["--load-extension=/tmp/one"],
             }
         )
         launcher.update(
             {
                 "ws_url": "ws://127.0.0.1:9222/devtools/browser/updated",
+                "args": ["--load-extension=/tmp/args-two", "--lang=en-US"],
                 "extra_args": ["--load-extension=/tmp/two", "--window-size=900,700"],
             }
         )
 
+        self.assertEqual(
+            launcher.options.get("args"),
+            ["--lang=en-US", "--load-extension=/tmp/args-one,/tmp/args-two"],
+        )
         self.assertEqual(
             launcher.options.get("extra_args"),
             ["--window-size=900,700", "--load-extension=/tmp/one,/tmp/two"],

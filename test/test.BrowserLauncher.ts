@@ -10,13 +10,16 @@ describe("BrowserLauncher", () => {
       user_data_dir: "/tmp/modcdp-browser-launcher",
       browserbase_api_key: "test-key",
       extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      args: ["--load-extension=/tmp/args-one"],
       extra_args: ["--load-extension=/tmp/one"],
     });
     launcher.update({
       ws_url: "ws://127.0.0.1:9222/devtools/browser/updated",
+      args: ["--load-extension=/tmp/args-two", "--lang=en-US"],
       extra_args: ["--load-extension=/tmp/two", "--window-size=900,700"],
     });
 
+    expect(launcher.options.args).toEqual(["--lang=en-US", "--load-extension=/tmp/args-one,/tmp/args-two"]);
     expect(launcher.options.extra_args).toEqual(["--window-size=900,700", "--load-extension=/tmp/one,/tmp/two"]);
     expect(launcher.getTransportConfig()).toMatchObject({
       cdp_url: "http://127.0.0.1:9222",

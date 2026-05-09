@@ -12,13 +12,16 @@ func TestBrowserLauncherMergesLaunchConfigAndExposesTransportAndInjectorConfig(t
 		UserDataDir:       "/tmp/modcdp-browser-launcher",
 		BrowserbaseAPIKey: "test-key",
 		ExtensionID:       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Args:              []string{"--load-extension=/tmp/args-one"},
 		ExtraArgs:         []string{"--load-extension=/tmp/one"},
 	})
 	launcher.Update(LaunchOptions{
 		WSURL:     "ws://127.0.0.1:9222/devtools/browser/updated",
+		Args:      []string{"--load-extension=/tmp/args-two", "--lang=en-US"},
 		ExtraArgs: []string{"--load-extension=/tmp/two", "--window-size=900,700"},
 	})
 
+	assertStringsEqual(t, launcher.Options.Args, []string{"--lang=en-US", "--load-extension=/tmp/args-one,/tmp/args-two"})
 	assertStringsEqual(t, launcher.Options.ExtraArgs, []string{"--window-size=900,700", "--load-extension=/tmp/one,/tmp/two"})
 
 	transportConfig := launcher.GetTransportConfig()

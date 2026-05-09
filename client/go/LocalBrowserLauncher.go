@@ -38,6 +38,9 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 	if options.UserDataDir == "" {
 		options.UserDataDir = l.Options.UserDataDir
 	}
+	if len(options.Args) == 0 {
+		options.Args = l.Options.Args
+	}
 	if len(options.ExtraArgs) == 0 {
 		options.ExtraArgs = l.Options.ExtraArgs
 	}
@@ -102,6 +105,7 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 	if options.Sandbox == nil || !*options.Sandbox {
 		args = append(args, "--no-sandbox")
 	}
+	args = append(args, options.Args...)
 	args = append(args, options.ExtraArgs...)
 	args = append(args, "about:blank")
 	cmd := exec.Command(executablePath, args...)

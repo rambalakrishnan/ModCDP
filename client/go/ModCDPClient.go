@@ -138,6 +138,7 @@ type CustomMiddleware struct {
 type LaunchOptions struct {
 	ExecutablePath                 string
 	ExtraArgs                      []string
+	Args                           []string
 	Headless                       *bool
 	Port                           int
 	RemoteDebugging                string

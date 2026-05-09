@@ -75,6 +75,9 @@ func mergeLaunchOptions(existing LaunchOptions, incoming LaunchOptions) LaunchOp
 	if incoming.Sandbox != nil {
 		merged.Sandbox = incoming.Sandbox
 	}
+	if len(incoming.Args) > 0 {
+		merged.Args = mergeChromeArgs(existing.Args, incoming.Args)
+	}
 	if len(incoming.ExtraArgs) > 0 {
 		merged.ExtraArgs = mergeChromeArgs(existing.ExtraArgs, incoming.ExtraArgs)
 	}
