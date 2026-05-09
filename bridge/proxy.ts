@@ -71,7 +71,7 @@ const dbg = (...args) => {
 
 const MAGIC_METHODS = new Set(["Mod.evaluate", "Mod.addCustomCommand", "Mod.addCustomEvent", "Mod.addMiddleware"]);
 const ROUTE_TO_SW_RE = /^(Mod|Custom)\./;
-const isWsUrl = (url) => /^wss?:\/\//i.test(url);
+const isWsUrl = (url) => typeof url === "string" && /^wss?:\/\//i.test(url);
 
 // --- public API -------------------------------------------------------------
 
@@ -106,7 +106,7 @@ export async function startProxy({
 } = {}) {
   const { WebSocket, WebSocketServer } = await loadWsForProxy();
   const upstreamMode = upstream.mode ?? "ws";
-  const upstreamWsUrl = upstream.ws_url ?? DEFAULT_UPSTREAM;
+  const upstreamWsUrl = upstream.ws_url ?? (launch.mode === "local" ? null : DEFAULT_UPSTREAM);
   const reverseOptions =
     upstreamMode === "reversews"
       ? parseHostPort(upstream.reversews_bind ?? "127.0.0.1:29292", DEFAULT_HOST, 29292)
@@ -140,9 +140,9 @@ export async function startProxy({
         res.end("Not found.");
         return;
       }
-      if (isWsUrl(upstreamWsUrl)) {
+      if (!upstreamWsUrl || isWsUrl(upstreamWsUrl)) {
         res.writeHead(404);
-        res.end("HTTP discovery is unavailable for a ws:// upstream.");
+        res.end("HTTP discovery is unavailable for this upstream.");
         return;
       }
       const upstreamRes = await fetch(`${upstreamWsUrl}${requestUrl}`);
@@ -249,7 +249,7 @@ export async function startProxy({
   }
 
   await new Promise<void>((resolve) => httpServer.listen(port, host, () => resolve()));
-  if (!reversePeer && upstreamMode !== "nativemessaging" && !isWsUrl(upstreamWsUrl)) {
+  if (!reversePeer && upstreamMode !== "nativemessaging" && upstreamWsUrl && !isWsUrl(upstreamWsUrl)) {
     stopUpstreamMonitor = monitorUpstream(
       upstreamWsUrl,
       upstreamMonitorIntervalMs,
@@ -264,7 +264,7 @@ export async function startProxy({
       ? `listening on ws://${host}:${port}/  (reverse: ws://${reverseOptions.host}:${reverseOptions.port})`
       : upstreamMode === "nativemessaging"
         ? `listening on ws://${host}:${port}/  (upstream: nativemessaging)`
-        : `listening on ws://${host}:${port}/  (upstream: ${upstreamMode}:${upstreamWsUrl})`,
+        : `listening on ws://${host}:${port}/  (upstream: ${upstreamMode}:${upstreamWsUrl ?? "local-launch"})`,
   );
 
   return {
