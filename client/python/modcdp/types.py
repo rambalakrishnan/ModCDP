@@ -85,7 +85,7 @@ class ModCDPServerConfig(TypedDict, total=False):
     cdp_send_timeout_ms: int
     loopback_execution_context_timeout_ms: int
     ws_connect_error_settle_timeout_ms: int
-    browserToken: str | None
+    browser_token: str | None
     custom_commands: list[ModCDPAddCustomCommandParams]
     custom_events: list[ModCDPAddCustomEventObjectParams]
     custom_middlewares: list[ModCDPAddMiddlewareParams]

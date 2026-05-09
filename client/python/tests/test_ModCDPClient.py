@@ -56,7 +56,13 @@ class ModCDPClientTests(unittest.TestCase):
                 "cdp_send_timeout_ms": 1234,
                 "event_wait_timeout_ms": 2345,
             },
-            server={"routes": {"*.*": "loopback_cdp"}},
+            server={
+                "routes": {"*.*": "loopback_cdp"},
+                "browser_token": "token-1",
+                "cdp_send_timeout_ms": 9876,
+                "loopback_execution_context_timeout_ms": 8765,
+                "ws_connect_error_settle_timeout_ms": 7654,
+            },
         )
 
         self.assertEqual(cdp.launch["options"], {"headless": True})
@@ -78,9 +84,10 @@ class ModCDPClientTests(unittest.TestCase):
 
         params = cast(dict[str, Any], cdp._server_configure_params())
         self.assertEqual(params["client"]["routes"]["*.*"], "direct_cdp")
-        self.assertEqual(params["server"]["cdp_send_timeout_ms"], 1234)
-        self.assertEqual(params["server"]["loopback_execution_context_timeout_ms"], 4321)
-        self.assertEqual(params["server"]["ws_connect_error_settle_timeout_ms"], 321)
+        self.assertEqual(params["server"]["browser_token"], "token-1")
+        self.assertEqual(params["server"]["cdp_send_timeout_ms"], 9876)
+        self.assertEqual(params["server"]["loopback_execution_context_timeout_ms"], 8765)
+        self.assertEqual(params["server"]["ws_connect_error_settle_timeout_ms"], 7654)
 
     def test_connects_with_local_launch_and_injector_chain(self) -> None:
         cdp = ModCDPClient(

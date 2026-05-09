@@ -51,7 +51,13 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 			CDPSendTimeoutMS:     1234,
 			EventWaitTimeoutMS:   2345,
 		},
-		Server: &ServerConfig{Routes: map[string]string{"*.*": "loopback_cdp"}},
+		Server: &ServerConfig{
+			Routes:                            map[string]string{"*.*": "loopback_cdp"},
+			BrowserToken:                      "token-1",
+			CDPSendTimeoutMS:                  9876,
+			LoopbackExecutionContextTimeoutMS: 8765,
+			WSConnectErrorSettleTimeoutMS:     7654,
+		},
 	})
 
 	if cdp.opts.Launch.Options.ExecutablePath != "/tmp/chrome" {
@@ -98,13 +104,16 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 	if routes["*.*"] != "direct_cdp" {
 		t.Fatalf("configure client routes = %#v", routes)
 	}
-	if serverConfig["cdp_send_timeout_ms"] != 1234 {
+	if serverConfig["browser_token"] != "token-1" {
+		t.Fatalf("configure browser_token = %#v", serverConfig["browser_token"])
+	}
+	if serverConfig["cdp_send_timeout_ms"] != 9876 {
 		t.Fatalf("configure cdp_send_timeout_ms = %#v", serverConfig["cdp_send_timeout_ms"])
 	}
-	if serverConfig["loopback_execution_context_timeout_ms"] != 4321 {
+	if serverConfig["loopback_execution_context_timeout_ms"] != 8765 {
 		t.Fatalf("configure loopback_execution_context_timeout_ms = %#v", serverConfig["loopback_execution_context_timeout_ms"])
 	}
-	if serverConfig["ws_connect_error_settle_timeout_ms"] != 321 {
+	if serverConfig["ws_connect_error_settle_timeout_ms"] != 7654 {
 		t.Fatalf("configure ws_connect_error_settle_timeout_ms = %#v", serverConfig["ws_connect_error_settle_timeout_ms"])
 	}
 }

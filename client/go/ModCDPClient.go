@@ -111,9 +111,13 @@ func freePort() (int, error) {
 // --- public types --------------------------------------------------------
 
 type ServerConfig struct {
-	LoopbackCDPURL string            `json:"loopback_cdp_url,omitempty"`
-	Routes         map[string]string `json:"routes,omitempty"`
-	Options        map[string]any    `json:"-"`
+	LoopbackCDPURL                    string            `json:"loopback_cdp_url,omitempty"`
+	Routes                            map[string]string `json:"routes,omitempty"`
+	BrowserToken                      string            `json:"browser_token,omitempty"`
+	CDPSendTimeoutMS                  int               `json:"cdp_send_timeout_ms,omitempty"`
+	LoopbackExecutionContextTimeoutMS int               `json:"loopback_execution_context_timeout_ms,omitempty"`
+	WSConnectErrorSettleTimeoutMS     int               `json:"ws_connect_error_settle_timeout_ms,omitempty"`
+	Options                           map[string]any    `json:"-"`
 }
 
 type CustomEvent struct {
@@ -799,6 +803,18 @@ func (c *ModCDPClient) serverConfigureParams(customCommands []map[string]any, cu
 	if c.opts.Server != nil {
 		server["loopback_cdp_url"] = c.opts.Server.LoopbackCDPURL
 		server["routes"] = c.opts.Server.Routes
+		if c.opts.Server.BrowserToken != "" {
+			server["browser_token"] = c.opts.Server.BrowserToken
+		}
+		if c.opts.Server.CDPSendTimeoutMS != 0 {
+			server["cdp_send_timeout_ms"] = c.opts.Server.CDPSendTimeoutMS
+		}
+		if c.opts.Server.LoopbackExecutionContextTimeoutMS != 0 {
+			server["loopback_execution_context_timeout_ms"] = c.opts.Server.LoopbackExecutionContextTimeoutMS
+		}
+		if c.opts.Server.WSConnectErrorSettleTimeoutMS != 0 {
+			server["ws_connect_error_settle_timeout_ms"] = c.opts.Server.WSConnectErrorSettleTimeoutMS
+		}
 		for key, value := range c.opts.Server.Options {
 			server[key] = value
 		}
