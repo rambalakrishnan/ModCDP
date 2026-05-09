@@ -98,15 +98,15 @@ type PendingCommand = {
   resolve: (value: ProtocolResult) => void;
   reject: (error: Error) => void;
 };
-type LaunchMode = "local" | "remote" | "bb" | "none";
-type ExtensionMode = "auto" | "discover" | "inject" | "borrow" | "none";
-type LaunchOptions = {
+export type LaunchMode = "local" | "remote" | "bb" | "none";
+export type ExtensionMode = "auto" | "discover" | "inject" | "borrow" | "none";
+export type LaunchOptions = {
   mode?: LaunchMode;
   executable_path?: string | null;
   user_data_dir?: string | null;
   options?: Record<string, unknown>;
 };
-type UpstreamOptions = {
+export type UpstreamOptions = {
   mode?: UpstreamMode;
   ws_url?: string | null;
   nats_url?: string | null;
@@ -116,7 +116,7 @@ type UpstreamOptions = {
   nativemessaging_manifest?: string | null;
   ws_connect_error_settle_timeout_ms?: number;
 };
-type ExtensionOptions = {
+export type ExtensionOptions = {
   mode?: ExtensionMode;
   path?: string | null;
   extension_id?: string | null;
@@ -136,14 +136,14 @@ type ExtensionOptions = {
 type ExtensionConfig = Omit<Required<ExtensionOptions>, "service_worker_url_suffixes"> & {
   service_worker_url_suffixes: string[];
 };
-type ClientConfigOptions = {
+export type ClientConfigOptions = {
   routes?: ModCDPRoutes;
   hydrate_aliases?: boolean;
   mirror_upstream_events?: boolean;
   cdp_send_timeout_ms?: number;
   event_wait_timeout_ms?: number;
 };
-type ClientOptions = {
+export type ClientOptions = {
   launch?: LaunchOptions;
   upstream?: UpstreamOptions;
   extension?: ExtensionOptions;

@@ -28,6 +28,13 @@ import type { RawData } from "ws";
 import type { WebSocket } from "ws";
 
 import { ModCDPClient } from "../client/js/ModCDPClient.js";
+import type {
+  ClientConfigOptions,
+  ExtensionOptions,
+  LaunchMode,
+  LaunchOptions,
+  UpstreamOptions,
+} from "../client/js/ModCDPClient.js";
 import {
   UPSTREAM_EVENT_BINDING_NAME,
   wrapModCDPEvaluate,
@@ -44,6 +51,7 @@ import type {
   CdpResponseMessage,
   CdpMessage,
   ProxyConnectionState,
+  ModCDPServerOptions,
 } from "../types/modcdp.js";
 import {
   CdpCommandMessageSchema,
@@ -91,24 +99,11 @@ export async function startProxy({
 }: {
   host?: string;
   port?: number;
-  launch?: {
-    mode?: string;
-    executable_path?: string | null;
-    user_data_dir?: string | null;
-    options?: Record<string, unknown>;
-  };
-  upstream?: {
-    mode?: string;
-    ws_url?: string | null;
-    nats_url?: string | null;
-    nats_subject_prefix?: string | null;
-    reversews_bind?: string | null;
-    reversews_wait_timeout_ms?: number | null;
-    nativemessaging_manifest?: string | null;
-  };
-  extension?: { mode?: string; path?: string | null };
-  client?: Record<string, unknown>;
-  server?: Record<string, unknown> | null;
+  launch?: LaunchOptions;
+  upstream?: UpstreamOptions;
+  extension?: ExtensionOptions;
+  client?: ClientConfigOptions;
+  server?: ModCDPServerOptions | null;
   forward_mirrored_upstream_events?: boolean;
   upstream_monitor_interval_ms?: number;
 } = {}) {
@@ -271,25 +266,15 @@ export async function startProxy({
 
   if (managed_reverse_upstream) {
     managed_reverse_cdp = new ModCDPClient({
-      launch: {
-        mode: launch.mode as "local" | "remote" | "bb" | "none",
-        executable_path: launch.executable_path,
-        user_data_dir: launch.user_data_dir,
-        options: launch.options as any,
-      },
+      launch: { ...launch, mode: launch.mode as LaunchMode },
       upstream: {
         mode: "reversews",
         reversews_bind: upstream.reversews_bind,
         reversews_wait_timeout_ms: reverse_wait_timeout_ms,
       },
-      extension: {
-        mode: (extension.mode ?? "auto") as "auto" | "discover" | "inject" | "borrow" | "none",
-        path: extension.path ?? DEFAULT_EXTENSION_PATH,
-        service_worker_url_suffixes: ["/modcdp/service_worker.js"],
-        trust_service_worker_target: true,
-      },
+      extension: proxyExtensionOptions(extension, "auto"),
       client: { hydrate_aliases: false, ...clientOptions },
-      server: serverOptions as any,
+      server: serverOptions,
     });
     try {
       await managed_reverse_cdp.connect();
@@ -654,36 +639,21 @@ async function handleConnection(
     forward_mirrored_upstream_events,
     onUpstreamClosed,
   }: {
-    launch: {
-      mode?: string;
-      executable_path?: string | null;
-      user_data_dir?: string | null;
-      options?: Record<string, unknown>;
-    };
-    upstream: { mode?: string; ws_url?: string | null };
-    extension: { mode?: string; path?: string | null };
-    client?: Record<string, unknown>;
-    server?: Record<string, unknown> | null;
+    launch: LaunchOptions;
+    upstream: UpstreamOptions;
+    extension: ExtensionOptions;
+    client?: ClientConfigOptions;
+    server?: ModCDPServerOptions | null;
     forward_mirrored_upstream_events: boolean;
     onUpstreamClosed: () => void;
   },
 ) {
   const cdp = new ModCDPClient({
-    launch: {
-      mode: launch.mode as "local" | "remote" | "bb" | "none",
-      executable_path: launch.executable_path,
-      user_data_dir: launch.user_data_dir,
-      options: launch.options as any,
-    },
+    launch: { ...launch, mode: launch.mode as LaunchMode },
     upstream: { mode: "ws", ws_url: upstream.ws_url },
-    extension: {
-      mode: (extension.mode ?? "auto") as "auto" | "discover" | "inject" | "borrow" | "none",
-      path: extension.path ?? DEFAULT_EXTENSION_PATH,
-      service_worker_url_suffixes: ["/modcdp/service_worker.js"],
-      trust_service_worker_target: true,
-    },
+    extension: proxyExtensionOptions(extension, "auto"),
     client: { hydrate_aliases: false, ...clientOptions },
-    server: server as any,
+    server,
   });
   await cdp.connect();
   const upstream_socket = (cdp.transport as unknown as { ws?: WebSocket } | null)?.ws ?? null;
@@ -774,46 +744,26 @@ async function handleClientManagedConnection(
     client: clientOptions,
     server,
   }: {
-    launch: {
-      mode?: string;
-      executable_path?: string | null;
-      user_data_dir?: string | null;
-      options?: Record<string, unknown>;
-    };
-    upstream: {
-      mode?: string;
-      ws_url?: string | null;
-      nats_url?: string | null;
-      nats_subject_prefix?: string | null;
-      nativemessaging_manifest?: string | null;
-    };
-    extension: { mode?: string; path?: string | null };
-    client?: Record<string, unknown>;
-    server?: Record<string, unknown> | null;
+    launch: LaunchOptions;
+    upstream: UpstreamOptions;
+    extension: ExtensionOptions;
+    client?: ClientConfigOptions;
+    server?: ModCDPServerOptions | null;
   },
 ) {
   const cdp = new ModCDPClient({
-    launch: {
-      mode: (launch.mode ?? "none") as "local" | "remote" | "bb" | "none",
-      executable_path: launch.executable_path,
-      user_data_dir: launch.user_data_dir,
-      options: launch.options as any,
-    },
+    launch: { ...launch, mode: (launch.mode ?? "none") as LaunchMode },
     upstream: {
       mode: upstream.mode as "pipe" | "nativemessaging" | "nats",
       ws_url: upstream.ws_url,
       nats_url: upstream.nats_url,
       nats_subject_prefix: upstream.nats_subject_prefix,
       nativemessaging_manifest: upstream.nativemessaging_manifest,
+      ws_connect_error_settle_timeout_ms: upstream.ws_connect_error_settle_timeout_ms,
     },
-    extension: {
-      mode: (extension.mode ?? "none") as "auto" | "discover" | "inject" | "borrow" | "none",
-      path: extension.path ?? DEFAULT_EXTENSION_PATH,
-      service_worker_url_suffixes: ["/modcdp/service_worker.js"],
-      trust_service_worker_target: true,
-    },
+    extension: proxyExtensionOptions(extension, "none"),
     client: { hydrate_aliases: false, ...clientOptions },
-    server: server as any,
+    server,
   });
   await cdp.connect();
   wireClientManagedConnection(client, earlyBuffer, earlyHandler, cdp, true);
@@ -871,6 +821,15 @@ function wireClientManagedConnection(
     cdp.off("*", event_listener);
     if (close_cdp_on_client_close) void cdp.close().catch(() => {});
   });
+}
+
+function proxyExtensionOptions(extension: ExtensionOptions, default_mode: NonNullable<ExtensionOptions["mode"]>) {
+  return {
+    path: DEFAULT_EXTENSION_PATH,
+    service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+    ...extension,
+    mode: extension.mode ?? default_mode,
+  };
 }
 
 function sendRawClientMessage(client: WebSocket, obj: unknown) {
@@ -1107,7 +1066,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     host,
     port,
     launch: {
-      mode: launch_mode,
+      mode: launch_mode as LaunchOptions["mode"],
       executable_path:
         typeof argv["launch-executable-path"] === "string" && argv["launch-executable-path"] !== "true"
           ? String(argv["launch-executable-path"])
@@ -1122,7 +1081,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
           : {},
     },
     upstream: {
-      mode: upstream_mode,
+      mode: upstream_mode as UpstreamOptions["mode"],
       ws_url: explicit_upstream_ws_url ?? (upstream_mode === "ws" && launch_mode !== "local" ? DEFAULT_UPSTREAM : null),
       nats_url:
         typeof argv["upstream-nats-url"] === "string" && argv["upstream-nats-url"] !== "true"
@@ -1147,9 +1106,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
           ? String(argv["upstream-nativemessaging-manifest"])
           : null,
     },
-    extension: { mode: String(argv.extension || "auto"), path: extensionPath },
-    client: clientConfig,
-    server: serverConfig,
+    extension: { mode: String(argv.extension || "auto") as ExtensionOptions["mode"], path: extensionPath },
+    client: clientConfig as ClientConfigOptions,
+    server: serverConfig as ModCDPServerOptions,
     forward_mirrored_upstream_events,
   }).catch((e) => {
     console.error(e);

@@ -462,3 +462,38 @@ test("proxy reversews local launch auto-injects the extension through the real c
     await proxy.close();
   }
 }, 90_000);
+
+test("proxy passes custom extension discovery config through to ModCDPClient", async () => {
+  const proxy_port = await LocalBrowserLauncher.freePort();
+  const reverse_port = await LocalBrowserLauncher.freePort();
+  await assert.rejects(
+    () =>
+      startProxy({
+        port: proxy_port,
+        launch: {
+          mode: "local",
+          options: {
+            headless: true,
+            sandbox: process.platform !== "linux",
+            extra_args: [`--load-extension=${EXTENSION_PATH}`],
+          },
+        },
+        upstream: {
+          mode: "reversews",
+          reversews_bind: `127.0.0.1:${reverse_port}`,
+          reversews_wait_timeout_ms: 1_000,
+        },
+        extension: {
+          mode: "discover",
+          extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          require_service_worker_target: true,
+          service_worker_probe_timeout_ms: 200,
+          service_worker_ready_timeout_ms: 200,
+        },
+        server: {
+          routes: { "*.*": "loopback_cdp" },
+        },
+      }),
+    /Timed out waiting 1000ms for reverse ModCDP extension connection/,
+  );
+}, 60_000);
