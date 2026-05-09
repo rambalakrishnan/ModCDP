@@ -13,6 +13,15 @@ import (
 	"github.com/gobwas/ws/wsutil"
 )
 
+func TestLocalBrowserLauncherClassHelpersMatchLocalLauncherSurface(t *testing.T) {
+	if chromePath, err := findChromeBinary(""); err != nil || chromePath == "" {
+		t.Fatalf("findChromeBinary = %q, %v", chromePath, err)
+	}
+	if port, err := freePort(); err != nil || port <= 0 {
+		t.Fatalf("freePort = %d, %v", port, err)
+	}
+}
+
 func TestLocalBrowserLauncherLaunchesRealBrowserAndSpeaksCDP(t *testing.T) {
 	headless := true
 	sandbox := false

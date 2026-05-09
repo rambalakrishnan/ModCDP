@@ -14,6 +14,11 @@ import {
 const LIVE_BROWSER_TIMEOUT_MS = 60_000;
 
 describe("LocalBrowserLauncher", () => {
+  it("class helpers match the local launcher surface", async () => {
+    expect(LocalBrowserLauncher.findChromeBinary()).toEqual(expect.any(String));
+    expect(await LocalBrowserLauncher.freePort()).toEqual(expect.any(Number));
+  });
+
   it(
     "launches a real browser over a chosen CDP port and honors launch options",
     { timeout: LIVE_BROWSER_TIMEOUT_MS },
