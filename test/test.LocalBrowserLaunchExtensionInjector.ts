@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
+import { DEFAULT_MODCDP_EXTENSION_ID } from "../bridge/ExtensionInjector.js";
+import { LocalBrowserLaunchExtensionInjector } from "../bridge/LocalBrowserLaunchExtensionInjector.js";
 import { ModCDPClient } from "../client/js/ModCDPClient.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,3 +41,17 @@ test("LocalBrowserLaunchExtensionInjector loads the real extension during local 
     await cdp.close();
   }
 }, 60_000);
+
+test("LocalBrowserLaunchExtensionInjector prepares launcher config", async () => {
+  const injector = new LocalBrowserLaunchExtensionInjector({ extension_path: EXTENSION_PATH });
+
+  try {
+    await injector.prepare();
+    const extra_args = injector.getLauncherConfig().extra_args ?? [];
+    assert.equal(extra_args.length, 1);
+    assert.match(extra_args[0], /^--load-extension=/);
+    assert.equal(injector.options.extension_id, DEFAULT_MODCDP_EXTENSION_ID);
+  } finally {
+    await injector.close();
+  }
+});
