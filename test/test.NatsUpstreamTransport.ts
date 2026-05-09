@@ -51,7 +51,7 @@ test("nats upstream close rejects pending peer waits", async () => {
 });
 
 test("nats upstream reconnects after close against a real NATS server", async () => {
-  const nats = await start_nats_server();
+  const nats = await startNatsServer();
   const transport = new NatsUpstreamTransport({
     url: nats.url,
     subject_prefix: `modcdp.reconnect.${Date.now()}`,
@@ -74,7 +74,7 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function wait_for_websocket(url: string, timeout_ms = 10_000) {
+async function waitForWebSocket(url: string, timeout_ms = 10_000) {
   const deadline = Date.now() + timeout_ms;
   let last_error: unknown = null;
   while (Date.now() < deadline) {
@@ -94,7 +94,7 @@ async function wait_for_websocket(url: string, timeout_ms = 10_000) {
   throw last_error instanceof Error ? last_error : new Error(`Timed out waiting for ${url}`);
 }
 
-async function close_process(proc: ChildProcess) {
+async function closeProcess(proc: ChildProcess) {
   if (proc.exitCode != null || proc.signalCode != null) return;
   proc.kill("SIGTERM");
   await Promise.race([once(proc, "exit"), delay(2_000)]);
@@ -103,7 +103,7 @@ async function close_process(proc: ChildProcess) {
   await Promise.race([once(proc, "exit"), delay(2_000)]);
 }
 
-async function start_nats_server() {
+async function startNatsServer() {
   const websocket_port = await LocalBrowserLauncher.freePort();
   const client_port = await LocalBrowserLauncher.freePort();
   const dir = await mkdtemp(path.join(tmpdir(), "modcdp-nats-"));
@@ -124,23 +124,23 @@ async function start_nats_server() {
   const proc = spawn(await getBinaryPath(), ["-c", config_path], { stdio: "ignore" });
   const url = `ws://127.0.0.1:${websocket_port}`;
   try {
-    await wait_for_websocket(url);
+    await waitForWebSocket(url);
   } catch (error) {
-    await close_process(proc);
+    await closeProcess(proc);
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
   return {
     url,
     close: async () => {
-      await close_process(proc);
+      await closeProcess(proc);
       await rm(dir, { recursive: true, force: true });
     },
   };
 }
 
 test("nats upstream relays CDP through a real extension over a real NATS server", async () => {
-  const nats = await start_nats_server();
+  const nats = await startNatsServer();
   const subject_prefix = `modcdp.test.${Date.now()}`;
   const nats_client = new ModCDPClient({
     launch: {

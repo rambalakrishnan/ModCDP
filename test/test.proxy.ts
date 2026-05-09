@@ -20,7 +20,7 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function wait_for_websocket(url: string, timeout_ms = 10_000) {
+async function waitForWebSocket(url: string, timeout_ms = 10_000) {
   const deadline = Date.now() + timeout_ms;
   let last_error: unknown = null;
   while (Date.now() < deadline) {
@@ -40,7 +40,7 @@ async function wait_for_websocket(url: string, timeout_ms = 10_000) {
   throw last_error instanceof Error ? last_error : new Error(`Timed out waiting for ${url}`);
 }
 
-async function wait_for_http_json_version(url: string, timeout_ms = 10_000) {
+async function waitForHttpJsonVersion(url: string, timeout_ms = 10_000) {
   const deadline = Date.now() + timeout_ms;
   let last_error: unknown = null;
   while (Date.now() < deadline) {
@@ -56,7 +56,7 @@ async function wait_for_http_json_version(url: string, timeout_ms = 10_000) {
   throw last_error instanceof Error ? last_error : new Error(`Timed out waiting for ${url}`);
 }
 
-async function close_process(proc: ChildProcess) {
+async function closeProcess(proc: ChildProcess) {
   if (proc.exitCode != null || proc.signalCode != null) return;
   proc.kill("SIGTERM");
   await Promise.race([once(proc, "exit"), delay(2_000)]);
@@ -65,7 +65,7 @@ async function close_process(proc: ChildProcess) {
   await Promise.race([once(proc, "exit"), delay(2_000)]);
 }
 
-async function start_nats_server() {
+async function startNatsServer() {
   const websocket_port = await LocalBrowserLauncher.freePort();
   const client_port = await LocalBrowserLauncher.freePort();
   const dir = await mkdtemp(path.join(tmpdir(), "modcdp-proxy-nats-"));
@@ -86,22 +86,22 @@ async function start_nats_server() {
   const proc = spawn(await getBinaryPath(), ["-c", config_path], { stdio: "ignore" });
   const url = `ws://127.0.0.1:${websocket_port}`;
   try {
-    await wait_for_websocket(url);
+    await waitForWebSocket(url);
   } catch (error) {
-    await close_process(proc);
+    await closeProcess(proc);
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
   return {
     url,
     close: async () => {
-      await close_process(proc);
+      await closeProcess(proc);
       await rm(dir, { recursive: true, force: true });
     },
   };
 }
 
-async function expect_proxy_cdp_works(proxy_url: string, transport: string) {
+async function expectProxyCdpWorks(proxy_url: string, transport: string) {
   const cdp = await CdpSocket.connect(proxy_url);
   let target_id: string | null = null;
   try {
@@ -140,7 +140,7 @@ test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser ov
   });
 
   try {
-    await expect_proxy_cdp_works(proxy.url, "ws");
+    await expectProxyCdpWorks(proxy.url, "ws");
   } finally {
     await proxy.close();
   }
@@ -164,7 +164,7 @@ test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser ov
   });
 
   try {
-    await expect_proxy_cdp_works(proxy.url, "pipe");
+    await expectProxyCdpWorks(proxy.url, "pipe");
   } finally {
     await proxy.close();
   }
@@ -193,10 +193,10 @@ test("proxy CLI maps user-facing flags into a real pipe upstream browser session
   );
 
   try {
-    await wait_for_http_json_version(`http://127.0.0.1:${proxy_port}/json/version`);
-    await expect_proxy_cdp_works(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-pipe");
+    await waitForHttpJsonVersion(`http://127.0.0.1:${proxy_port}/json/version`);
+    await expectProxyCdpWorks(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-pipe");
   } finally {
-    await close_process(proc);
+    await closeProcess(proc);
   }
 }, 60_000);
 
@@ -223,10 +223,10 @@ test("proxy CLI maps local ws launch without requiring upstream ws url", async (
   );
 
   try {
-    await wait_for_http_json_version(`http://127.0.0.1:${proxy_port}/json/version`);
-    await expect_proxy_cdp_works(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-ws-local");
+    await waitForHttpJsonVersion(`http://127.0.0.1:${proxy_port}/json/version`);
+    await expectProxyCdpWorks(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-ws-local");
   } finally {
-    await close_process(proc);
+    await closeProcess(proc);
   }
 }, 60_000);
 
@@ -258,10 +258,10 @@ test("proxy CLI maps ws upstream URL and route shorthands into an existing real 
   );
 
   try {
-    await wait_for_http_json_version(`http://127.0.0.1:${proxy_port}/json/version`);
-    await expect_proxy_cdp_works(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-ws");
+    await waitForHttpJsonVersion(`http://127.0.0.1:${proxy_port}/json/version`);
+    await expectProxyCdpWorks(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-ws");
   } finally {
-    await close_process(proc);
+    await closeProcess(proc);
     await chrome.close();
   }
 }, 60_000);
@@ -294,15 +294,15 @@ test("proxy CLI maps user-facing flags into a real reversews local launch", asyn
   );
 
   try {
-    await wait_for_http_json_version(`http://127.0.0.1:${proxy_port}/json/version`, 20_000);
-    await expect_proxy_cdp_works(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-reversews");
+    await waitForHttpJsonVersion(`http://127.0.0.1:${proxy_port}/json/version`, 20_000);
+    await expectProxyCdpWorks(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-reversews");
   } finally {
-    await close_process(proc);
+    await closeProcess(proc);
   }
 }, 90_000);
 
 test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser over nats upstream", async () => {
-  const nats = await start_nats_server();
+  const nats = await startNatsServer();
   const proxy_port = await LocalBrowserLauncher.freePort();
   const proxy = await startProxy({
     port: proxy_port,
@@ -324,7 +324,7 @@ test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser ov
   });
 
   try {
-    await expect_proxy_cdp_works(proxy.url, "nats");
+    await expectProxyCdpWorks(proxy.url, "nats");
   } finally {
     await proxy.close();
     await nats.close();
@@ -349,7 +349,7 @@ test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser ov
   });
 
   try {
-    await expect_proxy_cdp_works(proxy.url, "nativemessaging");
+    await expectProxyCdpWorks(proxy.url, "nativemessaging");
   } finally {
     await proxy.close();
   }
@@ -390,7 +390,7 @@ test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser ov
       params: { reverse_url },
       expression: "async ({ reverse_url }) => ModCDP.startReverseBridge(reverse_url)",
     });
-    await expect_proxy_cdp_works(proxy.url, "reversews");
+    await expectProxyCdpWorks(proxy.url, "reversews");
   } finally {
     await bootstrap.close();
     await proxy.close();
@@ -422,7 +422,7 @@ test("proxy reversews local launch auto-injects the extension through the real c
   });
 
   try {
-    await expect_proxy_cdp_works(proxy.url, "reversews-local-launch");
+    await expectProxyCdpWorks(proxy.url, "reversews-local-launch");
   } finally {
     await proxy.close();
   }
