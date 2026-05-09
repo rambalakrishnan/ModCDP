@@ -14,11 +14,12 @@ import (
 )
 
 func TestLocalBrowserLauncherClassHelpersMatchLocalLauncherSurface(t *testing.T) {
-	if chromePath, err := findChromeBinary(""); err != nil || chromePath == "" {
-		t.Fatalf("findChromeBinary = %q, %v", chromePath, err)
+	launcher := NewLocalBrowserLauncher(LaunchOptions{})
+	if chromePath, err := launcher.FindChromeBinary(""); err != nil || chromePath == "" {
+		t.Fatalf("FindChromeBinary = %q, %v", chromePath, err)
 	}
-	if port, err := freePort(); err != nil || port <= 0 {
-		t.Fatalf("freePort = %d, %v", port, err)
+	if port, err := launcher.FreePort(); err != nil || port <= 0 {
+		t.Fatalf("FreePort = %d, %v", port, err)
 	}
 }
 

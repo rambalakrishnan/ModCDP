@@ -25,10 +25,18 @@ func NewLocalBrowserLauncher(options LaunchOptions) *LocalBrowserLauncher {
 	return &LocalBrowserLauncher{BrowserLauncher: NewBrowserLauncher(options)}
 }
 
+func (l *LocalBrowserLauncher) FindChromeBinary(explicit string) (string, error) {
+	return findChromeBinary(explicit)
+}
+
+func (l *LocalBrowserLauncher) FreePort() (int, error) {
+	return freePort()
+}
+
 func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, error) {
 	options = mergeLaunchOptions(l.Options, options)
 
-	executablePath, err := findChromeBinary(options.ExecutablePath)
+	executablePath, err := l.FindChromeBinary(options.ExecutablePath)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +51,7 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 	usePipe := options.RemoteDebugging == "pipe"
 	port := options.Port
 	if port == 0 && !usePipe {
-		port, err = freePort()
+		port, err = l.FreePort()
 		if err != nil {
 			return nil, err
 		}
