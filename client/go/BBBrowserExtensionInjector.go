@@ -31,6 +31,9 @@ func (i *BBBrowserExtensionInjector) Prepare() error {
 		i.ExtensionID = i.Options.ExtensionID
 		return nil
 	}
+	if i.ExtensionID != "" {
+		return nil
+	}
 	extensionPath := i.Options.ExtensionPath
 	if extensionPath == "" {
 		return nil
@@ -50,7 +53,6 @@ func (i *BBBrowserExtensionInjector) Prepare() error {
 		return err
 	}
 	i.ExtensionID = extensionID
-	i.Options.ExtensionID = extensionID
 	return nil
 }
 

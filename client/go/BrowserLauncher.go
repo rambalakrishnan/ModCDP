@@ -42,12 +42,12 @@ func (l BrowserLauncher) GetTransportConfig() map[string]any {
 	}
 }
 
-func (l BrowserLauncher) GetInjectorConfig() map[string]any {
-	return map[string]any{
-		"browserbase_api_key":  l.Options.BrowserbaseAPIKey,
-		"base_url":             l.Options.BaseURL,
-		"browserbase_base_url": l.Options.BrowserbaseBaseURL,
-		"extension_id":         l.Options.ExtensionID,
+func (l BrowserLauncher) GetInjectorConfig() ExtensionInjectorConfig {
+	return ExtensionInjectorConfig{
+		BrowserbaseAPIKey:  l.Options.BrowserbaseAPIKey,
+		BaseURL:            l.Options.BaseURL,
+		BrowserbaseBaseURL: l.Options.BrowserbaseBaseURL,
+		ExtensionID:        l.Options.ExtensionID,
 	}
 }
 

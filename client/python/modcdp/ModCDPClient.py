@@ -114,6 +114,9 @@ class AwaitableValue:
     def __repr__(self) -> str:
         return repr(self.value)
 
+    def __str__(self) -> str:
+        return str(self.value)
+
 
 class _ModDomain:
     def __init__(self, client: "ModCDPClient") -> None:
@@ -436,8 +439,8 @@ class ModCDPClient(CDPSurfaceMixin):
             injector.prepare()
             launcher.update(injector.getLauncherConfig())
         if self.cdp_url is None:
-            if self.launch.get("mode") != "local":
-                raise RuntimeError("upstream.mode=ws requires upstream.ws_url or launch.mode='local'.")
+            if self.launch.get("mode") == "none":
+                raise RuntimeError("upstream.mode=ws requires upstream.ws_url or a launch mode that creates a browser.")
             launched = launcher.launch()
             self._launched_browser = launched
             self.cdp_url = cast(str | None, launched.get("ws_url") or launched.get("cdp_url"))

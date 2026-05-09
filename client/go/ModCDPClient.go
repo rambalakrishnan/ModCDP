@@ -434,6 +434,7 @@ func (c *ModCDPClient) Connect() error {
 	}
 	injectors := c.extensionInjectorsForConfig()
 	c.extensionInjectors = injectors
+	launcher := c.browserLauncher()
 	launchOptions := c.opts.Launch.Options
 	if c.opts.Extension.Mode != "none" {
 		if err := c.prepareExtensionPath(); err != nil {
@@ -441,6 +442,7 @@ func (c *ModCDPClient) Connect() error {
 		}
 		for _, injector := range injectors {
 			injector.Update(c.baseExtensionInjectorConfig(nil))
+			injector.Update(launcher.GetInjectorConfig())
 			if err := injector.Prepare(); err != nil {
 				return err
 			}
@@ -449,7 +451,7 @@ func (c *ModCDPClient) Connect() error {
 	}
 	if c.opts.Upstream.WSURL == "" {
 		if c.opts.Upstream.WSURL == "" {
-			launched, err := c.browserLauncher().Launch(launchOptions)
+			launched, err := launcher.Launch(launchOptions)
 			if err != nil {
 				return err
 			}
@@ -595,6 +597,7 @@ func (c *ModCDPClient) connectPipeRawCDPTransport(connectStartedAt int64) error 
 		}
 		for _, injector := range injectors {
 			injector.Update(c.baseExtensionInjectorConfig(nil))
+			injector.Update(launcher.GetInjectorConfig())
 			if err := injector.Prepare(); err != nil {
 				return err
 			}
@@ -710,6 +713,7 @@ func (c *ModCDPClient) connectModCDPServerTransport(connectStartedAt int64) erro
 		}
 		for _, injector := range injectors {
 			injector.Update(c.baseExtensionInjectorConfig(nil))
+			injector.Update(launcher.GetInjectorConfig())
 			injector.Update(transport.GetInjectorConfig())
 			if err := injector.Prepare(); err != nil {
 				return err
@@ -1108,6 +1112,7 @@ func (c *ModCDPClient) Close() {
 }
 
 func (c *ModCDPClient) browserLauncher() interface {
+	GetInjectorConfig() ExtensionInjectorConfig
 	Launch(LaunchOptions) (*LaunchedBrowser, error)
 } {
 	switch c.opts.Launch.Mode {

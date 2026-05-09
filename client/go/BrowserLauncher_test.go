@@ -33,11 +33,11 @@ func TestBrowserLauncherMergesLaunchConfigAndExposesTransportAndInjectorConfig(t
 	}
 
 	injectorConfig := launcher.GetInjectorConfig()
-	if injectorConfig["browserbase_api_key"] != "test-key" {
-		t.Fatalf("browserbase_api_key = %v", injectorConfig["browserbase_api_key"])
+	if injectorConfig.BrowserbaseAPIKey != "test-key" {
+		t.Fatalf("BrowserbaseAPIKey = %v", injectorConfig.BrowserbaseAPIKey)
 	}
-	if injectorConfig["extension_id"] != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("extension_id = %v", injectorConfig["extension_id"])
+	if injectorConfig.ExtensionID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("ExtensionID = %v", injectorConfig.ExtensionID)
 	}
 
 	if _, err := launcher.Launch(LaunchOptions{}); err == nil || !strings.Contains(err.Error(), "BrowserLauncher.Launch is not implemented") {

@@ -27,6 +27,8 @@ class BBBrowserExtensionInjector(ExtensionInjector):
         if configured_extension_id:
             self.extension_id = configured_extension_id
             return
+        if self.extension_id:
+            return
         extension_path = self.options.get("extension_path")
         if not extension_path:
             return

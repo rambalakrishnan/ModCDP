@@ -21,6 +21,7 @@ export class BBBrowserExtensionInjector extends ExtensionInjector {
       this.extension_id = configured_extension_id;
       return;
     }
+    if (this.extension_id) return;
     const extension_path = this.options.extension_path;
     if (!extension_path) return;
     this.zip_path = extension_path.endsWith(".zip") ? extension_path : await this.zipExtensionDir(extension_path);
