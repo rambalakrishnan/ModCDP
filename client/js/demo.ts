@@ -198,7 +198,6 @@ async function main() {
     launch_options = {
       headless: process.platform === "linux",
       sandbox: process.platform !== "linux",
-      extra_args: [`--load-extension=${EXTENSION_PATH}`],
     };
   }
 

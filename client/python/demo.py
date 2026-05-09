@@ -112,7 +112,6 @@ def main():
             launch_options: dict[str, object] = {
                 "headless": sys.platform.startswith("linux"),
                 "sandbox": not sys.platform.startswith("linux"),
-                "extra_args": [f"--load-extension={EXTENSION_PATH}"],
             }
             if os.environ.get("CHROME_PATH"):
                 launch_options["executable_path"] = os.environ["CHROME_PATH"]

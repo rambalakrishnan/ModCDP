@@ -156,7 +156,6 @@ func main() {
 		}
 		launchOptions = modcdp.LaunchOptions{
 			ExecutablePath: chromePath,
-			ExtraArgs:      []string{"--load-extension=" + extensionPath},
 			Headless:       &headless,
 			Sandbox:        &sandbox,
 		}
