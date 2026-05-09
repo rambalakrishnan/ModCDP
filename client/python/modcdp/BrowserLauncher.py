@@ -40,6 +40,8 @@ class LaunchedBrowser(TypedDict, total=False):
     ws_url: str | None
     close: Any
     profile_dir: str | None
+    pipe_read: Any
+    pipe_write: Any
 
 
 DEFAULT_CHROME_READY_TIMEOUT_MS = 45_000
@@ -75,8 +77,8 @@ class BrowserLauncher:
             "cdp_url": (self.launched or {}).get("cdp_url") or self.options.get("cdp_url"),
             "ws_url": (self.launched or {}).get("ws_url") or self.options.get("ws_url"),
             "user_data_dir": (self.launched or {}).get("profile_dir") or self.options.get("user_data_dir"),
-            "pipe_read": None,
-            "pipe_write": None,
+            "pipe_read": (self.launched or {}).get("pipe_read"),
+            "pipe_write": (self.launched or {}).get("pipe_write"),
         }
 
     def getInjectorConfig(self) -> dict[str, Any]:

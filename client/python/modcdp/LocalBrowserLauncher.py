@@ -4,6 +4,7 @@ import json
 import glob
 import os
 import re
+import select
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,8 @@ class LocalBrowserLauncher(BrowserLauncher):
     def launch(self, options: BrowserLaunchOptions | None = None) -> LaunchedBrowser:
         merged = cast(BrowserLaunchOptions, {**self.options, **dict(options or {})})
         executable_path = self.find_chrome_binary(merged.get("executable_path"))
-        port = int(merged.get("port") or _free_port())
+        use_pipe = merged.get("remote_debugging") == "pipe"
+        port = 0 if use_pipe else int(merged.get("port") or _free_port())
         temp_profile_dir: tempfile.TemporaryDirectory[str] | None = None
         profile_dir = merged.get("user_data_dir")
         if not profile_dir:
@@ -57,9 +59,10 @@ class LocalBrowserLauncher(BrowserLauncher):
             "--use-mock-keychain",
             "--disable-gpu",
             f"--user-data-dir={profile_dir}",
-            "--remote-debugging-address=127.0.0.1",
-            f"--remote-debugging-port={port}",
+            "--remote-debugging-pipe" if use_pipe else "--remote-debugging-address=127.0.0.1",
+            None if use_pipe else f"--remote-debugging-port={port}",
         ]
+        args = [arg for arg in args if arg is not None]
         default_headless = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
         if merged.get("headless", default_headless):
             args.append("--headless=new")
@@ -67,6 +70,45 @@ class LocalBrowserLauncher(BrowserLauncher):
             args.append("--no-sandbox")
         args.extend(list(merged.get("extra_args") or []))
         args.append("about:blank")
+        if use_pipe:
+            parent_read, child_write = os.pipe()
+            child_read, parent_write = os.pipe()
+            parent_read = _move_fd_if_needed(parent_read, {3, 4})
+            parent_write = _move_fd_if_needed(parent_write, {3, 4})
+            if child_read != 3:
+                os.dup2(child_read, 3)
+                os.close(child_read)
+            if child_write != 4:
+                os.dup2(child_write, 4)
+                os.close(child_write)
+
+            process = subprocess.Popen(
+                [executable_path, *args],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                pass_fds=(3, 4),
+            )
+            os.close(3)
+            os.close(4)
+            pipe_read = os.fdopen(parent_read, "rb", buffering=0)
+            pipe_write = os.fdopen(parent_write, "wb", buffering=0)
+            try:
+                _wait_for_pipe_ready(pipe_read, pipe_write, int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS))
+            except Exception:
+                pipe_read.close()
+                pipe_write.close()
+                _close(process, temp_profile_dir)
+                raise
+            self.launched = {
+                "cdp_url": f"pipe://{process.pid}",
+                "ws_url": None,
+                "profile_dir": profile_dir,
+                "pipe_read": pipe_read,
+                "pipe_write": pipe_write,
+                "close": lambda: _close(process, temp_profile_dir, pipe_read, pipe_write),
+            }
+            return self.launched
+
         process = subprocess.Popen([executable_path, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cdp_url = f"http://127.0.0.1:{port}"
         timeout_s = int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS) / 1000
@@ -147,7 +189,55 @@ def _candidate_paths() -> list[str]:
     return [*_chrome_for_testing_candidates(), *canary, *stock]
 
 
-def _close(process: subprocess.Popen[bytes], temp_profile_dir: tempfile.TemporaryDirectory[str] | None) -> None:
+def _move_fd_if_needed(fd: int, reserved: set[int]) -> int:
+    if fd not in reserved:
+        return fd
+    moved = os.dup(fd)
+    os.close(fd)
+    return moved
+
+
+def _wait_for_pipe_ready(pipe_read, pipe_write, timeout_ms: int) -> None:
+    ready_id = 1
+    pipe_write.write(json.dumps({"id": ready_id, "method": "Browser.getVersion", "params": {}}).encode() + b"\0")
+    pipe_write.flush()
+    deadline = time.time() + timeout_ms / 1000
+    buffer = b""
+    while time.time() < deadline:
+        ready, _, _ = select.select([pipe_read], [], [], max(0.0, min(0.1, deadline - time.time())))
+        if not ready:
+            continue
+        chunk = pipe_read.read(1)
+        if not chunk:
+            time.sleep(0.01)
+            continue
+        buffer += chunk
+        if b"\0" not in buffer:
+            continue
+        raw, buffer = buffer.split(b"\0", 1)
+        if not raw:
+            continue
+        message = json.loads(raw.decode())
+        if message.get("id") != ready_id:
+            continue
+        if message.get("error"):
+            raise RuntimeError(message["error"].get("message") or "Browser.getVersion failed over pipe")
+        return
+    raise RuntimeError(f"Chrome remote-debugging pipe did not respond within {timeout_ms}ms")
+
+
+def _close(
+    process: subprocess.Popen[bytes],
+    temp_profile_dir: tempfile.TemporaryDirectory[str] | None,
+    pipe_read=None,
+    pipe_write=None,
+) -> None:
+    for pipe in (pipe_read, pipe_write):
+        try:
+            if pipe is not None:
+                pipe.close()
+        except Exception:
+            pass
     process.terminate()
     try:
         process.wait(timeout=2)

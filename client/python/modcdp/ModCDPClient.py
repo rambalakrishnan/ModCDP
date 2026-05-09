@@ -336,7 +336,7 @@ class ModCDPClient(CDPSurfaceMixin):
 
     def connect(self) -> "ModCDPClient":
         connect_started_at = int(time.time() * 1000)
-        if self.upstream.get("mode") != "ws":
+        if self.upstream_endpoint_kind == "modcdp_server":
             transport_started_at = int(time.time() * 1000)
             launcher = self._browser_launcher()
             launcher.update(self.launch_options)
@@ -377,6 +377,10 @@ class ModCDPClient(CDPSurfaceMixin):
             return self
         launcher = self._browser_launcher()
         launcher.update(self.launch_options)
+        transport: UpstreamTransport | None = None
+        if self.upstream.get("mode") != "ws" or self.cdp_url is not None:
+            transport = self._upstream_transport()
+            launcher.update(transport.getLauncherConfig())
         injectors = self._extension_injectors_for_config()
         self._extension_injectors = injectors
         for injector in injectors:
@@ -389,25 +393,38 @@ class ModCDPClient(CDPSurfaceMixin):
                 raise RuntimeError("upstream.mode=ws requires upstream.ws_url or launch.mode='local'.")
             launched = launcher.launch()
             self._launched_browser = launched
-            self.cdp_url = cast(str | None, launched["cdp_url"])
+            self.cdp_url = cast(str | None, launched.get("ws_url") or launched.get("cdp_url"))
+            if transport is not None:
+                transport.update(launcher.getTransportConfig())
             for injector in injectors:
                 injector.update(launcher.getInjectorConfig())
         input_cdp_url = self.cdp_url
         if input_cdp_url is None:
             raise RuntimeError("upstream.mode=ws requires an upstream CDP endpoint.")
-        self.cdp_url = websocket_url_for(input_cdp_url)
-        self.upstream["ws_url"] = self.cdp_url
-        if self.server is not None and "loopback_cdp_url" not in self.server:
+        if self.upstream.get("mode") == "ws":
+            self.cdp_url = websocket_url_for(input_cdp_url)
+            self.upstream["ws_url"] = self.cdp_url
+            if transport is None:
+                transport = self._upstream_transport()
+            transport.update({"ws_url": self.cdp_url, "cdp_url": self.cdp_url, "url": self.cdp_url})
+        if transport is None:
+            transport = self._upstream_transport()
+        can_autoconfigure_loopback = self.cdp_url is not None and not self.cdp_url.startswith("pipe://")
+        if self.server is not None and can_autoconfigure_loopback and "loopback_cdp_url" not in self.server:
             self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
         elif self.server and isinstance(self.server.get("loopback_cdp_url"), str):
             loopback_url = self.server["loopback_cdp_url"]
             if loopback_url == input_cdp_url or loopback_url == self.cdp_url:
                 self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
-        self.transport = self._upstream_transport()
+        self.transport = transport
         self.transport.connect()
-        self._ws = cast(WebSocketLike, cast(WebSocketUpstreamTransport, self.transport).ws)
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True)
-        self._reader_thread.start()
+        if self.upstream.get("mode") == "ws":
+            self._ws = cast(WebSocketLike, cast(WebSocketUpstreamTransport, self.transport).ws)
+            self._reader_thread = threading.Thread(target=self._reader, daemon=True)
+            self._reader_thread.start()
+        else:
+            self.transport.on_recv(lambda message: self._on_recv(cast(CdpMessage, message)))
+            self.transport.on_close(lambda error: self._reject_all(error))
 
         self._send_message("Target.setAutoAttach", {
             "autoAttach": True,
