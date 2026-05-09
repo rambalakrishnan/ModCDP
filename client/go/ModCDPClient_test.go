@@ -1,10 +1,16 @@
 package modcdp
 
 import (
+	"context"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	abxjsonschema "github.com/ArchiveBox/abxbus/abxbus-go/jsonschema"
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 )
 
 func boolPtr(value bool) *bool {
@@ -139,6 +145,70 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	}
 	if result != "chrome-extension://mdedooklbnfejodmnhmkdpkaedafkehf/modcdp/service_worker.js" {
 		t.Fatalf("Mod.evaluate = %#v", result)
+	}
+}
+
+func TestModCDPClientCloseDoesNotCloseRemoteBrowserItDidNotLaunch(t *testing.T) {
+	headless := true
+	sandbox := false
+	extensionPath, err := filepath.Abs("../../dist/extension")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
+		Headless:  &headless,
+		Sandbox:   &sandbox,
+		ExtraArgs: []string{"--load-extension=" + extensionPath},
+	}).Launch(LaunchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chrome.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rawConn, _, _, err := ws.Dial(ctx, chrome.WSURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawConn.Close()
+
+	cdp := New(Options{
+		Launch:   LaunchConfig{Mode: "remote"},
+		Upstream: UpstreamConfig{Mode: "ws", WSURL: chrome.CDPURL},
+		Extension: ExtensionConfig{
+			Mode:                     "discover",
+			ServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
+			TrustServiceWorkerTarget: true,
+		},
+	})
+	if err := cdp.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	cdp.Close()
+	time.Sleep(500 * time.Millisecond)
+
+	if err := wsutil.WriteClientText(rawConn, []byte(`{"id":1,"method":"Browser.getVersion","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	body, err := wsutil.ReadServerText(rawConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		ID     int `json:"id"`
+		Result struct {
+			Product string `json:"product"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != 1 {
+		t.Fatalf("unexpected response id %d", response.ID)
+	}
+	if !strings.Contains(response.Result.Product, "Chrome") && !strings.Contains(response.Result.Product, "Chromium") {
+		t.Fatalf("unexpected product %q", response.Result.Product)
 	}
 }
 

@@ -696,14 +696,6 @@ class ModCDPClient(CDPSurfaceMixin):
             except Exception:
                 pass
         self._extension_injectors = []
-        if self._ws is not None:
-            try:
-                with self._lock:
-                    self._next_id += 1
-                    msg_id = self._next_id
-                self._ws.send(json.dumps({"id": msg_id, "method": "Browser.close", "params": {}}))
-            except Exception:
-                pass
         self._closed = True
         try:
             if self.transport:
@@ -990,7 +982,7 @@ class ModCDPClient(CDPSurfaceMixin):
             return cast(ProtocolPayload, dict(jsonable))
         return {"value": cast(JsonValue, jsonable)}
 
-    def _measure_ping_latency(self) -> ModCDPPingLatency:
+    def _measure_ping_latency(self) -> ModCDPPingLatency | None:
         sent_at = int(time.time() * 1000)
         done: Queue[ProtocolPayload] = Queue()
 
@@ -1002,7 +994,9 @@ class ModCDPClient(CDPSurfaceMixin):
             self.send("Mod.ping", {"sentAt": sent_at})
             payload = done.get(timeout=10)
         except Empty:
-            raise RuntimeError("Mod.pong timed out")
+            return self.latency
+        except Exception:
+            return self.latency
         finally:
             handlers = self._handlers.get("Mod.pong") or []
             if on_pong in handlers:

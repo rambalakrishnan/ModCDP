@@ -3,7 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
+import { LocalBrowserLauncher } from "../bridge/LocalBrowserLauncher.js";
 import { ModCDPClient } from "../client/js/ModCDPClient.js";
+import { CdpSocket } from "./helpers.BrowserLauncher.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
@@ -71,5 +73,35 @@ test("ModCDPClient connects with nested launch/upstream/extension/client/server 
     assert.equal(typeof (await cdp.Browser.getVersion()).product, "string");
   } finally {
     await cdp.close();
+  }
+}, 60_000);
+
+test("ModCDPClient.close does not close a remote browser it did not launch", async () => {
+  const chrome = await new LocalBrowserLauncher({
+    headless: true,
+    sandbox: process.platform !== "linux",
+    extra_args: [`--load-extension=${EXTENSION_PATH}`],
+  }).launch();
+  const raw_cdp = await CdpSocket.connect(chrome.ws_url!);
+  const cdp = new ModCDPClient({
+    launch: { mode: "remote" },
+    upstream: { mode: "ws", ws_url: chrome.cdp_url },
+    extension: {
+      mode: "discover",
+      service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+      trust_service_worker_target: true,
+    },
+  });
+
+  try {
+    await cdp.connect();
+    await cdp.close();
+    await delay(500);
+    const version = await raw_cdp.send("Browser.getVersion");
+    assert.match(String(version.product), /Chrome|Chromium/);
+  } finally {
+    await raw_cdp.close();
+    await cdp.close();
+    await chrome.close();
   }
 }, 60_000);

@@ -1082,16 +1082,6 @@ func (c *ModCDPClient) On(event string, handler Handler) {
 }
 
 func (c *ModCDPClient) Close() {
-	if c.conn != nil {
-		c.mu.Lock()
-		c.nextID++
-		id := c.nextID
-		c.mu.Unlock()
-		body, _ := json.Marshal(map[string]any{"id": id, "method": "Browser.close", "params": map[string]any{}})
-		c.writeMu.Lock()
-		_ = wsutil.WriteClientText(c.conn, body)
-		c.writeMu.Unlock()
-	}
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil

@@ -916,11 +916,6 @@ export class ModCDPClient extends ModCDPEventEmitter {
     this.event_wait_cleanups.clear();
     for (const injector of this._extension_injectors) await injector.close();
     this._extension_injectors = [];
-    if (this.transport && this.upstream_endpoint_kind === "raw_cdp") {
-      try {
-        this.transport.send({ id: this.next_id++, method: "Browser.close", params: {} });
-      } catch {}
-    }
     await this.transport?.close();
     this.transport = null;
     if (this._launched) await this._launched.close();

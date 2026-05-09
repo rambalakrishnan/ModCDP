@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import json
+import time
 import unittest
+from pathlib import Path
 from typing import Any, cast
 
+from websocket import create_connection
+
 from modcdp import ModCDPClient
+from modcdp.LocalBrowserLauncher import LocalBrowserLauncher
+
+
+HERE = Path(__file__).resolve().parent
+EXTENSION_PATH = HERE.parents[2] / "dist" / "extension"
 
 
 class ModCDPClientTests(unittest.TestCase):
@@ -87,6 +97,38 @@ class ModCDPClientTests(unittest.TestCase):
             )
         finally:
             cdp.close()
+
+    def test_close_does_not_close_a_remote_browser_it_did_not_launch(self) -> None:
+        chrome = LocalBrowserLauncher(
+            {
+                "headless": True,
+                "sandbox": False,
+                "extra_args": [f"--load-extension={EXTENSION_PATH}"],
+            }
+        ).launch()
+        raw_ws = create_connection(cast(str, chrome["ws_url"]), timeout=5)
+        cdp = ModCDPClient(
+            launch={"mode": "remote"},
+            upstream={"mode": "ws", "ws_url": chrome["cdp_url"]},
+            extension={
+                "mode": "discover",
+                "service_worker_url_suffixes": ["/modcdp/service_worker.js"],
+                "trust_service_worker_target": True,
+            },
+        )
+
+        try:
+            cdp.connect()
+            cdp.close()
+            time.sleep(0.5)
+            raw_ws.send(json.dumps({"id": 1, "method": "Browser.getVersion", "params": {}}))
+            response = json.loads(raw_ws.recv())
+            self.assertEqual(response["id"], 1)
+            self.assertRegex(response["result"]["product"], r"Chrome|Chromium")
+        finally:
+            raw_ws.close()
+            cdp.close()
+            chrome["close"]()
 
 
 if __name__ == "__main__":
