@@ -614,7 +614,11 @@ func (c *ModCDPClient) connectPipeRawCDPTransport(connectStartedAt int64) error 
 	}
 	c.launchedBrowser = launched
 	c.CDPURL = launched.CDPURL
-	pipeTransport.SetPipes(launched.PipeRead, launched.PipeWrite, launched.CDPURL)
+	pipeTransport.Update(map[string]any{
+		"cdp_url":    launched.CDPURL,
+		"pipe_read":  launched.PipeRead,
+		"pipe_write": launched.PipeWrite,
+	})
 	c.transport = pipeTransport
 	if err := pipeTransport.Connect(); err != nil {
 		c.Close()
@@ -1141,6 +1145,7 @@ func (c *ModCDPClient) Close() {
 
 func (c *ModCDPClient) browserLauncher() interface {
 	GetInjectorConfig() ExtensionInjectorConfig
+	GetTransportConfig() map[string]any
 	Launch(LaunchOptions) (*LaunchedBrowser, error)
 } {
 	switch c.opts.Launch.Mode {

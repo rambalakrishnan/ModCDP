@@ -19,10 +19,21 @@ func NewPipeUpstreamTransport() *PipeUpstreamTransport {
 	return &PipeUpstreamTransport{}
 }
 
-func (t *PipeUpstreamTransport) SetPipes(pipeRead *os.File, pipeWrite *os.File, url string) {
-	t.PipeRead = pipeRead
-	t.PipeWrite = pipeWrite
-	t.URL = url
+func (t *PipeUpstreamTransport) Update(config map[string]any) {
+	if config == nil {
+		return
+	}
+	if pipeRead, _ := config["pipe_read"].(*os.File); pipeRead != nil {
+		t.PipeRead = pipeRead
+	}
+	if pipeWrite, _ := config["pipe_write"].(*os.File); pipeWrite != nil {
+		t.PipeWrite = pipeWrite
+	}
+	if cdpURL, _ := config["cdp_url"].(string); cdpURL != "" {
+		t.URL = cdpURL
+	} else if rawURL, _ := config["url"].(string); rawURL != "" {
+		t.URL = rawURL
+	}
 }
 
 func (t *PipeUpstreamTransport) GetLauncherConfig() LaunchOptions {

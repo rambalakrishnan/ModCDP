@@ -32,6 +32,13 @@ func TestPipeUpstreamTransportLaunchesRealBrowserAndUsesPIDScopedPipeURL(t *test
 	if cdp.CDPURL == "" || cdp.CDPURL[:7] != "pipe://" {
 		t.Fatalf("CDPURL = %q", cdp.CDPURL)
 	}
+	pipeTransport, ok := cdp.transport.(*PipeUpstreamTransport)
+	if !ok {
+		t.Fatalf("transport = %T", cdp.transport)
+	}
+	if pipeTransport.URL != cdp.CDPURL {
+		t.Fatalf("pipe transport URL = %q, CDPURL = %q", pipeTransport.URL, cdp.CDPURL)
+	}
 	version, err := cdp.SendRaw("Browser.getVersion", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
