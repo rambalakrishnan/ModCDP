@@ -113,7 +113,7 @@ test(
         "raw CDP TargetInfo should not already contain tabId",
       );
 
-      await cdp.send("Mod.addCustomCommand", {
+      await cdp.Mod.addCustomCommand({
         name: "Custom.tabIdFromTargetId",
         expression: tabIdFromTargetIdCommand,
       });
