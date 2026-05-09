@@ -5,18 +5,26 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 )
 
-func TestNativeMessagingUpstreamTransportConfigOwnsManifestLoopbackAndInjectorConfig(t *testing.T) {
+func TestNativeMessagingUpstreamTransportConfigOwnsManifestHostWaitTimeoutLoopbackAndInjectorConfig(t *testing.T) {
 	transport := NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
-		ManifestPath: "/tmp/modcdp-native-host.json",
-		HostName:     "com.modcdp.test",
-		ExtensionID:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ManifestPath:  "/tmp/modcdp-native-host.json",
+		ManifestPaths: []string{"/tmp/modcdp-native-host-extra.json"},
+		HostName:      "com.modcdp.test",
+		ExtensionID:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		WaitTimeoutMS: 10,
 	})
-	transport.Update(map[string]any{"ws_url": "ws://127.0.0.1:9222/devtools/browser/test"})
-	if transport.GetInjectorConfig().NativeHostName != "com.modcdp.test" {
-		t.Fatalf("injector config = %#v", transport.GetInjectorConfig())
+	transport.Update(map[string]any{
+		"ws_url":           "ws://127.0.0.1:9222/devtools/browser/test",
+		"manifest_paths":   []string{},
+		"native_host_name": "com.modcdp.updated",
+		"wait_timeout_ms":  5,
+	})
+	if transport.GetInjectorConfig().NativeHostName != "com.modcdp.updated" {
+		t.Fatalf("updated injector config = %#v", transport.GetInjectorConfig())
 	}
 	if transport.GetServerConfig()["loopback_cdp_url"] != "ws://127.0.0.1:9222/devtools/browser/test" {
 		t.Fatalf("server config = %#v", transport.GetServerConfig())
@@ -26,6 +34,16 @@ func TestNativeMessagingUpstreamTransportConfigOwnsManifestLoopbackAndInjectorCo
 	}
 	if transport.ExtensionID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("ExtensionID = %q", transport.ExtensionID)
+	}
+	if transport.IncludeDefaultManifestPaths {
+		t.Fatal("IncludeDefaultManifestPaths should stay false while ManifestPath is set")
+	}
+	transport.Update(map[string]any{"manifest_path": ""})
+	if !transport.IncludeDefaultManifestPaths {
+		t.Fatal("IncludeDefaultManifestPaths should be true after clearing ManifestPath and ManifestPaths")
+	}
+	if err := transport.WaitForPeer(); err == nil || !strings.Contains(err.Error(), "timed out waiting 5ms for native messaging host com.modcdp.updated") {
+		t.Fatalf("WaitForPeer error = %v", err)
 	}
 }
 

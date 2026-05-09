@@ -50,20 +50,32 @@ export class NativeMessagingUpstreamTransport extends UpstreamTransport {
   }
 
   update(config: UpstreamTransportConfig = {}) {
+    let should_install_native_host = false;
     if (config.manifest_path !== undefined) {
       this.manifest_path = config.manifest_path;
-      this.include_default_manifest_paths = !config.manifest_path;
+      should_install_native_host = true;
     }
     if (config.manifest_paths !== undefined) {
       this.manifest_paths = config.manifest_paths ?? [];
-      this.include_default_manifest_paths = !this.manifest_paths.length;
+      should_install_native_host = true;
     }
-    this.extension_id = config.extension_id ?? this.extension_id;
+    this.include_default_manifest_paths = !this.manifest_path && this.manifest_paths.length === 0;
+    const host_name = config.host_name ?? config.native_host_name;
+    if (host_name) {
+      this.host_name = host_name;
+      should_install_native_host = true;
+    }
+    if (typeof config.wait_timeout_ms === "number") this.wait_timeout_ms = config.wait_timeout_ms;
+    if (config.extension_id) {
+      this.extension_id = config.extension_id;
+      should_install_native_host = true;
+    }
     if (config.user_data_dir) {
       this.user_data_dir = config.user_data_dir;
       this.setProfileManifestPaths(config.user_data_dir);
-      if (this.bound_port != null) this.installNativeHost(this.bound_port);
+      should_install_native_host = true;
     }
+    if (should_install_native_host && this.bound_port != null) this.installNativeHost(this.bound_port);
     this.cdp_url = config.ws_url ?? config.cdp_url ?? this.cdp_url;
     return this;
   }

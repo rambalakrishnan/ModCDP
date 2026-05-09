@@ -13,18 +13,33 @@ import { ModCDPClient } from "../client/js/ModCDPClient.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.resolve(HERE, "..", "dist", "extension");
 
-test("nativemessaging upstream config owns manifest, loopback, and injector config", () => {
+test("nativemessaging upstream config owns manifest, host, wait timeout, loopback, and injector config", async () => {
   const transport = new NativeMessagingUpstreamTransport({
     manifest_path: "/tmp/modcdp-native-host.json",
+    manifest_paths: ["/tmp/modcdp-native-host-extra.json"],
     host_name: "com.modcdp.test",
     extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    wait_timeout_ms: 10,
   });
   assert.deepEqual(transport.getInjectorConfig(), { native_host_name: "com.modcdp.test" });
   assert.deepEqual(transport.getServerConfig(), {});
-  assert.equal(transport.update({ ws_url: "ws://127.0.0.1:9222/devtools/browser/test" }), transport);
+  assert.equal(
+    transport.update({
+      ws_url: "ws://127.0.0.1:9222/devtools/browser/test",
+      manifest_paths: [],
+      native_host_name: "com.modcdp.updated",
+      wait_timeout_ms: 5,
+    }),
+    transport,
+  );
   assert.deepEqual(transport.getServerConfig(), {
     loopback_cdp_url: "ws://127.0.0.1:9222/devtools/browser/test",
   });
+  assert.deepEqual(transport.getInjectorConfig(), { native_host_name: "com.modcdp.updated" });
+  assert.equal((transport as unknown as { include_default_manifest_paths: boolean }).include_default_manifest_paths, false);
+  transport.update({ manifest_path: null });
+  assert.equal((transport as unknown as { include_default_manifest_paths: boolean }).include_default_manifest_paths, true);
+  await assert.rejects(() => transport.waitForPeer(), /Timed out waiting 5ms for native messaging host com\.modcdp\.updated/);
 });
 
 test.skipIf(process.platform === "win32")(

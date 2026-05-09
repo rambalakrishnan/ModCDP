@@ -177,18 +177,3 @@ func (t *ReverseWebSocketUpstreamTransport) accept(conn net.Conn) {
 		}
 	}
 }
-
-func intFromConfig(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	case float32:
-		return int(typed), true
-	default:
-		return 0, false
-	}
-}

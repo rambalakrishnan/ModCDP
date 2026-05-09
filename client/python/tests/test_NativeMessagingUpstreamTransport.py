@@ -10,21 +10,39 @@ from modcdp.NativeMessagingUpstreamTransport import DEFAULT_NATIVE_MESSAGING_HOS
 
 @unittest.skipIf(sys.platform.startswith("win"), "native messaging profile manifest path is not implemented on Windows")
 class NativeMessagingUpstreamTransportTests(unittest.TestCase):
-    def test_config_owns_manifest_loopback_and_injector_config(self) -> None:
+    def test_config_owns_manifest_host_wait_timeout_loopback_and_injector_config(self) -> None:
         transport = NativeMessagingUpstreamTransport(
             {
                 "manifest_path": "/tmp/modcdp-native-host.json",
+                "manifest_paths": ["/tmp/modcdp-native-host-extra.json"],
                 "host_name": "com.modcdp.test",
                 "extension_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "wait_timeout_ms": 10,
             }
         )
         self.assertEqual(transport.getInjectorConfig(), {"native_host_name": "com.modcdp.test"})
         self.assertEqual(transport.getServerConfig(), {})
-        self.assertIs(transport.update({"ws_url": "ws://127.0.0.1:9222/devtools/browser/test"}), transport)
+        self.assertIs(
+            transport.update(
+                {
+                    "ws_url": "ws://127.0.0.1:9222/devtools/browser/test",
+                    "manifest_paths": [],
+                    "native_host_name": "com.modcdp.updated",
+                    "wait_timeout_ms": 5,
+                }
+            ),
+            transport,
+        )
         self.assertEqual(
             transport.getServerConfig(),
             {"loopback_cdp_url": "ws://127.0.0.1:9222/devtools/browser/test"},
         )
+        self.assertEqual(transport.getInjectorConfig(), {"native_host_name": "com.modcdp.updated"})
+        self.assertFalse(transport.include_default_manifest_paths)
+        transport.update({"manifest_path": None})
+        self.assertTrue(transport.include_default_manifest_paths)
+        with self.assertRaisesRegex(RuntimeError, r"Timed out waiting 5ms for native messaging host com\.modcdp\.updated"):
+            transport.waitForPeer()
 
     def test_installs_launch_profile_native_host_manifest_and_connects_to_real_extension(self) -> None:
         cdp = ModCDPClient(

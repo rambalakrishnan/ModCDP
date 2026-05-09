@@ -79,9 +79,10 @@ func (t *NativeMessagingUpstreamTransport) Update(config map[string]any) {
 	if config == nil {
 		return
 	}
+	shouldInstallNativeHost := false
 	if value, ok := config["manifest_path"]; ok {
 		t.ManifestPath, _ = value.(string)
-		t.IncludeDefaultManifestPaths = t.ManifestPath == ""
+		shouldInstallNativeHost = true
 	}
 	if value, ok := config["manifest_paths"]; ok {
 		t.ManifestPaths = nil
@@ -94,16 +95,29 @@ func (t *NativeMessagingUpstreamTransport) Update(config map[string]any) {
 				}
 			}
 		}
-		t.IncludeDefaultManifestPaths = len(t.ManifestPaths) == 0
+		shouldInstallNativeHost = true
+	}
+	t.IncludeDefaultManifestPaths = t.ManifestPath == "" && len(t.ManifestPaths) == 0
+	if hostName, _ := config["host_name"].(string); hostName != "" {
+		t.HostName = hostName
+		shouldInstallNativeHost = true
+	} else if nativeHostName, _ := config["native_host_name"].(string); nativeHostName != "" {
+		t.HostName = nativeHostName
+		shouldInstallNativeHost = true
+	}
+	if waitTimeoutMS, ok := intFromConfig(config["wait_timeout_ms"]); ok {
+		t.WaitTimeoutMS = waitTimeoutMS
 	}
 	if extensionID, _ := config["extension_id"].(string); extensionID != "" {
 		t.ExtensionID = extensionID
+		shouldInstallNativeHost = true
 	}
 	if userDataDir, _ := config["user_data_dir"].(string); userDataDir != "" {
 		t.setProfileManifestPaths(userDataDir)
-		if t.BoundPort != 0 {
-			_ = t.installNativeHost(t.BoundPort)
-		}
+		shouldInstallNativeHost = true
+	}
+	if shouldInstallNativeHost && t.BoundPort != 0 {
+		_ = t.installNativeHost(t.BoundPort)
 	}
 	if wsURL, _ := config["ws_url"].(string); wsURL != "" {
 		t.CDPURL = wsURL

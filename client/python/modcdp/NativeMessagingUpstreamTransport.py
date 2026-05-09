@@ -42,18 +42,31 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
 
     def update(self, config: dict[str, Any] | None = None) -> "NativeMessagingUpstreamTransport":
         config = config or {}
+        should_install_native_host = False
         if "manifest_path" in config:
             self.manifest_path = config.get("manifest_path")
-            self.include_default_manifest_paths = self.manifest_path is None
+            should_install_native_host = True
         if "manifest_paths" in config:
             self.manifest_paths = list(config.get("manifest_paths") or [])
-            self.include_default_manifest_paths = len(self.manifest_paths) == 0
-        self.extension_id = str(config.get("extension_id") or self.extension_id)
+            should_install_native_host = True
+        self.include_default_manifest_paths = self.manifest_path is None and not self.manifest_paths
+        host_name = config.get("host_name") or config.get("native_host_name")
+        if isinstance(host_name, str) and host_name:
+            self.host_name = host_name
+            should_install_native_host = True
+        wait_timeout_ms = config.get("wait_timeout_ms")
+        if isinstance(wait_timeout_ms, int | float):
+            self.wait_timeout_ms = int(wait_timeout_ms)
+        extension_id = config.get("extension_id")
+        if isinstance(extension_id, str) and extension_id:
+            self.extension_id = extension_id
+            should_install_native_host = True
         user_data_dir = config.get("user_data_dir")
         if isinstance(user_data_dir, str) and user_data_dir:
             self._set_profile_manifest_paths(user_data_dir)
-            if self.bound_port is not None:
-                self._install_native_host(self.bound_port)
+            should_install_native_host = True
+        if should_install_native_host and self.bound_port is not None:
+            self._install_native_host(self.bound_port)
         cdp_url = config.get("ws_url") or config.get("cdp_url")
         if isinstance(cdp_url, str) and cdp_url:
             self.cdp_url = cdp_url
