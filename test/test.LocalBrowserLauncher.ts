@@ -101,4 +101,29 @@ describe("LocalBrowserLauncher", () => {
       }
     },
   );
+
+  it(
+    "removes an explicit user data dir when cleanup_user_data_dir is set",
+    { timeout: LIVE_BROWSER_TIMEOUT_MS },
+    async () => {
+      const userDataDir = await mkdtemp(path.join(tmpdir(), "modcdp-local-profile-"));
+      const chrome = await new LocalBrowserLauncher({
+        headless: true,
+        sandbox: process.platform !== "linux",
+        chrome_ready_timeout_ms: 45_000,
+      }).launch({
+        user_data_dir: userDataDir,
+        cleanup_user_data_dir: true,
+      });
+
+      try {
+        expect(chrome.profile_dir).toBe(userDataDir);
+        await expect(stat(userDataDir)).resolves.toBeTruthy();
+      } finally {
+        await chrome.close();
+      }
+
+      await expect(stat(userDataDir)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 });
