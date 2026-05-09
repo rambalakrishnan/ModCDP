@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -15,6 +18,14 @@ class ProbeExtensionInjector extends ExtensionInjector {
     return await this.waitForReadyServiceWorker(this.options.service_worker_ready_timeout_ms ?? 60_000, {
       matched_only: true,
     });
+  }
+
+  matches(target: { type?: string; url?: string }) {
+    return this.serviceWorkerTargetMatches(target);
+  }
+
+  writeRuntimeConfig(extension_path: string) {
+    this.writeExtensionRuntimeConfig(extension_path);
   }
 }
 
@@ -49,3 +60,51 @@ test("ExtensionInjector probes a real extension service worker with shared base 
     await chrome.close();
   }
 }, 60_000);
+
+test("ExtensionInjector owns shared injector config and runtime transport config", async () => {
+  const injector = new ProbeExtensionInjector({
+    extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+    reverse_proxy_url: "ws://127.0.0.1:29292",
+    nats_url: "ws://127.0.0.1:4223",
+  });
+  injector.update({ native_host_name: "com.modcdp.bridge" });
+
+  const runtime_config_dir = await mkdtemp(path.join(os.tmpdir(), "modcdp-extension-"));
+  try {
+    assert.deepEqual(injector.getTransportConfig(), { extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+    assert.deepEqual(injector.getLauncherConfig(), {});
+    assert.equal(
+      injector.matches({
+        type: "service_worker",
+        url: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/modcdp/service_worker.js",
+      }),
+      true,
+    );
+    assert.equal(
+      injector.matches({
+        type: "service_worker",
+        url: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/background.js",
+      }),
+      false,
+    );
+
+    injector.writeRuntimeConfig(runtime_config_dir);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(runtime_config_dir, "modcdp", "config.json"), "utf8")), {
+      reverse_proxy_url: "ws://127.0.0.1:29292",
+      native_host_name: "com.modcdp.bridge",
+      nats_url: "ws://127.0.0.1:4223",
+    });
+    assert.match(
+      readFileSync(path.join(runtime_config_dir, "config.js"), "utf8"),
+      /globalThis\.__MODCDP_RUNTIME_CONFIG__/,
+    );
+  } finally {
+    await injector.close();
+    await rm(runtime_config_dir, { recursive: true, force: true });
+  }
+});
+
+test("ExtensionInjector base inject reports the subclass name", async () => {
+  await assert.rejects(() => new ExtensionInjector().inject(), /ExtensionInjector\.inject is not implemented/);
+});
