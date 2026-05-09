@@ -1041,6 +1041,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         typeof argv["launch-user-data-dir"] === "string" && argv["launch-user-data-dir"] !== "true"
           ? String(argv["launch-user-data-dir"])
           : null,
+      options:
+        typeof argv["launch-options"] === "string" && argv["launch-options"] !== "true"
+          ? JSON.parse(argv["launch-options"])
+          : {},
     },
     upstream: {
       mode: String(argv.upstream || "ws"),
