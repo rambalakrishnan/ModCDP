@@ -207,6 +207,8 @@ test("proxy CLI maps user-facing flags into a real pipe upstream browser session
 test("proxy CLI maps local ws launch without requiring upstream ws url", async () => {
   const proxy_port = await LocalBrowserLauncher.freePort();
   const proxy_script = path.resolve(HERE, "..", "dist", "bridge", "proxy.js");
+  const user_data_dir = await mkdtemp(path.join(tmpdir(), "modcdp-proxy-profile-"));
+  const executable_path = LocalBrowserLauncher.findChromeBinary();
   const proc = spawn(
     process.execPath,
     [
@@ -214,14 +216,20 @@ test("proxy CLI maps local ws launch without requiring upstream ws url", async (
       "--port",
       String(proxy_port),
       "--launch=local",
+      "--launch-executable-path",
+      executable_path,
+      "--launch-user-data-dir",
+      user_data_dir,
       "--launch-options",
       JSON.stringify({ headless: true, sandbox: process.platform !== "linux" }),
       "--upstream=ws",
       "--extension=auto",
       "--extension-path",
       EXTENSION_PATH,
-      "--server-routes",
-      JSON.stringify({ "*.*": "loopback_cdp" }),
+      "--client",
+      JSON.stringify({ routes: { "Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp" } }),
+      "--server",
+      JSON.stringify({ routes: { "*.*": "loopback_cdp" } }),
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -231,6 +239,7 @@ test("proxy CLI maps local ws launch without requiring upstream ws url", async (
     await expectProxyCdpWorks(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-ws-local");
   } finally {
     await closeProcess(proc);
+    await rm(user_data_dir, { recursive: true, force: true });
   }
 }, 60_000);
 
@@ -340,6 +349,42 @@ test("proxy CLI maps user-facing flags into a real nativemessaging local launch"
   } finally {
     await closeProcess(proc);
     await rm(manifest_dir, { recursive: true, force: true });
+  }
+}, 90_000);
+
+test("proxy CLI maps user-facing flags into a real nats local launch", async () => {
+  const nats = await startNatsServer();
+  const proxy_port = await LocalBrowserLauncher.freePort();
+  const proxy_script = path.resolve(HERE, "..", "dist", "bridge", "proxy.js");
+  const proc = spawn(
+    process.execPath,
+    [
+      proxy_script,
+      "--port",
+      String(proxy_port),
+      "--launch=local",
+      "--launch-options",
+      JSON.stringify({ headless: true, sandbox: process.platform !== "linux" }),
+      "--upstream=nats",
+      "--upstream-nats-url",
+      nats.url,
+      "--upstream-nats-subject-prefix",
+      `modcdp.proxy.cli.${Date.now()}`,
+      "--extension=auto",
+      "--extension-path",
+      EXTENSION_PATH,
+      "--server-routes",
+      JSON.stringify({ "*.*": "loopback_cdp" }),
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+
+  try {
+    await waitForHttpJsonVersion(`http://127.0.0.1:${proxy_port}/json/version`, 20_000);
+    await expectProxyCdpWorks(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-nats");
+  } finally {
+    await closeProcess(proc);
+    await nats.close();
   }
 }, 90_000);
 
