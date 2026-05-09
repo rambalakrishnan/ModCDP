@@ -495,8 +495,9 @@ func (c *ModCDPClient) Connect() error {
 	}
 	c.ctx = wsTransport.ctx
 	c.cancel = wsTransport.cancel
-	c.conn = wsTransport.Conn
-	go c.reader()
+	c.conn = nil
+	wsTransport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
+	wsTransport.OnClose(func(err error) { c.rejectAll(err) })
 	if _, err := c.sendMessage("Target.setAutoAttach", map[string]any{
 		"autoAttach":             true,
 		"waitForDebuggerOnStart": false,

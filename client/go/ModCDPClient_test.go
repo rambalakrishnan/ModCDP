@@ -324,8 +324,12 @@ func TestModCDPClientCloseClearsTopLevelConnectionState(t *testing.T) {
 	if err := cdp.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	if cdp.conn == nil {
-		t.Fatal("expected low-level websocket conn")
+	transport, ok := cdp.transport.(*WebSocketUpstreamTransport)
+	if !ok {
+		t.Fatalf("transport = %T", cdp.transport)
+	}
+	if transport.Conn == nil {
+		t.Fatal("expected transport-owned websocket conn")
 	}
 	cdp.Close()
 	if cdp.conn != nil {

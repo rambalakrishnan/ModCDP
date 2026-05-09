@@ -479,13 +479,8 @@ class ModCDPClient(CDPSurfaceMixin):
                 self.server = {**self.server, "loopback_cdp_url": self.cdp_url}
         self.transport = transport
         self.transport.connect()
-        if self.upstream.get("mode") == "ws":
-            self._ws = cast(WebSocketLike, cast(WebSocketUpstreamTransport, self.transport).ws)
-            self._reader_thread = threading.Thread(target=self._reader, daemon=True)
-            self._reader_thread.start()
-        else:
-            self.transport.onRecv(lambda message: self._on_recv(cast(CdpMessage, message)))
-            self.transport.onClose(lambda error: self._reject_all(error))
+        self.transport.onRecv(lambda message: self._on_recv(cast(CdpMessage, message)))
+        self.transport.onClose(lambda error: self._reject_all(error))
 
         self._send_message("Target.setAutoAttach", {
             "autoAttach": True,

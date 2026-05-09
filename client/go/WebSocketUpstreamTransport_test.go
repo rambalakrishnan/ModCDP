@@ -3,8 +3,6 @@ package modcdp
 import (
 	"strings"
 	"testing"
-
-	"github.com/gobwas/ws/wsutil"
 )
 
 func TestWebSocketUpstreamTransportConstructorUpdateAndServerConfigMatchTSShape(t *testing.T) {
@@ -87,15 +85,18 @@ func TestWebSocketUpstreamTransportResolvesRealHTTPCDPEndpointToBrowserWebSocket
 	if !strings.HasPrefix(transport.URL, "ws://") {
 		t.Fatalf("transport.URL = %q", transport.URL)
 	}
+	received := make(chan map[string]any, 1)
+	transport.OnRecv(func(message map[string]any) { received <- message })
 	if err := transport.Send(map[string]any{"id": 1, "method": "Browser.getVersion", "params": map[string]any{}}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := wsutil.ReadServerText(transport.Conn)
-	if err != nil {
-		t.Fatal(err)
+	message := <-received
+	if message["id"] != float64(1) && message["id"] != 1 {
+		t.Fatalf("Browser.getVersion id = %#v", message["id"])
 	}
-	if !strings.Contains(string(data), `"id":1`) || !strings.Contains(string(data), `"product"`) {
-		t.Fatalf("Browser.getVersion response = %s", string(data))
+	result, _ := message["result"].(map[string]any)
+	if _, ok := result["product"].(string); !ok {
+		t.Fatalf("Browser.getVersion response = %#v", message)
 	}
 }
 

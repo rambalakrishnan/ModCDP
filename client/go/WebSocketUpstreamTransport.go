@@ -18,6 +18,7 @@ type WebSocketUpstreamTransport struct {
 	writeMu sync.Mutex
 	ctx     context.Context
 	cancel  context.CancelFunc
+	closed  bool
 }
 
 func NewWebSocketUpstreamTransport(url string) *WebSocketUpstreamTransport {
@@ -58,6 +59,8 @@ func (t *WebSocketUpstreamTransport) Connect() error {
 		return err
 	}
 	t.Conn = conn
+	t.closed = false
+	go t.readLoop()
 	return nil
 }
 
@@ -75,6 +78,7 @@ func (t *WebSocketUpstreamTransport) Send(message map[string]any) error {
 }
 
 func (t *WebSocketUpstreamTransport) Close() error {
+	t.closed = true
 	if t.cancel != nil {
 		t.cancel()
 		t.cancel = nil
@@ -85,4 +89,20 @@ func (t *WebSocketUpstreamTransport) Close() error {
 		return err
 	}
 	return nil
+}
+
+func (t *WebSocketUpstreamTransport) readLoop() {
+	for !t.closed {
+		data, err := wsutil.ReadServerText(t.Conn)
+		if err != nil {
+			if !t.closed {
+				t.emitClose(err)
+			}
+			return
+		}
+		var message map[string]any
+		if err := json.Unmarshal(data, &message); err == nil {
+			t.emitRecv(message)
+		}
+	}
 }

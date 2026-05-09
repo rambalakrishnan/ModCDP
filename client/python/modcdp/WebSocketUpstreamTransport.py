@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from urllib.request import urlopen
 from typing import Any
 
@@ -17,6 +18,8 @@ class WebSocketUpstreamTransport(UpstreamTransport):
         super().__init__()
         self.url = url or ""
         self.ws: Any | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._closed = False
 
     def update(self, config: dict[str, Any] | None = None) -> "WebSocketUpstreamTransport":
         config = config or {}
@@ -33,6 +36,9 @@ class WebSocketUpstreamTransport(UpstreamTransport):
             raise RuntimeError("upstream.mode='ws' requires upstream.ws_url or launcher-provided ws_url.")
         self.url = _websocket_url_for(self.url)
         self.ws = create_connection(self.url, timeout=10)
+        self._closed = False
+        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader_thread.start()
 
     def send(self, message: dict[str, Any]) -> None:
         if self.ws is None:
@@ -45,9 +51,27 @@ class WebSocketUpstreamTransport(UpstreamTransport):
         return self.ws.recv()
 
     def close(self) -> None:
+        self._closed = True
         if self.ws is not None:
             self.ws.close()
         self.ws = None
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=1)
+        self._reader_thread = None
+
+    def _read_loop(self) -> None:
+        ws = self.ws
+        if ws is None:
+            return
+        try:
+            while not self._closed:
+                raw = ws.recv()
+                if not raw:
+                    break
+                self._parse_and_emit_recv(raw)
+        except Exception as error:
+            if not self._closed:
+                self._emit_close(error if isinstance(error, Exception) else RuntimeError(str(error)))
 
 
 def _websocket_url_for(endpoint: str) -> str:
