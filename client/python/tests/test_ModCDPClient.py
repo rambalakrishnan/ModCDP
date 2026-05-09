@@ -203,24 +203,51 @@ class ModCDPClientTests(unittest.TestCase):
             chrome["close"]()
 
     def test_close_keeps_injector_files_until_after_launched_browser_shutdown(self) -> None:
-        order: list[str] = []
-        cdp = ModCDPClient()
+        reverse_port = LocalBrowserLauncher.freePort()
+        cdp = ModCDPClient(
+            launch={"mode": "local", "options": {"headless": True, "sandbox": False}},
+            upstream={"mode": "reversews", "reversews_bind": f"127.0.0.1:{reverse_port}"},
+            extension={
+                "mode": "auto",
+                "path": str(EXTENSION_PATH),
+                "service_worker_url_suffixes": ["/modcdp/service_worker.js"],
+                "trust_service_worker_target": True,
+            },
+            server={"routes": {"*.*": "loopback_cdp"}},
+        )
 
-        class FakeTransport:
-            def close(self) -> None:
-                order.append("transport")
+        try:
+            cdp.connect()
+            injector = next(
+                candidate
+                for candidate in cdp._extension_injectors
+                if type(candidate).__name__ == "LocalBrowserLaunchExtensionInjector"
+            )
+            unpacked_extension_path = getattr(injector, "unpacked_extension_path")
+            self.assertIsInstance(unpacked_extension_path, str)
+            self.assertNotEqual(unpacked_extension_path, str(EXTENSION_PATH))
+            self.assertTrue((Path(unpacked_extension_path) / "config.js").exists())
 
-        class FakeInjector:
-            def close(self) -> None:
-                order.append("injector")
+            launched = cdp._launched_browser
+            if launched is None:
+                self.fail("expected launched browser")
+            original_close = launched["close"]
+            browser_close_saw_extension = False
 
-        cdp.transport = cast(Any, FakeTransport())
-        cdp._launched_browser = {"close": lambda: order.append("browser")}
-        cdp._extension_injectors = cast(Any, [FakeInjector()])
+            def close_browser() -> None:
+                nonlocal browser_close_saw_extension
+                browser_close_saw_extension = Path(unpacked_extension_path).exists()
+                original_close()
 
-        cdp.close()
+            launched["close"] = close_browser
 
-        self.assertEqual(order, ["transport", "browser", "injector"])
+            cdp.close()
+
+            self.assertTrue(browser_close_saw_extension)
+            self.assertFalse(Path(unpacked_extension_path).exists())
+        finally:
+            cdp.close()
+
         self.assertIsNone(cdp.transport)
         self.assertIsNone(cdp._launched_browser)
         self.assertEqual(cdp._extension_injectors, [])

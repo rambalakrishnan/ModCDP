@@ -87,16 +87,17 @@ func (t *ReverseWebSocketUpstreamTransport) Connect() error {
 }
 
 func (t *ReverseWebSocketUpstreamTransport) Send(message map[string]any) error {
-	if t.Conn == nil {
-		return fmt.Errorf("no reverse ModCDP extension peer is connected at %s", t.URL)
-	}
 	body, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	return wsutil.WriteServerText(t.Conn, body)
+	conn := t.Conn
+	if conn == nil {
+		return fmt.Errorf("no reverse ModCDP extension peer is connected at %s", t.URL)
+	}
+	return wsutil.WriteServerText(conn, body)
 }
 
 func (t *ReverseWebSocketUpstreamTransport) GetInjectorConfig() ExtensionInjectorConfig {
@@ -126,10 +127,12 @@ func (t *ReverseWebSocketUpstreamTransport) Close() error {
 	t.closeCh = make(chan struct{})
 	t.stateMu.Unlock()
 	close(closeCh)
+	t.writeMu.Lock()
 	if t.Conn != nil {
 		_ = t.Conn.Close()
 		t.Conn = nil
 	}
+	t.writeMu.Unlock()
 	if t.Listener != nil {
 		_ = t.Listener.Close()
 		t.Listener = nil

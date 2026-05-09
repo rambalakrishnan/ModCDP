@@ -65,16 +65,17 @@ func (t *WebSocketUpstreamTransport) Connect() error {
 }
 
 func (t *WebSocketUpstreamTransport) Send(message map[string]any) error {
-	if t.Conn == nil {
-		return fmt.Errorf("CDP websocket is not connected")
-	}
 	body, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	return wsutil.WriteClientText(t.Conn, body)
+	conn := t.Conn
+	if conn == nil {
+		return fmt.Errorf("CDP websocket is not connected")
+	}
+	return wsutil.WriteClientText(conn, body)
 }
 
 func (t *WebSocketUpstreamTransport) Close() error {
@@ -83,6 +84,8 @@ func (t *WebSocketUpstreamTransport) Close() error {
 		t.cancel()
 		t.cancel = nil
 	}
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
 	if t.Conn != nil {
 		err := t.Conn.Close()
 		t.Conn = nil
@@ -92,8 +95,12 @@ func (t *WebSocketUpstreamTransport) Close() error {
 }
 
 func (t *WebSocketUpstreamTransport) readLoop() {
+	conn := t.Conn
+	if conn == nil {
+		return
+	}
 	for !t.closed {
-		data, err := wsutil.ReadServerText(t.Conn)
+		data, err := wsutil.ReadServerText(conn)
 		if err != nil {
 			if !t.closed {
 				t.emitClose(err)

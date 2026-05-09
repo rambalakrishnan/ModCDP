@@ -165,12 +165,13 @@ func (t *NativeMessagingUpstreamTransport) Connect() error {
 }
 
 func (t *NativeMessagingUpstreamTransport) Send(message map[string]any) error {
-	if t.Conn == nil {
-		return fmt.Errorf("no native messaging peer is connected for %s", t.HostName)
-	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	return writeLengthPrefixedJSON(t.Conn, message)
+	conn := t.Conn
+	if conn == nil {
+		return fmt.Errorf("no native messaging peer is connected for %s", t.HostName)
+	}
+	return writeLengthPrefixedJSON(conn, message)
 }
 
 func (t *NativeMessagingUpstreamTransport) WaitForPeer() error {
@@ -197,10 +198,12 @@ func (t *NativeMessagingUpstreamTransport) Close() error {
 	t.closeCh = make(chan struct{})
 	t.stateMu.Unlock()
 	close(closeCh)
+	t.writeMu.Lock()
 	if t.Conn != nil {
 		_ = t.Conn.Close()
 		t.Conn = nil
 	}
+	t.writeMu.Unlock()
 	if t.Listener != nil {
 		_ = t.Listener.Close()
 		t.Listener = nil

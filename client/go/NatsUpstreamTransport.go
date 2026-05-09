@@ -174,11 +174,13 @@ func (t *NatsUpstreamTransport) Close() error {
 	t.closeCh = make(chan struct{})
 	t.stateMu.Unlock()
 	close(closeCh)
+	t.writeMu.Lock()
 	t.connected = false
 	if t.Conn != nil {
 		_ = t.Conn.Close()
 		t.Conn = nil
 	}
+	t.writeMu.Unlock()
 	t.buffer = ""
 	t.peerCh = make(chan struct{})
 	t.peerOnce = sync.Once{}
@@ -207,15 +209,16 @@ func (t *NatsUpstreamTransport) publish(subject string, message map[string]any) 
 }
 
 func (t *NatsUpstreamTransport) writeProtocol(data string) error {
-	if t.Conn == nil {
-		return fmt.Errorf("NATS transport is not connected")
-	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	if t.IsWebSocket {
-		return wsutil.WriteClientText(t.Conn, []byte(data))
+	conn := t.Conn
+	if conn == nil {
+		return fmt.Errorf("NATS transport is not connected")
 	}
-	_, err := t.Conn.Write([]byte(data))
+	if t.IsWebSocket {
+		return wsutil.WriteClientText(conn, []byte(data))
+	}
+	_, err := conn.Write([]byte(data))
 	return err
 }
 

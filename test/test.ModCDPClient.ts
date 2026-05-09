@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -246,27 +247,54 @@ test("ModCDPClient.close does not close a remote browser it did not launch", asy
 }, 60_000);
 
 test("ModCDPClient.close keeps injector files until after launched browser shutdown", async () => {
-  const order: string[] = [];
-  const cdp = new ModCDPClient();
-  cdp.transport = {
-    close: async () => order.push("transport"),
-  } as any;
-  cdp._launched = {
-    close: async () => order.push("browser"),
-  } as any;
-  cdp._extension_injectors = [
-    {
-      close: async () => order.push("injector"),
-    } as any,
-  ];
+  const reverse_port = await LocalBrowserLauncher.freePort();
+  const cdp = new ModCDPClient({
+    launch: {
+      mode: "local",
+      options: { headless: true, sandbox: process.platform !== "linux" },
+    },
+    upstream: { mode: "reversews", reversews_bind: `127.0.0.1:${reverse_port}` },
+    extension: {
+      mode: "auto",
+      path: EXTENSION_PATH,
+      service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+      trust_service_worker_target: true,
+    },
+    server: {
+      routes: { "*.*": "loopback_cdp" },
+    },
+  });
 
-  await cdp.close();
+  try {
+    await cdp.connect();
+    const injector = cdp._extension_injectors.find(
+      (candidate) => candidate.constructor.name === "LocalBrowserLaunchExtensionInjector",
+    ) as unknown as { unpacked_extension_path?: string | null } | undefined;
+    const unpacked_extension_path = injector?.unpacked_extension_path;
+    assert.equal(typeof unpacked_extension_path, "string");
+    assert.notEqual(unpacked_extension_path, EXTENSION_PATH);
+    assert.equal(existsSync(path.join(unpacked_extension_path!, "config.js")), true);
 
-  assert.deepEqual(order, ["transport", "browser", "injector"]);
+    const launched = cdp._launched;
+    assert.ok(launched);
+    const close_browser = launched.close;
+    let browser_close_saw_extension = false;
+    launched.close = async () => {
+      browser_close_saw_extension = existsSync(unpacked_extension_path!);
+      await close_browser();
+    };
+
+    await cdp.close();
+
+    assert.equal(browser_close_saw_extension, true);
+    assert.equal(existsSync(unpacked_extension_path!), false);
+  } finally {
+    await cdp.close();
+  }
   assert.equal(cdp.transport, null);
   assert.equal(cdp._launched, null);
   assert.deepEqual(cdp._extension_injectors, []);
-});
+}, 90_000);
 
 test("ModCDPClient.close clears top-level connection state", async () => {
   const cdp = new ModCDPClient({

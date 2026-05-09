@@ -3,6 +3,8 @@ package modcdp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -445,51 +447,68 @@ func TestModCDPClientCloseDoesNotCloseRemoteBrowserItDidNotLaunch(t *testing.T) 
 	}
 }
 
-type closeOrderTransport struct {
-	order *[]string
-}
-
-func (t closeOrderTransport) Update(map[string]any)            {}
-func (t closeOrderTransport) Connect() error                   { return nil }
-func (t closeOrderTransport) Close() error                     { *t.order = append(*t.order, "transport"); return nil }
-func (t closeOrderTransport) Send(map[string]any) error        { return nil }
-func (t closeOrderTransport) GetLauncherConfig() LaunchOptions { return LaunchOptions{} }
-func (t closeOrderTransport) GetInjectorConfig() ExtensionInjectorConfig {
-	return ExtensionInjectorConfig{}
-}
-func (t closeOrderTransport) GetServerConfig() map[string]any    { return map[string]any{} }
-func (t closeOrderTransport) OnRecv(func(map[string]any)) func() { return func() {} }
-func (t closeOrderTransport) OnClose(func(error)) func()         { return func() {} }
-func (t closeOrderTransport) WaitForPeer() error                 { return nil }
-
-type closeOrderInjector struct {
-	order *[]string
-}
-
-func (i *closeOrderInjector) Update(ExtensionInjectorConfig) *ExtensionInjector {
-	return &ExtensionInjector{}
-}
-func (i *closeOrderInjector) GetLauncherConfig() LaunchOptions           { return LaunchOptions{} }
-func (i *closeOrderInjector) GetTransportConfig() map[string]any         { return map[string]any{} }
-func (i *closeOrderInjector) Prepare() error                             { return nil }
-func (i *closeOrderInjector) Inject() (*ExtensionInjectionResult, error) { return nil, nil }
-func (i *closeOrderInjector) Close() error                               { *i.order = append(*i.order, "injector"); return nil }
-
 func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t *testing.T) {
-	order := []string{}
-	cdp := New(Options{})
-	cdp.transport = closeOrderTransport{order: &order}
-	cdp.launchedBrowser = &LaunchedBrowser{
-		Close: func() {
-			order = append(order, "browser")
-		},
+	extensionPath, err := filepath.Abs(filepath.Join("..", "..", "dist", "extension"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	cdp.extensionInjectors = []extensionInjector{&closeOrderInjector{order: &order}}
+	reversePort, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdp := New(Options{
+		Launch: LaunchConfig{
+			Mode: "local",
+			Options: LaunchOptions{
+				Headless: boolPtr(true),
+				Sandbox:  boolPtr(false),
+			},
+		},
+		Upstream: UpstreamConfig{Mode: "reversews", ReverseWSBind: "127.0.0.1:" + fmt.Sprint(reversePort)},
+		Extension: ExtensionConfig{
+			Mode:                     "auto",
+			Path:                     extensionPath,
+			ServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
+			TrustServiceWorkerTarget: true,
+		},
+		Server: &ServerConfig{Routes: map[string]string{"*.*": "loopback_cdp"}},
+	})
+	defer cdp.Close()
 
+	if err := cdp.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	var localInjector *LocalBrowserLaunchExtensionInjector
+	for _, injector := range cdp.extensionInjectors {
+		if typed, ok := injector.(*LocalBrowserLaunchExtensionInjector); ok {
+			localInjector = typed
+		}
+	}
+	if localInjector == nil {
+		t.Fatal("expected LocalBrowserLaunchExtensionInjector")
+	}
+	unpackedExtensionPath := localInjector.UnpackedExtensionPath
+	if unpackedExtensionPath == "" || unpackedExtensionPath == extensionPath {
+		t.Fatalf("UnpackedExtensionPath = %q", unpackedExtensionPath)
+	}
+	if _, err := os.Stat(filepath.Join(unpackedExtensionPath, "config.js")); err != nil {
+		t.Fatalf("expected runtime config.js before close: %v", err)
+	}
+
+	originalClose := cdp.launchedBrowser.Close
+	browserCloseSawExtension := false
+	cdp.launchedBrowser.Close = func() {
+		_, err := os.Stat(unpackedExtensionPath)
+		browserCloseSawExtension = err == nil
+		originalClose()
+	}
 	cdp.Close()
 
-	if strings.Join(order, ",") != "transport,browser,injector" {
-		t.Fatalf("close order = %#v", order)
+	if !browserCloseSawExtension {
+		t.Fatal("browser close did not see prepared extension files")
+	}
+	if _, err := os.Stat(unpackedExtensionPath); !os.IsNotExist(err) {
+		t.Fatalf("expected prepared extension files to be removed after close, got %v", err)
 	}
 	if cdp.transport != nil {
 		t.Fatal("expected transport to be nil")
