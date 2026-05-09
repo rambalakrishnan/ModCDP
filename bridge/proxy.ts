@@ -1080,6 +1080,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const listen = argv.listen ? parseHostPort(String(argv.listen), DEFAULT_HOST, DEFAULT_PORT) : null;
   const host = listen?.host ?? DEFAULT_HOST;
   const port = listen?.port ?? Number(argv.port || DEFAULT_PORT);
+  const launch_mode = String(argv.launch || "remote");
+  const upstream_mode = String(argv.upstream || "ws");
+  const explicit_upstream_ws_url =
+    typeof argv["upstream-ws-url"] === "string" && argv["upstream-ws-url"] !== "true"
+      ? String(argv["upstream-ws-url"])
+      : null;
   const extensionPath =
     typeof argv["extension-path"] === "string" && argv["extension-path"] !== "true"
       ? path.resolve(argv["extension-path"])
@@ -1101,7 +1107,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     host,
     port,
     launch: {
-      mode: String(argv.launch || "remote"),
+      mode: launch_mode,
       executable_path:
         typeof argv["launch-executable-path"] === "string" && argv["launch-executable-path"] !== "true"
           ? String(argv["launch-executable-path"])
@@ -1116,11 +1122,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
           : {},
     },
     upstream: {
-      mode: String(argv.upstream || "ws"),
-      ws_url:
-        typeof argv["upstream-ws-url"] === "string" && argv["upstream-ws-url"] !== "true"
-          ? String(argv["upstream-ws-url"])
-          : DEFAULT_UPSTREAM,
+      mode: upstream_mode,
+      ws_url: explicit_upstream_ws_url ?? (upstream_mode === "ws" && launch_mode !== "local" ? DEFAULT_UPSTREAM : null),
       nats_url:
         typeof argv["upstream-nats-url"] === "string" && argv["upstream-nats-url"] !== "true"
           ? String(argv["upstream-nats-url"])
