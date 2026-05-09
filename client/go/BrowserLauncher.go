@@ -7,15 +7,15 @@ import (
 )
 
 type LaunchedBrowser struct {
-	CDPURL                string
-	WSURL                 string
-	Close                 func()
-	ProfileDir            string
-	PipeRead              *os.File
-	PipeWrite             *os.File
-	BrowserbaseSessionID  string
-	BrowserbaseSessionURL string
-	BrowserbaseDebugURL   string
+	CDPURL                string   `json:"cdp_url,omitempty"`
+	WSURL                 string   `json:"ws_url,omitempty"`
+	Close                 func()   `json:"-"`
+	ProfileDir            string   `json:"profile_dir,omitempty"`
+	PipeRead              *os.File `json:"-"`
+	PipeWrite             *os.File `json:"-"`
+	BrowserbaseSessionID  string   `json:"browserbase_session_id,omitempty"`
+	BrowserbaseSessionURL string   `json:"browserbase_session_url,omitempty"`
+	BrowserbaseDebugURL   string   `json:"browserbase_debug_url,omitempty"`
 }
 
 type BrowserLauncher struct {

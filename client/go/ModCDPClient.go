@@ -135,90 +135,90 @@ type CustomMiddleware struct {
 }
 
 type LaunchOptions struct {
-	ExecutablePath                 string
-	ExtraArgs                      []string
-	Args                           []string
-	Headless                       *bool
-	Port                           int
-	RemoteDebugging                string
-	Sandbox                        *bool
-	UserDataDir                    string
-	CleanupUserDataDir             *bool
-	ChromeReadyTimeoutMS           int
-	ChromeReadyPollIntervalMS      int
-	CDPURL                         string
-	WSURL                          string
-	BrowserbaseAPIKey              string
-	ProjectID                      string
-	BrowserbaseProjectID           string
-	BaseURL                        string
-	BrowserbaseBaseURL             string
-	SessionID                      string
-	ResumeSessionID                string
-	KeepAlive                      *bool
-	CloseSessionOnClose            *bool
-	Region                         string
-	Timeout                        int
-	ExtensionID                    string
-	BrowserSettings                map[string]any
-	UserMetadata                   map[string]any
-	SessionCreateParams            map[string]any
-	BrowserbaseSessionCreateParams map[string]any
+	ExecutablePath                 string         `json:"executable_path,omitempty"`
+	ExtraArgs                      []string       `json:"extra_args,omitempty"`
+	Args                           []string       `json:"args,omitempty"`
+	Headless                       *bool          `json:"headless,omitempty"`
+	Port                           int            `json:"port,omitempty"`
+	RemoteDebugging                string         `json:"remote_debugging,omitempty"`
+	Sandbox                        *bool          `json:"sandbox,omitempty"`
+	UserDataDir                    string         `json:"user_data_dir,omitempty"`
+	CleanupUserDataDir             *bool          `json:"cleanup_user_data_dir,omitempty"`
+	ChromeReadyTimeoutMS           int            `json:"chrome_ready_timeout_ms,omitempty"`
+	ChromeReadyPollIntervalMS      int            `json:"chrome_ready_poll_interval_ms,omitempty"`
+	CDPURL                         string         `json:"cdp_url,omitempty"`
+	WSURL                          string         `json:"ws_url,omitempty"`
+	BrowserbaseAPIKey              string         `json:"browserbase_api_key,omitempty"`
+	ProjectID                      string         `json:"project_id,omitempty"`
+	BrowserbaseProjectID           string         `json:"browserbase_project_id,omitempty"`
+	BaseURL                        string         `json:"base_url,omitempty"`
+	BrowserbaseBaseURL             string         `json:"browserbase_base_url,omitempty"`
+	SessionID                      string         `json:"session_id,omitempty"`
+	ResumeSessionID                string         `json:"resume_session_id,omitempty"`
+	KeepAlive                      *bool          `json:"keep_alive,omitempty"`
+	CloseSessionOnClose            *bool          `json:"close_session_on_close,omitempty"`
+	Region                         string         `json:"region,omitempty"`
+	Timeout                        int            `json:"timeout,omitempty"`
+	ExtensionID                    string         `json:"extension_id,omitempty"`
+	BrowserSettings                map[string]any `json:"browser_settings,omitempty"`
+	UserMetadata                   map[string]any `json:"user_metadata,omitempty"`
+	SessionCreateParams            map[string]any `json:"session_create_params,omitempty"`
+	BrowserbaseSessionCreateParams map[string]any `json:"browserbase_session_create_params,omitempty"`
 }
 
 type LaunchConfig struct {
-	Mode           string
-	ExecutablePath string
-	UserDataDir    string
-	Options        LaunchOptions
+	Mode           string        `json:"mode,omitempty"`
+	ExecutablePath string        `json:"executable_path,omitempty"`
+	UserDataDir    string        `json:"user_data_dir,omitempty"`
+	Options        LaunchOptions `json:"options,omitempty"`
 }
 
 type UpstreamConfig struct {
-	Mode                          string
-	WSURL                         string
-	NATSURL                       string
-	NATSSubjectPrefix             string
-	ReverseWSBind                 string
-	ReverseWSWaitTimeoutMS        int
-	NativeMessagingManifest       string
-	WSConnectErrorSettleTimeoutMS int
+	Mode                          string `json:"mode,omitempty"`
+	WSURL                         string `json:"ws_url,omitempty"`
+	NATSURL                       string `json:"nats_url,omitempty"`
+	NATSSubjectPrefix             string `json:"nats_subject_prefix,omitempty"`
+	ReverseWSBind                 string `json:"reversews_bind,omitempty"`
+	ReverseWSWaitTimeoutMS        int    `json:"reversews_wait_timeout_ms,omitempty"`
+	NativeMessagingManifest       string `json:"nativemessaging_manifest,omitempty"`
+	WSConnectErrorSettleTimeoutMS int    `json:"ws_connect_error_settle_timeout_ms,omitempty"`
 }
 
 type ExtensionConfig struct {
-	Mode                         string
-	Path                         string
-	ExtensionID                  string
-	WakePath                     string
-	WakeURL                      string
-	ServiceWorkerURLIncludes     []string
-	ServiceWorkerURLSuffixes     []string
-	TrustServiceWorkerTarget     bool
-	RequireServiceWorkerTarget   bool
-	ServiceWorkerReadyExpression string
-	ExecutionContextTimeoutMS    int
-	ServiceWorkerProbeTimeoutMS  int
-	ServiceWorkerReadyTimeoutMS  int
-	ServiceWorkerPollIntervalMS  int
-	TargetSessionPollIntervalMS  int
+	Mode                         string   `json:"mode,omitempty"`
+	Path                         string   `json:"path,omitempty"`
+	ExtensionID                  string   `json:"extension_id,omitempty"`
+	WakePath                     string   `json:"wake_path,omitempty"`
+	WakeURL                      string   `json:"wake_url,omitempty"`
+	ServiceWorkerURLIncludes     []string `json:"service_worker_url_includes,omitempty"`
+	ServiceWorkerURLSuffixes     []string `json:"service_worker_url_suffixes,omitempty"`
+	TrustServiceWorkerTarget     bool     `json:"trust_service_worker_target,omitempty"`
+	RequireServiceWorkerTarget   bool     `json:"require_service_worker_target,omitempty"`
+	ServiceWorkerReadyExpression string   `json:"service_worker_ready_expression,omitempty"`
+	ExecutionContextTimeoutMS    int      `json:"execution_context_timeout_ms,omitempty"`
+	ServiceWorkerProbeTimeoutMS  int      `json:"service_worker_probe_timeout_ms,omitempty"`
+	ServiceWorkerReadyTimeoutMS  int      `json:"service_worker_ready_timeout_ms,omitempty"`
+	ServiceWorkerPollIntervalMS  int      `json:"service_worker_poll_interval_ms,omitempty"`
+	TargetSessionPollIntervalMS  int      `json:"target_session_poll_interval_ms,omitempty"`
 }
 
 type ClientConfig struct {
-	Routes               map[string]string
-	HydrateAliases       *bool
-	MirrorUpstreamEvents *bool
-	CDPSendTimeoutMS     int
-	EventWaitTimeoutMS   int
+	Routes               map[string]string `json:"routes,omitempty"`
+	HydrateAliases       *bool             `json:"hydrate_aliases,omitempty"`
+	MirrorUpstreamEvents *bool             `json:"mirror_upstream_events,omitempty"`
+	CDPSendTimeoutMS     int               `json:"cdp_send_timeout_ms,omitempty"`
+	EventWaitTimeoutMS   int               `json:"event_wait_timeout_ms,omitempty"`
 }
 
 type Options struct {
-	Launch            LaunchConfig
-	Upstream          UpstreamConfig
-	Extension         ExtensionConfig
-	Client            ClientConfig
-	Server            *ServerConfig
-	CustomCommands    []CustomCommand
-	CustomEvents      []CustomEvent
-	CustomMiddlewares []CustomMiddleware
+	Launch            LaunchConfig       `json:"launch,omitempty"`
+	Upstream          UpstreamConfig     `json:"upstream,omitempty"`
+	Extension         ExtensionConfig    `json:"extension,omitempty"`
+	Client            ClientConfig       `json:"client,omitempty"`
+	Server            *ServerConfig      `json:"server,omitempty"`
+	CustomCommands    []CustomCommand    `json:"custom_commands,omitempty"`
+	CustomEvents      []CustomEvent      `json:"custom_events,omitempty"`
+	CustomMiddlewares []CustomMiddleware `json:"custom_middlewares,omitempty"`
 }
 
 type Handler func(data any)

@@ -20,42 +20,42 @@ type AttachToTarget func(targetID string) string
 type WaitForExecutionContext func(sessionID string, timeoutMS int) int
 
 type ExtensionInjectorConfig struct {
-	Send                         SendCDP
-	SessionIDForTarget           SessionIDForTarget
-	AttachToTarget               AttachToTarget
-	WaitForExecutionContext      WaitForExecutionContext
-	ExtensionPath                string
-	ExtensionID                  string
-	WakePath                     string
-	WakeURL                      string
-	ServiceWorkerURLIncludes     []string
-	ServiceWorkerURLSuffixes     []string
-	TrustMatchedServiceWorker    bool
-	RequireServiceWorkerTarget   bool
-	ServiceWorkerReadyExpression string
-	CDPSendTimeoutMS             int
-	ExecutionContextTimeoutMS    int
-	ServiceWorkerProbeTimeoutMS  int
-	ServiceWorkerReadyTimeoutMS  int
-	ServiceWorkerPollIntervalMS  int
-	TargetSessionPollIntervalMS  int
-	BrowserbaseAPIKey            string
-	BaseURL                      string
-	BrowserbaseBaseURL           string
-	ReverseProxyURL              string
-	NativeHostName               string
-	NATSURL                      string
-	NATSSubjectPrefix            string
+	Send                         SendCDP                 `json:"-"`
+	SessionIDForTarget           SessionIDForTarget      `json:"-"`
+	AttachToTarget               AttachToTarget          `json:"-"`
+	WaitForExecutionContext      WaitForExecutionContext `json:"-"`
+	ExtensionPath                string                  `json:"extension_path,omitempty"`
+	ExtensionID                  string                  `json:"extension_id,omitempty"`
+	WakePath                     string                  `json:"wake_path,omitempty"`
+	WakeURL                      string                  `json:"wake_url,omitempty"`
+	ServiceWorkerURLIncludes     []string                `json:"service_worker_url_includes,omitempty"`
+	ServiceWorkerURLSuffixes     []string                `json:"service_worker_url_suffixes,omitempty"`
+	TrustMatchedServiceWorker    bool                    `json:"trust_matched_service_worker,omitempty"`
+	RequireServiceWorkerTarget   bool                    `json:"require_service_worker_target,omitempty"`
+	ServiceWorkerReadyExpression string                  `json:"service_worker_ready_expression,omitempty"`
+	CDPSendTimeoutMS             int                     `json:"cdp_send_timeout_ms,omitempty"`
+	ExecutionContextTimeoutMS    int                     `json:"execution_context_timeout_ms,omitempty"`
+	ServiceWorkerProbeTimeoutMS  int                     `json:"service_worker_probe_timeout_ms,omitempty"`
+	ServiceWorkerReadyTimeoutMS  int                     `json:"service_worker_ready_timeout_ms,omitempty"`
+	ServiceWorkerPollIntervalMS  int                     `json:"service_worker_poll_interval_ms,omitempty"`
+	TargetSessionPollIntervalMS  int                     `json:"target_session_poll_interval_ms,omitempty"`
+	BrowserbaseAPIKey            string                  `json:"browserbase_api_key,omitempty"`
+	BaseURL                      string                  `json:"base_url,omitempty"`
+	BrowserbaseBaseURL           string                  `json:"browserbase_base_url,omitempty"`
+	ReverseProxyURL              string                  `json:"reverse_proxy_url,omitempty"`
+	NativeHostName               string                  `json:"native_host_name,omitempty"`
+	NATSURL                      string                  `json:"nats_url,omitempty"`
+	NATSSubjectPrefix            string                  `json:"nats_subject_prefix,omitempty"`
 }
 
 type ExtensionInjectionResult struct {
-	Source      string
-	ExtensionID string
-	TargetID    string
-	URL         string
-	SessionID   string
-	HasTabs     bool
-	HasDebugger bool
+	Source      string `json:"source"`
+	ExtensionID string `json:"extension_id,omitempty"`
+	TargetID    string `json:"target_id"`
+	URL         string `json:"url,omitempty"`
+	SessionID   string `json:"session_id"`
+	HasTabs     bool   `json:"has_tabs,omitempty"`
+	HasDebugger bool   `json:"has_debugger,omitempty"`
 }
 
 type ExtensionInjector struct {

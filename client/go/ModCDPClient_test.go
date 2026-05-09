@@ -129,6 +129,88 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 	}
 }
 
+func TestModCDPClientOptionsMarshalToSnakeCaseConfigShape(t *testing.T) {
+	encoded, err := json.Marshal(Options{
+		Launch: LaunchConfig{
+			Mode:           "local",
+			ExecutablePath: "/tmp/chrome",
+			UserDataDir:    "/tmp/profile",
+			Options: LaunchOptions{
+				RemoteDebugging:                "pipe",
+				ChromeReadyTimeoutMS:           45_000,
+				BrowserbaseAPIKey:              "test-key",
+				BrowserbaseSessionCreateParams: map[string]any{"projectId": "project-1"},
+			},
+		},
+		Upstream: UpstreamConfig{
+			Mode:                          "nativemessaging",
+			NATSSubjectPrefix:             "modcdp.test",
+			ReverseWSWaitTimeoutMS:        1_234,
+			NativeMessagingManifest:       "/tmp/native.json",
+			WSConnectErrorSettleTimeoutMS: 321,
+		},
+		Extension: ExtensionConfig{
+			Mode:                         "discover",
+			ExtensionID:                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ServiceWorkerURLSuffixes:     []string{"/modcdp/service_worker.js"},
+			TrustServiceWorkerTarget:     true,
+			RequireServiceWorkerTarget:   true,
+			ServiceWorkerReadyExpression: "Boolean(globalThis.ModCDP)",
+			ExecutionContextTimeoutMS:    4_321,
+		},
+		Client: ClientConfig{
+			Routes:               map[string]string{"*.*": "service_worker"},
+			HydrateAliases:       boolPtr(false),
+			MirrorUpstreamEvents: boolPtr(false),
+			CDPSendTimeoutMS:     987,
+		},
+		Server: &ServerConfig{
+			LoopbackCDPURL: "http://127.0.0.1:9222",
+		},
+		CustomCommands: []CustomCommand{{Name: "Custom.echo", Expression: "async () => null"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(encoded)
+	for _, wrong := range []string{
+		"Launch", "ExecutablePath", "RemoteDebugging", "BrowserbaseAPIKey",
+		"Upstream", "NATSSubjectPrefix", "ReverseWSWaitTimeoutMS",
+		"Extension", "ServiceWorkerURLSuffixes", "TrustServiceWorkerTarget",
+		"Client", "HydrateAliases", "CustomCommands",
+	} {
+		if strings.Contains(raw, wrong) {
+			t.Fatalf("encoded options leaked Go field name %q in %s", wrong, raw)
+		}
+	}
+	for _, expected := range []string{
+		`"launch"`,
+		`"executable_path"`,
+		`"remote_debugging"`,
+		`"browserbase_api_key"`,
+		`"browserbase_session_create_params"`,
+		`"upstream"`,
+		`"nats_subject_prefix"`,
+		`"reversews_wait_timeout_ms"`,
+		`"nativemessaging_manifest"`,
+		`"extension"`,
+		`"service_worker_url_suffixes"`,
+		`"trust_service_worker_target"`,
+		`"require_service_worker_target"`,
+		`"service_worker_ready_expression"`,
+		`"execution_context_timeout_ms"`,
+		`"client"`,
+		`"hydrate_aliases"`,
+		`"mirror_upstream_events"`,
+		`"cdp_send_timeout_ms"`,
+		`"custom_commands"`,
+	} {
+		if !strings.Contains(raw, expected) {
+			t.Fatalf("encoded options missing %s in %s", expected, raw)
+		}
+	}
+}
+
 func TestModCDPClientPreservesExplicitEmptyServiceWorkerSuffixConfig(t *testing.T) {
 	cdp := New(Options{
 		Extension: ExtensionConfig{
