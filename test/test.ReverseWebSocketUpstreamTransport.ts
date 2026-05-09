@@ -136,6 +136,9 @@ test("reversews upstream accepts a real extension reverse connection and routes 
     );
     const version = (await reverse.send("Browser.getVersion")) as Record<string, unknown>;
     assert.equal(typeof version.product, "string");
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const second_version = (await reverse.send("Browser.getVersion")) as Record<string, unknown>;
+    assert.equal(typeof second_version.product, "string");
   } finally {
     await reverse.close();
   }

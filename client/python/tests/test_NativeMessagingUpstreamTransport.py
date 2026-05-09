@@ -178,6 +178,9 @@ class NativeMessagingUpstreamTransportTests(unittest.TestCase):
             self.assertTrue((Path(profile_dir) / "NativeMessagingHosts" / f"{host_name}.json").exists())
             version = cdp.send("Browser.getVersion")
             self.assertIsInstance(version["product"], str)
+            time.sleep(1.5)
+            second_version = cdp.send("Browser.getVersion")
+            self.assertIsInstance(second_version["product"], str)
         finally:
             cdp.close()
 

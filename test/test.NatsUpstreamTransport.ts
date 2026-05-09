@@ -183,6 +183,9 @@ test("nats upstream relays CDP through a real extension over a real NATS server"
     assert.equal(nats_client.upstream.nats_subject_prefix, subject_prefix);
     const version = (await nats_client.send("Browser.getVersion")) as Record<string, unknown>;
     assert.equal(typeof version.product, "string");
+    await delay(1_500);
+    const second_version = (await nats_client.send("Browser.getVersion")) as Record<string, unknown>;
+    assert.equal(typeof second_version.product, "string");
   } finally {
     await nats_client.close();
     await nats.close();

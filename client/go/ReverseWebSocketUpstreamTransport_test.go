@@ -244,4 +244,16 @@ func TestReverseWebSocketUpstreamTransportAcceptsRealExtensionReverseConnectionA
 	if _, ok := version["product"].(string); !ok {
 		t.Fatalf("Browser.getVersion product = %#v", version["product"])
 	}
+	time.Sleep(1500 * time.Millisecond)
+	secondResult, err := cdp.Send("Browser.getVersion", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondVersion, ok := secondResult.(map[string]any)
+	if !ok {
+		t.Fatalf("second Browser.getVersion result = %#v", secondResult)
+	}
+	if _, ok := secondVersion["product"].(string); !ok {
+		t.Fatalf("second Browser.getVersion product = %#v", secondVersion["product"])
+	}
 }

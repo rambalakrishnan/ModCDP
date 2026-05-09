@@ -173,6 +173,9 @@ test("nativemessaging upstream installs the launch-profile native host manifest 
     );
     const version = (await native_client.send("Browser.getVersion")) as Record<string, unknown>;
     assert.equal(typeof version.product, "string");
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const second_version = (await native_client.send("Browser.getVersion")) as Record<string, unknown>;
+    assert.equal(typeof second_version.product, "string");
   } finally {
     await native_client.close();
   }

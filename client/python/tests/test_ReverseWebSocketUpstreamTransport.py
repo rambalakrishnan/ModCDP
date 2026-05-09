@@ -149,6 +149,9 @@ class ReverseWebSocketUpstreamTransportTests(unittest.TestCase):
             )
             version = cdp.send("Browser.getVersion")
             self.assertIsInstance(version["product"], str)
+            time.sleep(1.5)
+            second_version = cdp.send("Browser.getVersion")
+            self.assertIsInstance(second_version["product"], str)
         finally:
             cdp.close()
 
