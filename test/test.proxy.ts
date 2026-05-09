@@ -200,6 +200,42 @@ test("proxy CLI maps user-facing flags into a real pipe upstream browser session
   }
 }, 60_000);
 
+test("proxy CLI maps ws upstream URL and route shorthands into an existing real browser", async () => {
+  const chrome = await new LocalBrowserLauncher({
+    headless: true,
+    sandbox: process.platform !== "linux",
+    extra_args: [`--load-extension=${EXTENSION_PATH}`],
+  }).launch();
+  const proxy_port = await LocalBrowserLauncher.freePort();
+  const proxy_script = path.resolve(HERE, "..", "dist", "bridge", "proxy.js");
+  const proc = spawn(
+    process.execPath,
+    [
+      proxy_script,
+      "--port",
+      String(proxy_port),
+      "--launch=remote",
+      "--upstream=ws",
+      "--upstream-ws-url",
+      chrome.cdp_url!,
+      "--extension=discover",
+      "--client-routes",
+      JSON.stringify({ "Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp" }),
+      "--server-routes",
+      JSON.stringify({ "*.*": "loopback_cdp" }),
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+
+  try {
+    await wait_for_http_json_version(`http://127.0.0.1:${proxy_port}/json/version`);
+    await expect_proxy_cdp_works(`ws://127.0.0.1:${proxy_port}/devtools/browser/proxy`, "cli-ws");
+  } finally {
+    await close_process(proc);
+    await chrome.close();
+  }
+}, 60_000);
+
 test("proxy CLI maps user-facing flags into a real reversews local launch", async () => {
   const proxy_port = await LocalBrowserLauncher.freePort();
   const reverse_port = await LocalBrowserLauncher.freePort();
