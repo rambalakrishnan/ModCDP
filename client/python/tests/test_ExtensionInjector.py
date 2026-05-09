@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import modcdp
 from modcdp.ExtensionInjector import ExtensionInjector
 
 
@@ -38,6 +39,14 @@ class ExtensionInjectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(NotImplementedError, "ExtensionInjector.inject is not implemented"):
             injector.inject()
+
+    def test_package_exports_all_injector_classes(self) -> None:
+        self.assertIs(modcdp.ExtensionInjector, ExtensionInjector)
+        self.assertEqual(modcdp.DiscoveredExtensionInjector.__name__, "DiscoveredExtensionInjector")
+        self.assertEqual(modcdp.LocalBrowserLaunchExtensionInjector.__name__, "LocalBrowserLaunchExtensionInjector")
+        self.assertEqual(modcdp.BBBrowserExtensionInjector.__name__, "BBBrowserExtensionInjector")
+        self.assertEqual(modcdp.ExtensionsLoadUnpackedInjector.__name__, "ExtensionsLoadUnpackedInjector")
+        self.assertEqual(modcdp.BorrowedExtensionInjector.__name__, "BorrowedExtensionInjector")
 
 
 if __name__ == "__main__":
