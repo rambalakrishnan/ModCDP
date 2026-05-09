@@ -46,6 +46,8 @@ type NativeMessagingUpstreamTransport struct {
 	writeMu                     sync.Mutex
 	peerCh                      chan struct{}
 	peerOnce                    sync.Once
+	closeCh                     chan struct{}
+	stateMu                     sync.Mutex
 	closed                      bool
 }
 
@@ -72,6 +74,7 @@ func NewNativeMessagingUpstreamTransport(options NativeMessagingUpstreamTranspor
 		ExtensionID:                 extensionID,
 		WaitTimeoutMS:               waitTimeoutMS,
 		peerCh:                      make(chan struct{}),
+		closeCh:                     make(chan struct{}),
 	}
 }
 
@@ -138,7 +141,10 @@ func (t *NativeMessagingUpstreamTransport) GetInjectorConfig() ExtensionInjector
 }
 
 func (t *NativeMessagingUpstreamTransport) Connect() error {
+	t.stateMu.Lock()
 	t.closed = false
+	t.closeCh = make(chan struct{})
+	t.stateMu.Unlock()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -168,16 +174,26 @@ func (t *NativeMessagingUpstreamTransport) WaitForPeer() error {
 	if t.Conn != nil {
 		return nil
 	}
+	t.stateMu.Lock()
+	closeCh := t.closeCh
+	t.stateMu.Unlock()
 	select {
 	case <-t.peerCh:
 		return nil
+	case <-closeCh:
+		return fmt.Errorf("native messaging transport for %s closed before a peer connected", t.HostName)
 	case <-time.After(time.Duration(t.WaitTimeoutMS) * time.Millisecond):
 		return fmt.Errorf("timed out waiting %dms for native messaging host %s", t.WaitTimeoutMS, t.HostName)
 	}
 }
 
 func (t *NativeMessagingUpstreamTransport) Close() error {
+	t.stateMu.Lock()
 	t.closed = true
+	closeCh := t.closeCh
+	t.closeCh = make(chan struct{})
+	t.stateMu.Unlock()
+	close(closeCh)
 	if t.Conn != nil {
 		_ = t.Conn.Close()
 		t.Conn = nil

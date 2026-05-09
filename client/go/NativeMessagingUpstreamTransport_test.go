@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNativeMessagingUpstreamTransportConfigOwnsManifestHostWaitTimeoutLoopbackAndInjectorConfig(t *testing.T) {
@@ -62,6 +63,29 @@ func TestNativeMessagingUpstreamTransportCloseResetsPeerWaitState(t *testing.T) 
 	}
 	if !transport.closed {
 		t.Fatalf("closed after Close = %v", transport.closed)
+	}
+}
+
+func TestNativeMessagingUpstreamTransportCloseRejectsPendingPeerWaits(t *testing.T) {
+	transport := NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
+		HostName:      "com.modcdp.close",
+		WaitTimeoutMS: 5_000,
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- transport.WaitForPeer()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if err := transport.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "native messaging transport for com.modcdp.close closed before a peer connected") {
+			t.Fatalf("WaitForPeer close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitForPeer did not return after Close")
 	}
 }
 

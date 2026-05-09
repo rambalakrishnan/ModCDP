@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
+from queue import Queue
 
 from modcdp import ModCDPClient
 from modcdp.NativeMessagingUpstreamTransport import DEFAULT_NATIVE_MESSAGING_HOST_NAME, NativeMessagingUpstreamTransport
@@ -47,11 +50,39 @@ class NativeMessagingUpstreamTransportTests(unittest.TestCase):
     def test_close_resets_peer_wait_state(self) -> None:
         transport = NativeMessagingUpstreamTransport({"wait_timeout_ms": 5})
 
-        transport.peer_seen.set()
-        transport.waitForPeer()
         transport.close()
         with self.assertRaisesRegex(RuntimeError, r"Timed out waiting 5ms for native messaging host com\.modcdp\.bridge"):
             transport.waitForPeer()
+
+    def test_close_rejects_pending_peer_waits(self) -> None:
+        transport = NativeMessagingUpstreamTransport(
+            {
+                "host_name": "com.modcdp.close",
+                "wait_timeout_ms": 5_000,
+            }
+        )
+        result: Queue[BaseException | None] = Queue()
+
+        def wait_for_peer() -> None:
+            try:
+                transport.waitForPeer()
+            except BaseException as error:
+                result.put(error)
+                return
+            result.put(None)
+
+        thread = threading.Thread(target=wait_for_peer, daemon=True)
+        thread.start()
+        time.sleep(0.05)
+        transport.close()
+        thread.join(timeout=1)
+
+        error = result.get(timeout=1)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertRegex(
+            str(error),
+            r"Native messaging transport for com\.modcdp\.close closed before a peer connected",
+        )
 
     def test_installs_launch_profile_native_host_manifest_and_connects_to_real_extension(self) -> None:
         cdp = ModCDPClient(

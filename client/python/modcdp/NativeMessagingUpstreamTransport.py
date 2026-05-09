@@ -5,6 +5,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, cast
@@ -36,6 +37,8 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
         self.socket: socket.socket | None = None
         self.server: socket.socket | None = None
         self.peer_seen = threading.Event()
+        self._peer_condition = threading.Condition()
+        self._close_generation = 0
         self.bound_port: int | None = None
         self.cdp_url: str | None = None
         self.url = ""
@@ -79,6 +82,9 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
         return {"native_host_name": self.host_name}
 
     def connect(self) -> None:
+        with self._peer_condition:
+            self._close_generation += 1
+            self.peer_seen.clear()
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -94,8 +100,20 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
         _write_length_prefixed_json(self.socket, message)
 
     def waitForPeer(self) -> None:
-        if not self.peer_seen.wait(self.wait_timeout_ms / 1000):
-            raise RuntimeError(f"Timed out waiting {self.wait_timeout_ms}ms for native messaging host {self.host_name}.")
+        deadline = time.monotonic() + self.wait_timeout_ms / 1000
+        with self._peer_condition:
+            close_generation = self._close_generation
+            while self.socket is None:
+                if close_generation != self._close_generation:
+                    raise RuntimeError(
+                        f"Native messaging transport for {self.host_name} closed before a peer connected."
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Timed out waiting {self.wait_timeout_ms}ms for native messaging host {self.host_name}."
+                    )
+                self._peer_condition.wait(remaining)
 
     def close(self) -> None:
         for sock in (self.socket, self.server):
@@ -107,6 +125,9 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
         self.socket = None
         self.server = None
         self.peer_seen.clear()
+        with self._peer_condition:
+            self._close_generation += 1
+            self._peer_condition.notify_all()
 
     def _accept_loop(self) -> None:
         server = self.server
@@ -122,8 +143,10 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
                 self.socket.close()
             except Exception:
                 pass
-        self.socket = conn
-        self.peer_seen.set()
+        with self._peer_condition:
+            self.socket = conn
+            self.peer_seen.set()
+            self._peer_condition.notify_all()
         threading.Thread(target=self._read_loop, args=(conn,), daemon=True).start()
 
     def _read_loop(self, conn: socket.socket) -> None:
@@ -134,7 +157,9 @@ class NativeMessagingUpstreamTransport(UpstreamTransport):
                 self._emit_recv(message)
         except Exception as error:
             if self.socket is conn:
-                self.socket = None
+                with self._peer_condition:
+                    if self.socket is conn:
+                        self.socket = None
                 self._emit_close(error if isinstance(error, Exception) else Exception(str(error)))
 
     def _install_native_host(self, port: int) -> None:
