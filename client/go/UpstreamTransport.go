@@ -33,6 +33,10 @@ func (e *UpstreamTransport) Send(message map[string]any) error {
 	return fmt.Errorf("%T.Send is not implemented", e)
 }
 
+func (e *UpstreamTransport) GetInjectorConfig() ExtensionInjectorConfig {
+	return ExtensionInjectorConfig{}
+}
+
 func (e *UpstreamTransport) OnRecv(listener func(map[string]any)) func() {
 	e.recvListeners = append(e.recvListeners, listener)
 	return func() {}

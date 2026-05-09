@@ -269,7 +269,7 @@ type ModCDPClient struct {
 
 	opts                 Options
 	CDPURL               string
-	transport            *WebSocketUpstreamTransport
+	transport            upstreamTransportClient
 	conn                 net.Conn
 	writeMu              sync.Mutex
 	ctx                  context.Context
@@ -305,6 +305,16 @@ type extensionInjector interface {
 	Prepare() error
 	Inject() (*ExtensionInjectionResult, error)
 	Close() error
+}
+
+type upstreamTransportClient interface {
+	Connect() error
+	Close() error
+	Send(map[string]any) error
+	GetInjectorConfig() ExtensionInjectorConfig
+	OnRecv(func(map[string]any)) func()
+	OnClose(func(error)) func()
+	WaitForPeer() error
 }
 
 func New(opts Options) *ModCDPClient {
@@ -398,7 +408,7 @@ func New(opts Options) *ModCDPClient {
 func (c *ModCDPClient) Connect() error {
 	connectStartedAt := time.Now().UnixMilli()
 	if c.opts.Upstream.Mode != "ws" {
-		return c.upstreamTransport().Connect()
+		return c.connectModCDPServerTransport(connectStartedAt)
 	}
 	injectors := c.extensionInjectorsForConfig()
 	c.extensionInjectors = injectors
@@ -438,13 +448,14 @@ func (c *ModCDPClient) Connect() error {
 		c.opts.Server.LoopbackCDPURL = wsURL
 	}
 
-	c.transport = c.upstreamTransport().(*WebSocketUpstreamTransport)
-	if err := c.transport.Connect(); err != nil {
+	wsTransport := c.upstreamTransport().(*WebSocketUpstreamTransport)
+	c.transport = wsTransport
+	if err := wsTransport.Connect(); err != nil {
 		return fmt.Errorf("websocket dial: %w", err)
 	}
-	c.ctx = c.transport.ctx
-	c.cancel = c.transport.cancel
-	c.conn = c.transport.Conn
+	c.ctx = wsTransport.ctx
+	c.cancel = wsTransport.cancel
+	c.conn = wsTransport.Conn
 	go c.reader()
 	if _, err := c.sendMessage("Target.setAutoAttach", map[string]any{
 		"autoAttach":             true,
@@ -521,19 +532,7 @@ func (c *ModCDPClient) Connect() error {
 			}
 			customMiddlewares = append(customMiddlewares, item)
 		}
-		configureParams := map[string]any{
-			"cdp_send_timeout_ms":                   c.opts.CDPSendTimeoutMS,
-			"loopback_execution_context_timeout_ms": c.opts.ExecutionContextTimeoutMS,
-			"ws_connect_error_settle_timeout_ms":    c.opts.WSConnectErrorSettleTimeoutMS,
-			"loopback_cdp_url":                      c.opts.Server.LoopbackCDPURL,
-			"routes":                                c.opts.Server.Routes,
-			"custom_commands":                       customCommands,
-			"custom_events":                         customEvents,
-			"custom_middlewares":                    customMiddlewares,
-		}
-		for key, value := range c.opts.Server.Options {
-			configureParams[key] = value
-		}
+		configureParams := c.serverConfigureParams(customCommands, customEvents, customMiddlewares)
 		command, err := wrapCommandIfNeeded("Mod.configure", configureParams, c.opts.Client.Routes, c.ExtSessionID)
 		if err != nil {
 			c.Close()
@@ -556,6 +555,109 @@ func (c *ModCDPClient) Connect() error {
 		"duration_ms":            connectedAt - connectStartedAt,
 	}
 	return nil
+}
+
+func (c *ModCDPClient) connectModCDPServerTransport(connectStartedAt int64) error {
+	transportStartedAt := time.Now().UnixMilli()
+	transport := c.upstreamTransport().(upstreamTransportClient)
+	launcher := c.browserLauncher()
+	injectors := c.extensionInjectorsForConfig()
+	c.extensionInjectors = injectors
+	launchOptions := c.opts.Launch.Options
+	if err := transport.Connect(); err != nil {
+		return err
+	}
+	c.transport = transport
+	transport.OnRecv(func(message map[string]any) { c.handleMessage(message) })
+	transport.OnClose(func(err error) { c.rejectAll(err) })
+
+	if c.opts.Extension.Mode != "none" {
+		if err := c.prepareExtensionPath(); err != nil {
+			c.Close()
+			return err
+		}
+		for _, injector := range injectors {
+			injector.Update(c.baseExtensionInjectorConfig(nil))
+			injector.Update(transport.GetInjectorConfig())
+			if err := injector.Prepare(); err != nil {
+				c.Close()
+				return err
+			}
+			launchOptions = mergeLaunchOptions(launchOptions, injector.GetLauncherConfig())
+		}
+	}
+	if c.opts.Launch.Mode != "none" {
+		launched, err := launcher.Launch(launchOptions)
+		if err != nil {
+			c.Close()
+			return err
+		}
+		c.launchedBrowser = launched
+		c.CDPURL = firstNonEmptyString(launched.WSURL, launched.CDPURL)
+		if c.opts.Server != nil && c.opts.Server.LoopbackCDPURL == "" {
+			c.opts.Server.LoopbackCDPURL = c.CDPURL
+		}
+	}
+	transportConnectedAt := time.Now().UnixMilli()
+	if err := transport.WaitForPeer(); err != nil {
+		c.Close()
+		return err
+	}
+	if c.opts.Server != nil {
+		if _, err := c.sendMessage("Mod.configure", c.serverConfigureParams(nil, nil, nil), ""); err != nil {
+			c.Close()
+			return fmt.Errorf("Mod.configure: %w", err)
+		}
+	}
+	go func() { _ = c.measurePingLatency() }()
+	connectedAt := time.Now().UnixMilli()
+	c.ConnectTiming = map[string]any{
+		"started_at":             connectStartedAt,
+		"upstream_mode":          c.opts.Upstream.Mode,
+		"upstream_endpoint_kind": endpointKindForUpstream(c.opts.Upstream.Mode),
+		"transport_started_at":   transportStartedAt,
+		"transport_connected_at": transportConnectedAt,
+		"transport_duration_ms":  transportConnectedAt - transportStartedAt,
+		"connected_at":           connectedAt,
+		"duration_ms":            connectedAt - connectStartedAt,
+	}
+	return nil
+}
+
+func (c *ModCDPClient) serverConfigureParams(customCommands []map[string]any, customEvents []map[string]any, customMiddlewares []map[string]any) map[string]any {
+	if customCommands == nil {
+		customCommands = []map[string]any{}
+	}
+	if customEvents == nil {
+		customEvents = []map[string]any{}
+	}
+	if customMiddlewares == nil {
+		customMiddlewares = []map[string]any{}
+	}
+	server := map[string]any{
+		"cdp_send_timeout_ms":                   c.opts.CDPSendTimeoutMS,
+		"loopback_execution_context_timeout_ms": c.opts.ExecutionContextTimeoutMS,
+		"ws_connect_error_settle_timeout_ms":    c.opts.WSConnectErrorSettleTimeoutMS,
+	}
+	if c.opts.Server != nil {
+		server["loopback_cdp_url"] = c.opts.Server.LoopbackCDPURL
+		server["routes"] = c.opts.Server.Routes
+		for key, value := range c.opts.Server.Options {
+			server[key] = value
+		}
+	}
+	return map[string]any{
+		"upstream": map[string]any{
+			"mode": c.opts.Upstream.Mode,
+		},
+		"client": map[string]any{
+			"routes": c.opts.Client.Routes,
+		},
+		"server":             server,
+		"custom_commands":    customCommands,
+		"custom_events":      customEvents,
+		"custom_middlewares": customMiddlewares,
+	}
 }
 
 func normalizeModCDPName(name string) (string, error) {
@@ -740,6 +842,26 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		if err := c.validateCommandParams(method, params); err != nil {
 			return nil, err
 		}
+	}
+	if endpointKindForUpstream(c.opts.Upstream.Mode) == UpstreamEndpointKindModCDPServer {
+		result, err := c.sendMessage(method, params, "")
+		completedAt := time.Now().UnixMilli()
+		c.LastCommandTiming = map[string]any{
+			"method":       method,
+			"target":       "modcdp_server",
+			"started_at":   startedAt,
+			"completed_at": completedAt,
+			"duration_ms":  completedAt - startedAt,
+		}
+		if err != nil {
+			return nil, err
+		}
+		if validateSchema {
+			if err := c.validateCommandResult(method, result); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
 	}
 	command, err := wrapCommandIfNeeded(method, params, c.opts.Client.Routes, c.ExtSessionID, targetSessionID)
 	if err != nil {
@@ -1119,10 +1241,17 @@ func (c *ModCDPClient) sendMessageTimeout(method string, params map[string]any, 
 	if sessionID != "" {
 		msg["sessionId"] = sessionID
 	}
-	body, _ := json.Marshal(msg)
-	c.writeMu.Lock()
-	err := wsutil.WriteClientText(c.conn, body)
-	c.writeMu.Unlock()
+	var err error
+	if c.conn != nil {
+		body, _ := json.Marshal(msg)
+		c.writeMu.Lock()
+		err = wsutil.WriteClientText(c.conn, body)
+		c.writeMu.Unlock()
+	} else if c.transport != nil {
+		err = c.transport.Send(msg)
+	} else {
+		err = fmt.Errorf("ModCDP upstream is not connected")
+	}
 	if err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
@@ -1156,110 +1285,128 @@ func (c *ModCDPClient) sendMessageTimeout(method string, params map[string]any, 
 	}
 }
 
+func (c *ModCDPClient) rejectAll(err error) {
+	c.mu.Lock()
+	pending := c.pending
+	c.pending = map[int64]chan map[string]any{}
+	c.mu.Unlock()
+	for _, ch := range pending {
+		ch <- map[string]any{"error": map[string]any{"message": fmt.Sprintf("connection closed: %v", err)}}
+	}
+}
+
+func (c *ModCDPClient) handleMessage(msg map[string]any) {
+	if idF, ok := msg["id"].(float64); ok {
+		id := int64(idF)
+		c.mu.Lock()
+		ch, ok := c.pending[id]
+		delete(c.pending, id)
+		c.mu.Unlock()
+		if ok {
+			ch <- msg
+		}
+		return
+	}
+	if id, ok := msg["id"].(int); ok {
+		c.mu.Lock()
+		ch, found := c.pending[int64(id)]
+		delete(c.pending, int64(id))
+		c.mu.Unlock()
+		if found {
+			ch <- msg
+		}
+		return
+	}
+	c.handleEventMessage(msg)
+}
+
 func (c *ModCDPClient) reader() {
 	for {
 		data, err := wsutil.ReadServerText(c.conn)
 		if err != nil {
-			c.mu.Lock()
-			pending := c.pending
-			c.pending = map[int64]chan map[string]any{}
-			c.mu.Unlock()
-			for _, ch := range pending {
-				ch <- map[string]any{"error": map[string]any{"message": fmt.Sprintf("connection closed: %v", err)}}
-			}
+			c.rejectAll(err)
 			return
 		}
 		var msg map[string]any
 		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-		if idF, ok := msg["id"].(float64); ok {
-			id := int64(idF)
-			c.mu.Lock()
-			ch, ok := c.pending[id]
-			delete(c.pending, id)
-			c.mu.Unlock()
-			if ok {
-				ch <- msg
-			}
-			continue
+		c.handleMessage(msg)
+	}
+}
+
+func (c *ModCDPClient) handleEventMessage(msg map[string]any) {
+	method, _ := msg["method"].(string)
+	sessionID, _ := msg["sessionId"].(string)
+	params, _ := msg["params"].(map[string]any)
+	if method == "Target.attachedToTarget" {
+		attachedSessionID, _ := params["sessionId"].(string)
+		targetInfo, _ := params["targetInfo"].(map[string]any)
+		targetID, _ := targetInfo["targetId"].(string)
+		if attachedSessionID != "" && targetID != "" {
+			c.targetSessionsMu.Lock()
+			c.targetSessions[targetID] = attachedSessionID
+			c.sessionTargets[attachedSessionID] = targetInfo
+			c.targetSessionsMu.Unlock()
 		}
-		method, _ := msg["method"].(string)
-		sessionID, _ := msg["sessionId"].(string)
-		params, _ := msg["params"].(map[string]any)
-		if method == "Target.attachedToTarget" {
-			attachedSessionID, _ := params["sessionId"].(string)
-			targetInfo, _ := params["targetInfo"].(map[string]any)
-			targetID, _ := targetInfo["targetId"].(string)
-			if attachedSessionID != "" && targetID != "" {
-				c.targetSessionsMu.Lock()
-				c.targetSessions[targetID] = attachedSessionID
-				c.sessionTargets[attachedSessionID] = targetInfo
-				c.targetSessionsMu.Unlock()
+	} else if method == "Target.detachedFromTarget" {
+		detachedSessionID, _ := params["sessionId"].(string)
+		if detachedSessionID != "" {
+			c.targetSessionsMu.Lock()
+			targetInfo := c.sessionTargets[detachedSessionID]
+			delete(c.sessionTargets, detachedSessionID)
+			if targetID, _ := targetInfo["targetId"].(string); targetID != "" {
+				delete(c.targetSessions, targetID)
 			}
-		} else if method == "Target.detachedFromTarget" {
-			detachedSessionID, _ := params["sessionId"].(string)
-			if detachedSessionID != "" {
-				c.targetSessionsMu.Lock()
-				targetInfo := c.sessionTargets[detachedSessionID]
-				delete(c.sessionTargets, detachedSessionID)
-				if targetID, _ := targetInfo["targetId"].(string); targetID != "" {
-					delete(c.targetSessions, targetID)
-				}
-				c.targetSessionsMu.Unlock()
-			}
+			c.targetSessionsMu.Unlock()
 		}
-		// IMPORTANT: handlers run on their own goroutine, not on the reader.
-		// A handler that calls c.Send() would otherwise deadlock waiting on
-		// a response that this same goroutine is supposed to deliver.
-		if sessionID == c.ExtSessionID {
-			params, _ := msg["params"].(map[string]any)
-			bindingName, _ := params["name"].(string)
-			if event, data, ok := unwrapEventIfNeeded(method, params, sessionID, c.ExtSessionID); ok {
-				validatedData, valid := c.validateEventData(event, data)
-				if !valid {
-					continue
-				}
-				c.handlersMu.Lock()
-				hs := append([]Handler(nil), c.handlers[event]...)
-				cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
-				cdpHandlers = append(cdpHandlers, c.cdpHandlers[event]...)
-				c.handlersMu.Unlock()
-				for _, h := range hs {
-					go h(validatedData)
-				}
-				if bindingName == upstreamEventBindingName {
-					dataMap, _ := validatedData.(map[string]any)
-					cdpEvent := CDPEvent{Method: event, Params: dataMap, CDPSessionID: sessionID, SessionID: sessionID}
-					for _, h := range cdpHandlers {
-						go h(cdpEvent)
-					}
-				}
-			}
-			continue
-		}
-		if method != "" {
-			validatedParams, valid := c.validateEventData(method, params)
+	}
+	if sessionID == c.ExtSessionID {
+		bindingName, _ := params["name"].(string)
+		if event, data, ok := unwrapEventIfNeeded(method, params, sessionID, c.ExtSessionID); ok {
+			validatedData, valid := c.validateEventData(event, data)
 			if !valid {
-				continue
-			}
-			validatedParamsMap, _ := validatedParams.(map[string]any)
-			if validatedParamsMap == nil {
-				validatedParamsMap = map[string]any{}
+				return
 			}
 			c.handlersMu.Lock()
-			hs := append([]Handler(nil), c.handlers[method]...)
+			hs := append([]Handler(nil), c.handlers[event]...)
 			cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
-			cdpHandlers = append(cdpHandlers, c.cdpHandlers[method]...)
+			cdpHandlers = append(cdpHandlers, c.cdpHandlers[event]...)
 			c.handlersMu.Unlock()
 			for _, h := range hs {
-				go h(validatedParams)
+				go h(validatedData)
 			}
-			if len(cdpHandlers) > 0 {
-				event := CDPEvent{Method: method, Params: validatedParamsMap, CDPSessionID: sessionID, SessionID: sessionID}
+			if bindingName == upstreamEventBindingName {
+				dataMap, _ := validatedData.(map[string]any)
+				cdpEvent := CDPEvent{Method: event, Params: dataMap, CDPSessionID: sessionID, SessionID: sessionID}
 				for _, h := range cdpHandlers {
-					go h(event)
+					go h(cdpEvent)
 				}
+			}
+		}
+		return
+	}
+	if method != "" {
+		validatedParams, valid := c.validateEventData(method, params)
+		if !valid {
+			return
+		}
+		validatedParamsMap, _ := validatedParams.(map[string]any)
+		if validatedParamsMap == nil {
+			validatedParamsMap = map[string]any{}
+		}
+		c.handlersMu.Lock()
+		hs := append([]Handler(nil), c.handlers[method]...)
+		cdpHandlers := append([]func(CDPEvent){}, c.cdpHandlers["*"]...)
+		cdpHandlers = append(cdpHandlers, c.cdpHandlers[method]...)
+		c.handlersMu.Unlock()
+		for _, h := range hs {
+			go h(validatedParams)
+		}
+		if len(cdpHandlers) > 0 {
+			event := CDPEvent{Method: method, Params: validatedParamsMap, CDPSessionID: sessionID, SessionID: sessionID}
+			for _, h := range cdpHandlers {
+				go h(event)
 			}
 		}
 	}
