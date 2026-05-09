@@ -24,7 +24,7 @@ from .BrowserLauncher import (
 
 class LocalBrowserLauncher(BrowserLauncher):
     @staticmethod
-    def find_chrome_binary(explicit: str | None = None) -> str:
+    def findChromeBinary(explicit: str | None = None) -> str:
         candidates = [explicit, os.environ.get("CHROME_PATH"), *_candidate_paths()]
         for candidate in candidates:
             if candidate and Path(candidate).exists():
@@ -32,11 +32,15 @@ class LocalBrowserLauncher(BrowserLauncher):
         tried = ", ".join(str(candidate) for candidate in candidates if candidate)
         raise RuntimeError(f"No Chrome/Chromium binary found. Tried: {tried}. Set CHROME_PATH or pass executable_path.")
 
+    @staticmethod
+    def freePort() -> int:
+        return _free_port()
+
     def launch(self, options: BrowserLaunchOptions | None = None) -> LaunchedBrowser:
         merged = cast(BrowserLaunchOptions, {**self.options, **dict(options or {})})
-        executable_path = self.find_chrome_binary(merged.get("executable_path"))
+        executable_path = self.findChromeBinary(merged.get("executable_path"))
         use_pipe = merged.get("remote_debugging") == "pipe"
-        port = 0 if use_pipe else int(merged.get("port") or _free_port())
+        port = 0 if use_pipe else int(merged.get("port") or LocalBrowserLauncher.freePort())
         temp_profile_dir: tempfile.TemporaryDirectory[str] | None = None
         profile_dir = merged.get("user_data_dir")
         if not profile_dir:

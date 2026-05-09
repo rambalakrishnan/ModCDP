@@ -9,6 +9,10 @@ from modcdp.LocalBrowserLauncher import LocalBrowserLauncher
 
 
 class LocalBrowserLauncherTests(unittest.TestCase):
+    def test_class_helpers_match_ts_surface(self) -> None:
+        self.assertIsInstance(LocalBrowserLauncher.findChromeBinary(), str)
+        self.assertIsInstance(LocalBrowserLauncher.freePort(), int)
+
     def test_launches_real_browser_and_speaks_cdp(self) -> None:
         chrome = LocalBrowserLauncher(
             {
