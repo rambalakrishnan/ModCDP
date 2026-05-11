@@ -19,6 +19,6 @@
     "useUnknownInCatchVariables": false,
     "verbatimModuleSyntax": true
   },
-  "include": ["bridge/**/*.ts", "client/js/**/*.ts", "extension/**/*.ts", "types/**/*.ts"],
+  "include": ["js/src/**/*.ts", "js/examples/**/*.ts", "extension/src/**/*.ts", "extension/pages/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

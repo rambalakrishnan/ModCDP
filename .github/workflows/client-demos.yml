@@ -3,10 +3,60 @@ name: Client Demos
 on:
   pull_request:
   push:
-    branches:
-      - main
 
 jobs:
+  client-test:
+    name: ${{ matrix.client }} tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        client: [js, python, go]
+    env:
+      CHROME_PATH: /usr/bin/chromium
+      CI: "true"
+      GOFLAGS: -buildvcs=false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        if: matrix.client == 'python'
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        if: matrix.client == 'python'
+      - uses: actions/setup-go@v5
+        if: matrix.client == 'go'
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Run ${{ matrix.client }} tests
+        run: |
+          case "${{ matrix.client }}" in
+            js)
+              pnpm exec vitest run --fileParallelism=false
+              ;;
+            python)
+              cd python
+              uv run python -m unittest discover -s tests
+              ;;
+            go)
+              cd go
+              go test -count=1 ./...
+              ;;
+            *)
+              echo "unknown client: ${{ matrix.client }}" >&2
+              exit 1
+              ;;
+          esac
+
   client-demo:
     name: ${{ matrix.client }} ${{ matrix.mode }}
     runs-on: ubuntu-latest
@@ -36,23 +86,23 @@ jobs:
       - uses: actions/setup-go@v5
         if: matrix.client == 'go'
         with:
-          go-version-file: client/go/go.mod
-          cache-dependency-path: client/go/go.sum
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - name: Run ${{ matrix.client }} demo (${{ matrix.mode }})
         run: |
           case "${{ matrix.client }}" in
             js)
-              node dist/client/js/demo.js --${{ matrix.mode }}
+              node dist/js/examples/demo.js --${{ matrix.mode }}
               ;;
             python)
-              cd client/python
-              uv run python demo.py --${{ matrix.mode }}
+              cd python
+              uv run python examples/demo.py --${{ matrix.mode }}
               ;;
             go)
-              cd client/go
-              go run ./demo --${{ matrix.mode }}
+              cd go
+              go run ./examples/demo --${{ matrix.mode }}
               ;;
             *)
               echo "unknown client: ${{ matrix.client }}" >&2
@@ -69,9 +119,9 @@ jobs:
       matrix:
         include:
           - name: playwright proxy
-            command: node dist/client/js/examples/playwright.js
+            command: node dist/js/examples/playwright.js
           - name: puppeteer proxy
-            command: node dist/client/js/examples/puppeteer.js
+            command: node dist/js/examples/puppeteer.js
     env:
       CHROME_PATH: /usr/bin/chromium
       CI: "true"

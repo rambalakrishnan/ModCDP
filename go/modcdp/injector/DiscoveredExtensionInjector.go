@@ -1,0 +1,58 @@
+package injector
+
+import (
+	"fmt"
+	"strings"
+)
+
+type DiscoveredExtensionInjector struct {
+	ExtensionInjector
+}
+
+func NewDiscoveredExtensionInjector(options ExtensionInjectorConfig) DiscoveredExtensionInjector {
+	return DiscoveredExtensionInjector{ExtensionInjector: NewExtensionInjector(options)}
+}
+
+func (i *DiscoveredExtensionInjector) Inject() (*ExtensionInjectionResult, error) {
+	discovered, err := i.discoverReadyServiceWorker(false)
+	if err != nil || discovered != nil {
+		if discovered != nil {
+			discovered.Source = "discovered"
+		}
+		return discovered, err
+	}
+	if i.Options.TrustServiceWorkerTarget {
+		waited, err := i.waitForReadyServiceWorker(i.Options.ServiceWorkerProbeTimeoutMS, true)
+		if err != nil || waited != nil {
+			if waited != nil {
+				waited.Source = "discovered"
+			}
+			return waited, err
+		}
+	}
+	if i.wakeConfiguredExtension() {
+		waited, err := i.waitForReadyServiceWorker(i.Options.ServiceWorkerProbeTimeoutMS, i.Options.TrustServiceWorkerTarget)
+		if err != nil || waited != nil {
+			if waited != nil {
+				waited.Source = "discovered"
+			}
+			return waited, err
+		}
+	}
+	if !i.Options.RequireServiceWorkerTarget {
+		return nil, nil
+	}
+	waited, err := i.waitForReadyServiceWorker(i.Options.ServiceWorkerReadyTimeoutMS, i.Options.TrustServiceWorkerTarget)
+	if err != nil || waited != nil {
+		if waited != nil {
+			waited.Source = "discovered"
+		}
+		return waited, err
+	}
+	matchers := append(append([]string{}, i.Options.ServiceWorkerURLIncludes...), i.Options.ServiceWorkerURLSuffixes...)
+	matcherText := strings.Join(matchers, ", ")
+	if matcherText == "" {
+		matcherText = "no matcher"
+	}
+	return nil, fmt.Errorf("required ModCDP service worker target was not visible (%s)", matcherText)
+}
