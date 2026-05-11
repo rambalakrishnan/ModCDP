@@ -51,9 +51,9 @@ import type {
   CdpEventMessage,
   CdpResponseMessage,
   CdpMessage,
-  ProxyConnectionState,
   ModCDPServerOptions,
 } from "../types/modcdp.js";
+import type { ProxyConnectionState } from "./ProxyConnectionState.js";
 import {
   CdpCommandMessageSchema,
   CdpEventMessageSchema,
@@ -93,10 +93,16 @@ const isWebSocketEndpoint = (url) =>
 
 function defaultExtensionPath() {
   const candidates = [
+    path.resolve(ROOT, "..", "..", "..", "dist", "extension"),
     path.resolve(ROOT, "..", "..", "..", "extension"),
+    path.resolve(ROOT, "..", "..", "..", "..", "dist", "extension"),
     path.resolve(ROOT, "..", "..", "..", "..", "extension"),
   ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+  return candidates.find(isBuiltExtensionPath) ?? candidates[0];
+}
+
+function isBuiltExtensionPath(candidate: string) {
+  return existsSync(path.join(candidate, "modcdp", "service_worker.js"));
 }
 
 // --- public API -------------------------------------------------------------
@@ -1296,11 +1302,8 @@ function sendToClient(state: ProxyConnectionState, obj: CdpMessage) {
 
 // --- CLI -------------------------------------------------------------------
 
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
-  const argv = parseProxyArgs(process.argv.slice(2));
+export function runProxyCli(args = process.argv.slice(2)) {
+  const argv = parseProxyArgs(args);
   const listen = argv.listen
     ? parseHostPort(String(argv.listen), DEFAULT_HOST, DEFAULT_PORT)
     : null;
@@ -1414,6 +1417,13 @@ if (
     console.error(e);
     process.exitCode = 1;
   });
+}
+
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  runProxyCli();
 }
 
 function parseProxyArgs(args: string[]) {

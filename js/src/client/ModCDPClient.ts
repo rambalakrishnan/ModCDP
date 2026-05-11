@@ -456,12 +456,21 @@ function defaultExtensionPath() {
     process?.versions?.node &&
     import.meta.url.startsWith("file:")
   ) {
-    const candidates = ["../../../extension", "../../../../extension"].map((relative_path) =>
+    const candidates = [
+      "../../../dist/extension",
+      "../../../extension",
+      "../../../../dist/extension",
+      "../../../../extension",
+    ].map((relative_path) =>
       decodeURIComponent(new URL(/* @vite-ignore */ relative_path, import.meta.url).pathname),
     );
-    return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+    return candidates.find(isBuiltExtensionPath) ?? candidates[0];
   }
-  return "../../../extension";
+  return "../../../dist/extension";
+}
+
+function isBuiltExtensionPath(candidate: string) {
+  return existsSync(`${candidate}/modcdp/service_worker.js`);
 }
 
 function hasCommandExpression(
