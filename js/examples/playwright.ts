@@ -22,7 +22,7 @@ let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | null = null;
 
 try {
   chrome = await new LocalBrowserLauncher().launch({
-    headless: process.platform === "linux",
+    headless: process.platform === "linux" && !process.env.DISPLAY,
     sandbox: process.platform !== "linux",
     extra_args: [`--load-extension=${extension_path}`],
   });
