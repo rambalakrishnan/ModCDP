@@ -35,6 +35,8 @@ class BrowserLaunchOptions(TypedDict, total=False):
 class LaunchedBrowser(TypedDict):
     # Effective CDP endpoint for the selected transport; launchers resolve HTTP discovery endpoints to ws:// before returning when they can.
     cdp_url: str | None
+    # Extension-dialable loopback CDP endpoint when it differs from cdp_url, for example pipe:// primary transport.
+    loopback_cdp_url: NotRequired[str | None]
     close: Callable[[], Any]
     profile_dir: NotRequired[str | None]
     pipe_read: NotRequired[Any]
@@ -79,6 +81,10 @@ class BrowserLauncher:
             "pipe_read": (self.launched or {}).get("pipe_read"),
             "pipe_write": (self.launched or {}).get("pipe_write"),
         }
+
+    def getServerConfig(self) -> dict[str, Any]:
+        loopback_cdp_url = (self.launched or {}).get("loopback_cdp_url")
+        return {"server_loopback_cdp_url": loopback_cdp_url} if loopback_cdp_url else {}
 
     def getInjectorConfig(self) -> dict[str, Any]:
         return {

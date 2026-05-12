@@ -7,6 +7,7 @@ Modes (mirror the JS / Go demos):
                   the server. Default.
     --debugger    *.* -> service_worker on the client; *.* -> chrome_debugger
                   on the server.
+    --upstream    ws|pipe|reversews|nativemessaging|nats. Defaults to ws.
 """
 
 import json
@@ -50,7 +51,36 @@ def server_routes_for(mode: str) -> ProtocolPayload:
     return routes
 
 
-def client_options_for(mode, cdp_url, launch_options=None):
+UPSTREAM_MODES = {"ws", "pipe", "reversews", "nativemessaging", "nats"}
+
+
+def parse_args(argv):
+    flags = {a[2:] for a in argv if a.startswith("--")}
+    upstream_mode = "ws"
+    for index, arg in enumerate(argv):
+        if arg == "--upstream" and index + 1 < len(argv):
+            upstream_mode = argv[index + 1]
+            break
+        if arg.startswith("--upstream="):
+            upstream_mode = arg.split("=", 1)[1]
+            break
+    else:
+        for candidate in UPSTREAM_MODES:
+            if candidate in flags:
+                upstream_mode = candidate
+                break
+    if upstream_mode not in UPSTREAM_MODES:
+        raise RuntimeError(f"unknown --upstream={upstream_mode}; expected {'|'.join(sorted(UPSTREAM_MODES))}")
+    live = "live" in flags
+    mode = "debugger" if "debugger" in flags else "direct" if "direct" in flags else "loopback" if "loopback" in flags else "direct" if live else "loopback"
+    if live and upstream_mode == "pipe":
+        raise RuntimeError("--live cannot be combined with --upstream=pipe because pipe handles only exist for launched browsers.")
+    if mode == "direct" and upstream_mode in {"reversews", "nativemessaging", "nats"}:
+        raise RuntimeError(f"--direct cannot be combined with --upstream={upstream_mode}; reverse transports terminate at ModCDPServer.")
+    return mode, live, upstream_mode
+
+
+def client_options_for(mode, upstream_mode, cdp_url, launch_options=None):
     direct_normal_event_routes = {
         "Target.setDiscoverTargets": "direct_cdp",
         "Target.createTarget": "direct_cdp",
@@ -59,18 +89,16 @@ def client_options_for(mode, cdp_url, launch_options=None):
     if mode == "direct":
         return {
             "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
-            "upstream": {"upstream_mode": "ws", "upstream_cdp_url": cdp_url},
+            "upstream": {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url},
             "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
             "client": {"client_routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp", **direct_normal_event_routes}},
         }
     server = {
         "server_routes": server_routes_for(mode),
     }
-    if cdp_url and mode == "loopback":
-        server["server_loopback_cdp_url"] = cdp_url
     return {
         "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
-        "upstream": {"upstream_mode": "ws", "upstream_cdp_url": cdp_url},
+        "upstream": {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url},
         "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
         "client": {"client_routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "service_worker", **direct_normal_event_routes}},
         "server": server,
@@ -97,10 +125,8 @@ def wait_for_live_cdp_url():
 
 
 def main():
-    flags = {a[2:] for a in sys.argv[1:] if a.startswith("--")}
-    live = "live" in flags
-    mode = "debugger" if "debugger" in flags else "direct" if "direct" in flags else "loopback" if "loopback" in flags else "direct" if live else "loopback"
-    print(f"== mode: {'live/' if live else ''}{mode} ==")
+    mode, live, upstream_mode = parse_args(sys.argv[1:])
+    print(f"== mode: {'live/' if live else ''}{mode}; upstream: {upstream_mode} ==")
 
     cdp = None
     try:
@@ -116,7 +142,7 @@ def main():
             if os.environ.get("CHROME_PATH"):
                 launch_options["executable_path"] = os.environ["CHROME_PATH"]
 
-        cdp = ModCDPClient(**client_options_for(mode, cdp_url, launch_options))
+        cdp = ModCDPClient(**client_options_for(mode, upstream_mode, cdp_url, launch_options))
         foreground_events = []
         target_created_events = []
         events_lock = threading.Lock()
@@ -139,10 +165,6 @@ def main():
         print(f"connect timing    -> {cdp.connect_timing}")
 
         server_config: ProtocolPayload = {"server_routes": server_routes_for(mode)}
-        if mode == "loopback":
-            if cdp.cdp_url is None:
-                raise RuntimeError("loopback mode requires a resolved cdp_url after connect")
-            server_config["server_loopback_cdp_url"] = cdp.cdp_url
         configure_params: ProtocolPayload = {"server": server_config}
         configure_result = expect_object(cdp.send("Mod.configure", configure_params), "Mod.configure")
         if expect_object(configure_result.get("routes"), "Mod.configure.routes").get("*.*") != server_routes_for(mode)["*.*"]:
@@ -334,7 +356,7 @@ def main():
             raise RuntimeError(f"unexpected Custom.targetIdFromTabId/middleware result {target_from_tab}")
         print(f"Custom.targetIdFromTabId -> {target_from_tab}")
 
-        print(f"\nSUCCESS ({mode}): normal command, normal event, custom commands, custom event, and middleware all passed")
+        print(f"\nSUCCESS ({mode}/{upstream_mode}): normal command, normal event, custom commands, custom event, and middleware all passed")
 
         # TTY-only: drop into a REPL where you can send live commands and
         # watch events as they print. Skip when run non-interactively so the

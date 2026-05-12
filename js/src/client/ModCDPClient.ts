@@ -817,6 +817,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
       ...(transport.endpoint_kind === "modcdp_server" && launched_cdp_url
         ? { server_loopback_cdp_url: launched_cdp_url }
         : {}),
+      ...launcher.getServerConfig(),
       ...transport.getServerConfig(),
     };
     if (this.server !== null && server_config.server_loopback_cdp_url) {

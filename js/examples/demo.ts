@@ -1,4 +1,5 @@
-// JS demo for ModCDPClient with --direct / --loopback / --debugger modes.
+// JS demo for ModCDPClient with --direct / --loopback / --debugger route modes
+// and --upstream=ws|pipe|reversews|nativemessaging|nats transport modes.
 //
 // Modes select where non-ModCDP commands ultimately get serviced:
 //   --live        use the running Google Chrome enabled via chrome://inspect.
@@ -12,7 +13,9 @@
 //                 tab. (*.* -> service_worker on client, *.* -> chrome_debugger
 //                 on server.)
 //
-// All three modes exercise the same surface: raw Browser.getVersion, raw
+//   --upstream    select the browser/upstream transport. Defaults to ws.
+//
+// Valid CI/local demo combinations exercise the same surface: raw Browser.getVersion, raw
 // Target.targetCreated event handling, Mod.evaluate, Custom.* commands,
 // Custom.* events, and response middleware.
 
@@ -43,8 +46,21 @@ const DEFAULT_TARGET_EVENT_TIMEOUT_MS = 10_000;
 const DEFAULT_FOREGROUND_EVENT_TIMEOUT_MS = 10_000;
 const DEFAULT_DEMO_EVENT_POLL_INTERVAL_MS = 20;
 
+const UPSTREAM_MODES = new Set(["ws", "pipe", "reversews", "nativemessaging", "nats"]);
+
 function parseArgs(argv) {
   const flags = new Set(argv.filter((a) => a.startsWith("--")).map((a) => a.slice(2)));
+  const upstream_arg = argv.find((a) => a === "--upstream" || a.startsWith("--upstream="));
+  const upstream_value =
+    upstream_arg === "--upstream"
+      ? argv[argv.indexOf(upstream_arg) + 1]
+      : upstream_arg?.startsWith("--upstream=")
+        ? upstream_arg.slice("--upstream=".length)
+        : [...UPSTREAM_MODES].find((mode) => flags.has(mode));
+  const upstream_mode = upstream_value || "ws";
+  if (!UPSTREAM_MODES.has(upstream_mode)) {
+    throw new Error(`unknown --upstream=${upstream_mode}; expected ${[...UPSTREAM_MODES].join("|")}`);
+  }
   const live = flags.has("live");
   const mode = flags.has("debugger")
     ? "debugger"
@@ -55,7 +71,20 @@ function parseArgs(argv) {
         : live
           ? "direct"
           : "loopback";
-  return { mode, live };
+  if (live && upstream_mode === "pipe") {
+    throw new Error(
+      "--live cannot be combined with --upstream=pipe because pipe handles only exist for launched browsers.",
+    );
+  }
+  if (
+    mode === "direct" &&
+    (upstream_mode === "reversews" || upstream_mode === "nativemessaging" || upstream_mode === "nats")
+  ) {
+    throw new Error(
+      `--direct cannot be combined with --upstream=${upstream_mode}; reverse transports terminate at ModCDPServer.`,
+    );
+  }
+  return { mode, live, upstream_mode };
 }
 
 function serverRoutesFor(mode) {
@@ -66,7 +95,7 @@ function serverRoutesFor(mode) {
   };
 }
 
-function clientOptionsFor(mode, cdp_url, launch_options = {}) {
+function clientOptionsFor(mode, upstream_mode, cdp_url, launch_options = {}) {
   const directNormalEventRoutes = {
     "Target.setDiscoverTargets": "direct_cdp",
     "Target.createTarget": "direct_cdp",
@@ -75,7 +104,7 @@ function clientOptionsFor(mode, cdp_url, launch_options = {}) {
   const launcher = cdp_url
     ? ({ launcher_mode: "remote" } as const)
     : ({ launcher_mode: "local", launcher_options: launch_options } as const);
-  const upstream = { upstream_mode: "ws" as const, upstream_cdp_url: cdp_url };
+  const upstream = { upstream_mode, upstream_cdp_url: cdp_url };
   const injector = {
     injector_mode: "auto" as const,
     injector_extension_path: EXTENSION_PATH,
@@ -110,7 +139,6 @@ function clientOptionsFor(mode, cdp_url, launch_options = {}) {
     },
     server: {
       server_routes: serverRoutesFor(mode),
-      ...(mode === "loopback" && cdp_url ? { server_loopback_cdp_url: cdp_url } : {}),
     },
   };
 }
@@ -191,8 +219,8 @@ async function waitForLiveCdpUrl() {
 }
 
 async function main() {
-  const { mode, live } = parseArgs(process.argv.slice(2));
-  console.log(`== mode: ${live ? "live/" : ""}${mode} ==`);
+  const { mode, live, upstream_mode } = parseArgs(process.argv.slice(2));
+  console.log(`== mode: ${live ? "live/" : ""}${mode}; upstream: ${upstream_mode} ==`);
   if (!existsSync(path.join(EXTENSION_PATH, "modcdp/service_worker.js"))) {
     throw new Error(`Built extension not found at ${EXTENSION_PATH}. Run pnpm run build first.`);
   }
@@ -209,7 +237,7 @@ async function main() {
     };
   }
 
-  const cdp = new ModCDPClient(clientOptionsFor(mode, cdp_url, launch_options));
+  const cdp = new ModCDPClient(clientOptionsFor(mode, upstream_mode, cdp_url, launch_options));
   const foregroundEvents = [];
   const targetCreatedEvents: TargetCreatedPayload[] = [];
 
@@ -228,7 +256,6 @@ async function main() {
       await cdp.Mod.configure({
         server: {
           server_routes: serverRoutesFor(mode),
-          ...(mode === "loopback" ? { server_loopback_cdp_url: cdp.cdp_url } : {}),
         },
       }),
       "Mod.configure",
@@ -492,7 +519,7 @@ async function main() {
     console.log("Custom.targetIdFromTabId ->", targetFromTab);
 
     console.log(
-      `\nSUCCESS (${mode}): normal command, normal event, custom commands, custom event, and middleware all passed`,
+      `\nSUCCESS (${mode}/${upstream_mode}): normal command, normal event, custom commands, custom event, and middleware all passed`,
     );
 
     // Drop into an interactive prompt when stdin is a TTY. Lets you poke at

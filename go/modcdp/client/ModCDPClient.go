@@ -419,6 +419,7 @@ type browserLauncherClient interface {
 	Update(LaunchOptions) *BrowserLauncher
 	GetInjectorConfig() ExtensionInjectorConfig
 	GetTransportConfig() map[string]any
+	GetServerConfig() map[string]any
 	Launch(LaunchOptions) (*LaunchedBrowser, error)
 }
 
@@ -785,6 +786,9 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 	serverConfig := map[string]any{}
 	if transportpkg.EndpointKindForUpstream(c.Upstream.UpstreamMode) == UpstreamEndpointKindModCDPServer && launchedCDPURL != "" {
 		serverConfig["server_loopback_cdp_url"] = launchedCDPURL
+	}
+	for key, value := range launcher.GetServerConfig() {
+		serverConfig[key] = value
 	}
 	for key, value := range transport.GetServerConfig() {
 		serverConfig[key] = value

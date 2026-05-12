@@ -82,6 +82,7 @@ func WebsocketURLFor(endpoint string) (string, error) {
 type LaunchedBrowser struct {
 	// CDPURL is the effective CDP endpoint for the selected transport; launchers resolve HTTP discovery endpoints to ws:// before returning when they can.
 	CDPURL                string   `json:"cdp_url,omitempty"`
+	LoopbackCDPURL        string   `json:"loopback_cdp_url,omitempty"`
 	Close                 func()   `json:"-"`
 	ProfileDir            string   `json:"profile_dir,omitempty"`
 	PipeRead              *os.File `json:"-"`
@@ -112,6 +113,13 @@ func (l BrowserLauncher) GetTransportConfig() map[string]any {
 		"pipe_read":     launchedPipeRead(l.Launched),
 		"pipe_write":    launchedPipeWrite(l.Launched),
 	}
+}
+
+func (l BrowserLauncher) GetServerConfig() map[string]any {
+	if l.Launched != nil && l.Launched.LoopbackCDPURL != "" {
+		return map[string]any{"server_loopback_cdp_url": l.Launched.LoopbackCDPURL}
+	}
+	return map[string]any{}
 }
 
 func (l BrowserLauncher) GetInjectorConfig() ExtensionInjectorConfig {

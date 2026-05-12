@@ -751,6 +751,7 @@ class ModCDPClient(CDPSurfaceMixin):
             else {}
         )
         transport_server_config = transport.getServerConfig()
+        server_config.update(launcher.getServerConfig())
         server_config.update(transport_server_config)
         if self.server is not None and server_config.get("server_loopback_cdp_url"):
             configured_loopback = self.server.get("server_loopback_cdp_url")

@@ -14,8 +14,8 @@ jobs:
       matrix:
         client: [js, python, go]
     env:
-      CHROME_PATH: /usr/bin/chromium
       CI: "true"
+      CHROME_PATH: /usr/bin/chromium
       GOFLAGS: -buildvcs=false
       BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
     steps:
@@ -59,18 +59,25 @@ jobs:
           esac
 
   client-demo:
-    name: ${{ matrix.client }} ${{ matrix.mode }}
+    name: ${{ matrix.client }} ${{ matrix.upstream }} ${{ matrix.mode }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         client: [js, python, go]
-        mode: [loopback, debugger, direct]
+        upstream: [ws, pipe, reversews, nativemessaging]
+        mode: [direct, loopback, debugger]
+        exclude:
+          - upstream: reversews
+            mode: direct
+          - upstream: nativemessaging
+            mode: direct
     env:
-      CHROME_PATH: /usr/bin/chromium
       CI: "true"
+      CHROME_PATH: /usr/bin/chromium
       GOFLAGS: -buildvcs=false
+      BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -95,15 +102,15 @@ jobs:
         run: |
           case "${{ matrix.client }}" in
             js)
-              node dist/js/examples/demo.js --${{ matrix.mode }}
+              node dist/js/examples/demo.js --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
               ;;
             python)
               cd python
-              uv run python examples/demo.py --${{ matrix.mode }}
+              uv run python examples/demo.py --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
               ;;
             go)
               cd go
-              go run ./examples/demo --${{ matrix.mode }}
+              go run ./examples/demo --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
               ;;
             *)
               echo "unknown client: ${{ matrix.client }}" >&2
@@ -124,8 +131,8 @@ jobs:
           - name: puppeteer proxy
             command: node dist/js/examples/puppeteer.js
     env:
-      CHROME_PATH: /usr/bin/chromium
       CI: "true"
+      CHROME_PATH: /usr/bin/chromium
       GOFLAGS: -buildvcs=false
     steps:
       - uses: actions/checkout@v4

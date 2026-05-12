@@ -5,6 +5,7 @@
 //   --direct     *.* -> direct_cdp on the client.
 //   --loopback   *.* -> service_worker on client; *.* -> loopback_cdp on server. Default.
 //   --debugger   *.* -> service_worker on client; *.* -> chrome_debugger on server.
+//   --upstream   ws|pipe|reversews|nativemessaging|nats. Defaults to ws.
 
 package main
 
@@ -26,7 +27,7 @@ import (
 	"golang.org/x/term"
 )
 
-func optionsFor(mode, cdpURL, extensionPath string, launchOptions modcdp.LaunchOptions) modcdp.Options {
+func optionsFor(mode, upstreamMode, cdpURL, extensionPath string, launchOptions modcdp.LaunchOptions) modcdp.Options {
 	directNormalEventRoutes := map[string]string{
 		"Target.setDiscoverTargets": "direct_cdp",
 		"Target.createTarget":       "direct_cdp",
@@ -41,7 +42,7 @@ func optionsFor(mode, cdpURL, extensionPath string, launchOptions modcdp.LaunchO
 	if mode == "direct" {
 		return modcdp.Options{
 			Launcher: modcdp.LauncherConfig{LauncherMode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], LauncherOptions: launchOptions},
-			Upstream: modcdp.UpstreamConfig{UpstreamMode: "ws", UpstreamCDPURL: cdpURL},
+			Upstream: modcdp.UpstreamConfig{UpstreamMode: upstreamMode, UpstreamCDPURL: cdpURL},
 			Injector: modcdp.InjectorConfig{InjectorMode: "auto", InjectorExtensionPath: extensionPath},
 			Client: modcdp.ClientConfig{ClientRoutes: routes(map[string]string{
 				"Mod.*":    "service_worker",
@@ -53,12 +54,9 @@ func optionsFor(mode, cdpURL, extensionPath string, launchOptions modcdp.LaunchO
 	server := &modcdp.ServerConfig{
 		ServerRoutes: serverRoutesFor(mode),
 	}
-	if mode == "loopback" && cdpURL != "" {
-		server.ServerLoopbackCDPURL = cdpURL
-	}
 	return modcdp.Options{
 		Launcher: modcdp.LauncherConfig{LauncherMode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], LauncherOptions: launchOptions},
-		Upstream: modcdp.UpstreamConfig{UpstreamMode: "ws", UpstreamCDPURL: cdpURL},
+		Upstream: modcdp.UpstreamConfig{UpstreamMode: upstreamMode, UpstreamCDPURL: cdpURL},
 		Injector: modcdp.InjectorConfig{InjectorMode: "auto", InjectorExtensionPath: extensionPath},
 		Client: modcdp.ClientConfig{ClientRoutes: routes(map[string]string{
 			"Mod.*":    "service_worker",
@@ -126,12 +124,28 @@ func waitForEvent(ch <-chan map[string]any, label string, predicate func(map[str
 	}
 }
 
-func main() {
+func parseArgs(argv []string) (string, string, bool, error) {
 	flags := map[string]bool{}
-	for _, a := range os.Args[1:] {
+	upstreamMode := "ws"
+	for index, a := range argv {
 		if strings.HasPrefix(a, "--") {
 			flags[strings.TrimPrefix(a, "--")] = true
 		}
+		if a == "--upstream" && index+1 < len(argv) {
+			upstreamMode = argv[index+1]
+		} else if strings.HasPrefix(a, "--upstream=") {
+			upstreamMode = strings.TrimPrefix(a, "--upstream=")
+		}
+	}
+	for _, mode := range []string{"ws", "pipe", "reversews", "nativemessaging", "nats"} {
+		if flags[mode] {
+			upstreamMode = mode
+		}
+	}
+	switch upstreamMode {
+	case "ws", "pipe", "reversews", "nativemessaging", "nats":
+	default:
+		return "", "", false, fmt.Errorf("unknown --upstream=%s; expected ws|pipe|reversews|nativemessaging|nats", upstreamMode)
 	}
 	live := flags["live"]
 	mode := "loopback"
@@ -144,7 +158,21 @@ func main() {
 	} else if live {
 		mode = "direct"
 	}
-	fmt.Printf("== mode: %s%s ==\n", map[bool]string{true: "live/", false: ""}[live], mode)
+	if live && upstreamMode == "pipe" {
+		return "", "", false, fmt.Errorf("--live cannot be combined with --upstream=pipe because pipe handles only exist for launched browsers")
+	}
+	if mode == "direct" && (upstreamMode == "reversews" || upstreamMode == "nativemessaging" || upstreamMode == "nats") {
+		return "", "", false, fmt.Errorf("--direct cannot be combined with --upstream=%s; reverse transports terminate at ModCDPServer", upstreamMode)
+	}
+	return mode, upstreamMode, live, nil
+}
+
+func main() {
+	mode, upstreamMode, live, err := parseArgs(os.Args[1:])
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("== mode: %s%s; upstream: %s ==\n", map[bool]string{true: "live/", false: ""}[live], mode, upstreamMode)
 
 	chromePath := os.Getenv("CHROME_PATH")
 	// Resolve repo root from this source file so the demo runs correctly from
@@ -174,7 +202,7 @@ func main() {
 		}
 	}
 
-	cdp := modcdp.New(optionsFor(mode, cdpURL, extensionPath, launchOptions))
+	cdp := modcdp.New(optionsFor(mode, upstreamMode, cdpURL, extensionPath, launchOptions))
 	var (
 		eventsMu            sync.Mutex
 		targetCreatedEvents []modcdp.TargetTargetCreatedEvent
@@ -198,9 +226,6 @@ func main() {
 	}
 
 	serverConfig := map[string]any{"server_routes": serverRoutesFor(mode)}
-	if mode == "loopback" {
-		serverConfig["server_loopback_cdp_url"] = cdp.CDPURL
-	}
 	configureParams := map[string]any{"server": serverConfig}
 	configureRaw, err := cdp.Mod.Configure(configureParams)
 	if err != nil {
@@ -497,7 +522,7 @@ func main() {
 	b, _ = json.Marshal(targetFromTab)
 	fmt.Println("Custom.targetIdFromTabId ->", string(b))
 
-	fmt.Printf("\nSUCCESS (%s): normal command, normal event, custom commands, custom event, and middleware all passed\n", mode)
+	fmt.Printf("\nSUCCESS (%s/%s): normal command, normal event, custom commands, custom event, and middleware all passed\n", mode, upstreamMode)
 
 	// TTY-only REPL. Lets you poke at the live browser interactively;
 	// subscribed events print as they arrive. Skip when stdin is not a tty

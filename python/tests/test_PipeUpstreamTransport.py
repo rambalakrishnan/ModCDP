@@ -15,7 +15,7 @@ class PipeUpstreamTransportTests(unittest.TestCase):
         self.assertEqual(transport.getLauncherConfig(), {"remote_debugging": "pipe"})
         self.assertIs(transport.update({"cdp_url": "pipe://1234"}), transport)
         self.assertEqual(transport.url, "pipe://1234")
-        with self.assertRaisesRegex(RuntimeError, r"upstream\.mode='pipe' requires"):
+        with self.assertRaisesRegex(RuntimeError, r"upstream\.upstream_mode=pipe requires"):
             transport.connect()
         with self.assertRaisesRegex(RuntimeError, "CDP pipe is not connected"):
             transport.send({"id": 1, "method": "Browser.getVersion"})

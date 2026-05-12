@@ -50,7 +50,7 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 	}
 	usePipe := options.RemoteDebugging == "pipe"
 	port := options.Port
-	if port == 0 && !usePipe {
+	if port == 0 {
 		port, err = l.FreePort()
 		if err != nil {
 			return nil, err
@@ -86,11 +86,11 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 		"--use-mock-keychain",
 		"--disable-gpu",
 		fmt.Sprintf("--user-data-dir=%s", profileDir),
+		"--remote-debugging-address=127.0.0.1",
+		fmt.Sprintf("--remote-debugging-port=%d", port),
 	}
 	if usePipe {
 		args = append(args, "--remote-debugging-pipe")
-	} else {
-		args = append(args, "--remote-debugging-address=127.0.0.1", fmt.Sprintf("--remote-debugging-port=%d", port))
 	}
 	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
 	if options.Headless != nil {
@@ -163,12 +163,18 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 			close()
 			return nil, err
 		}
+		loopbackCDPURL, err := waitForCdpWebSocketURL(fmt.Sprintf("http://127.0.0.1:%d", port), time.Duration(chromeReadyTimeoutMS)*time.Millisecond, time.Duration(chromeReadyPollIntervalMS)*time.Millisecond)
+		if err != nil {
+			close()
+			return nil, err
+		}
 		launched := &LaunchedBrowser{
-			CDPURL:     fmt.Sprintf("pipe://%d", cmd.Process.Pid),
-			Close:      close,
-			ProfileDir: profileDir,
-			PipeRead:   pipeRead,
-			PipeWrite:  pipeWrite,
+			CDPURL:         fmt.Sprintf("pipe://%d", cmd.Process.Pid),
+			LoopbackCDPURL: loopbackCDPURL,
+			Close:          close,
+			ProfileDir:     profileDir,
+			PipeRead:       pipeRead,
+			PipeWrite:      pipeWrite,
 		}
 		l.Launched = launched
 		return launched, nil
@@ -187,7 +193,7 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 					resolvedCDPURL = cdpURL
 				}
 				// CDPURL is resolved from the HTTP discovery endpoint before returning.
-				launched := &LaunchedBrowser{CDPURL: resolvedCDPURL, Close: close, ProfileDir: profileDir}
+				launched := &LaunchedBrowser{CDPURL: resolvedCDPURL, LoopbackCDPURL: resolvedCDPURL, Close: close, ProfileDir: profileDir}
 				l.Launched = launched
 				return launched, nil
 			}
@@ -226,6 +232,23 @@ func waitForPipeReady(pipeRead *os.File, pipeWrite *os.File, timeout time.Durati
 	case <-time.After(timeout):
 		return fmt.Errorf("Chrome remote-debugging pipe did not respond within %s", timeout)
 	}
+}
+
+func waitForCdpWebSocketURL(cdpURL string, timeout time.Duration, pollInterval time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		loopbackCDPURL, err := websocketURLFor(cdpURL)
+		if err == nil && loopbackCDPURL != "" {
+			return loopbackCDPURL, nil
+		}
+		lastErr = err
+		time.Sleep(pollInterval)
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("Chrome at %s did not expose a WebSocket CDP URL within %s: %w", cdpURL, timeout, lastErr)
+	}
+	return "", fmt.Errorf("Chrome at %s did not expose a WebSocket CDP URL within %s", cdpURL, timeout)
 }
 
 func WritePipeMessage(pipeWrite *os.File, message map[string]any) error {

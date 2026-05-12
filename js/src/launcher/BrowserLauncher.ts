@@ -1,4 +1,5 @@
 import type { ExtensionInjectorConfig } from "../injector/ExtensionInjector.js";
+import type { ModCDPServerOptions } from "../types/modcdp.js";
 import type { UpstreamTransportConfig } from "../transport/UpstreamTransport.js";
 
 export type BrowserLaunchOptions = {
@@ -32,6 +33,8 @@ export type LaunchedBrowser = {
   port?: number;
   // Effective CDP endpoint for the selected transport; launchers resolve HTTP discovery endpoints to ws:// before returning when they can.
   cdp_url: string | null;
+  // Extension-dialable loopback CDP endpoint when it differs from cdp_url, for example pipe:// primary transport.
+  loopback_cdp_url?: string | null;
   pipe_read?: NodeJS.ReadableStream | null;
   pipe_write?: NodeJS.WritableStream | null;
   profile_dir?: string | null;
@@ -95,6 +98,10 @@ export class BrowserLauncher {
       pipe_read: this.launched?.pipe_read ?? null,
       pipe_write: this.launched?.pipe_write ?? null,
     };
+  }
+
+  getServerConfig(): Partial<ModCDPServerOptions> {
+    return this.launched?.loopback_cdp_url ? { server_loopback_cdp_url: this.launched.loopback_cdp_url } : {};
   }
 
   getInjectorConfig(): ExtensionInjectorConfig {
