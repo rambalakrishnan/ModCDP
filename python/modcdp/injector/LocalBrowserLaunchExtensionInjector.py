@@ -41,7 +41,6 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
         return {"extra_args": [f"--load-extension={self.unpacked_extension_path}"]}
 
     def inject(self) -> ExtensionInjectionResult | None:
-        self._wakeConfiguredExtension()
         timeout_ms = self.options.get("injector_service_worker_probe_timeout_ms") or DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS
         discovered = self._waitForReadyServiceWorker(
             timeout_ms,

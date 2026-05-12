@@ -51,7 +51,6 @@ func (i *LocalBrowserLaunchExtensionInjector) GetLauncherConfig() LaunchOptions 
 }
 
 func (i *LocalBrowserLaunchExtensionInjector) Inject() (*ExtensionInjectionResult, error) {
-	i.wakeConfiguredExtension()
 	timeoutMS := i.Options.InjectorServiceWorkerProbeTimeoutMS
 	discovered, err := i.waitForReadyServiceWorker(timeoutMS, i.Options.InjectorTrustServiceWorkerTarget)
 	if err != nil || discovered == nil {
