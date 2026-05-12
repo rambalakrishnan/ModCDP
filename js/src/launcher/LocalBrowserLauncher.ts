@@ -274,12 +274,11 @@ export class LocalBrowserLauncher extends BrowserLauncher {
     const useLoopbackCdp = !usePipe || loopback_cdp || port != null;
     const usePort = useLoopbackCdp ? port || (await LocalBrowserLauncher.freePort()) : null;
     const profile_dir = user_data_dir || (await mkdtemp(path.join(tmpdir(), "modcdp.")));
-    const needsNoSandbox = headless && process.platform === "linux" && !process.env.DISPLAY && sandbox !== true;
     const flags = [
       ...DEFAULT_FLAGS,
       headless ? "--headless=new" : null,
       "--disable-gpu",
-      needsNoSandbox ? "--no-sandbox" : null,
+      sandbox === false ? "--no-sandbox" : null,
       `--user-data-dir=${profile_dir}`,
       useLoopbackCdp ? "--remote-debugging-address=127.0.0.1" : null,
       useLoopbackCdp ? `--remote-debugging-port=${usePort}` : null,

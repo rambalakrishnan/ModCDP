@@ -59,6 +59,9 @@ describe("LocalBrowserLauncher", () => {
             "--window-size=900,700",
           ]),
         );
+        if (process.platform === "linux") {
+          expect((chrome.proc as { spawnargs?: string[] }).spawnargs ?? []).toContain("--no-sandbox");
+        }
         await expect(stat(userDataDir)).resolves.toBeTruthy();
         cdp = await CdpSocket.connect(chrome.cdp_url!);
         await expectCdpBrowserSurface(cdp);

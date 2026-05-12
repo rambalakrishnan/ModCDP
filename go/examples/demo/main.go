@@ -192,10 +192,9 @@ func main() {
 		}
 	} else {
 		headless := false
-		sandbox := true
+		sandbox := runtime.GOOS != "linux"
 		if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
 			headless = true
-			sandbox = false
 		}
 		launchOptions = modcdp.LaunchOptions{
 			ExecutablePath: chromePath,
