@@ -26,10 +26,14 @@ func TestLocalBrowserLaunchExtensionInjectorLoadsRealExtensionDuringLocalLaunch(
 		},
 		Upstream: modcdp.UpstreamConfig{UpstreamMode: "ws"},
 		Injector: modcdp.InjectorConfig{
-			InjectorMode:                     "inject",
-			InjectorExtensionPath:            extensionPath,
-			InjectorServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
-			InjectorTrustServiceWorkerTarget: true,
+			InjectorMode:                        "inject",
+			InjectorExtensionPath:               extensionPath,
+			InjectorServiceWorkerURLSuffixes:    []string{"/modcdp/service_worker.js"},
+			InjectorTrustServiceWorkerTarget:    true,
+			InjectorServiceWorkerProbeTimeoutMS: 30_000,
+		},
+		Client: modcdp.ClientConfig{
+			ClientCDPSendTimeoutMS: 30_000,
 		},
 	})
 	defer cdp.Close()

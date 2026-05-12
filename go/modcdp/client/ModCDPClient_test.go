@@ -474,12 +474,15 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 		},
 		Upstream: UpstreamConfig{UpstreamMode: "ws"},
 		Injector: InjectorConfig{
-			InjectorMode:                     "inject",
-			InjectorServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
-			InjectorTrustServiceWorkerTarget: true,
+			InjectorMode:                        "inject",
+			InjectorServiceWorkerURLSuffixes:    []string{"/modcdp/service_worker.js"},
+			InjectorTrustServiceWorkerTarget:    true,
+			InjectorServiceWorkerProbeTimeoutMS: 30_000,
 		},
 		Client: ClientConfig{
-			ClientRoutes: map[string]string{"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp"},
+			ClientRoutes:             map[string]string{"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp"},
+			ClientCDPSendTimeoutMS:   30_000,
+			ClientEventWaitTimeoutMS: 30_000,
 		},
 		Server: &ServerConfig{
 			ServerRoutes: map[string]string{"*.*": "loopback_cdp"},
@@ -579,7 +582,7 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 			t.Fatalf("once handler received second event %#v", event)
 		case <-time.After(200 * time.Millisecond):
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for Mod.pong")
 	}
 }

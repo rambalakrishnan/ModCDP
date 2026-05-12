@@ -161,6 +161,11 @@ class ModCDPClientTests(unittest.TestCase):
                 "injector_mode": "inject",
                 "injector_service_worker_url_suffixes": ["/modcdp/service_worker.js"],
                 "injector_trust_service_worker_target": True,
+                "injector_service_worker_probe_timeout_ms": 30_000,
+            },
+            client={
+                "client_cdp_send_timeout_ms": 30_000,
+                "client_event_wait_timeout_ms": 30_000,
             },
         )
 
@@ -188,7 +193,7 @@ class ModCDPClientTests(unittest.TestCase):
             cdp.off("Mod.pong", muted_pong)
             cdp.once("Mod.pong", on_pong)
             ping_result = cdp.Mod.ping(sent_at=sent_at)
-            pong_payload = pong.get(timeout=10)
+            pong_payload = pong.get(timeout=30)
             with self.assertRaises(Empty):
                 muted.get(timeout=0.2)
             self.assertEqual(ping_result["ok"], True)

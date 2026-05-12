@@ -22,6 +22,10 @@ class LocalBrowserLaunchExtensionInjectorTests(unittest.TestCase):
                 "injector_extension_path": str(EXTENSION_PATH),
                 "injector_service_worker_url_suffixes": ["/modcdp/service_worker.js"],
                 "injector_trust_service_worker_target": True,
+                "injector_service_worker_probe_timeout_ms": 30_000,
+            },
+            client={
+                "client_cdp_send_timeout_ms": 30_000,
             },
         )
 

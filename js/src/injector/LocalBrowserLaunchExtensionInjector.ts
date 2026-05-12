@@ -49,7 +49,7 @@ export class LocalBrowserLaunchExtensionInjector extends ExtensionInjector {
 
   async inject() {
     await this.wakeConfiguredExtension();
-    const timeout_ms = Math.min(this.options.injector_service_worker_probe_timeout_ms ?? 10_000, 3_000);
+    const timeout_ms = this.options.injector_service_worker_probe_timeout_ms ?? 10_000;
     const discovered = await this.waitForReadyServiceWorker(timeout_ms, {
       matched_only: this.options.injector_trust_service_worker_target,
     });

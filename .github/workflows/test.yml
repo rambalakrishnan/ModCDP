@@ -42,7 +42,7 @@ jobs:
         run: |
           case "${{ matrix.client }}" in
             js)
-              xvfb-run -a pnpm exec vitest run --fileParallelism=false
+              xvfb-run -a pnpm exec vitest run --fileParallelism=false --maxWorkers=1
               ;;
             python)
               cd python

@@ -42,7 +42,7 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
 
     def inject(self) -> ExtensionInjectionResult | None:
         self._wakeConfiguredExtension()
-        timeout_ms = min(self.options.get("injector_service_worker_probe_timeout_ms") or DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS, 3_000)
+        timeout_ms = self.options.get("injector_service_worker_probe_timeout_ms") or DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS
         discovered = self._waitForReadyServiceWorker(
             timeout_ms,
             matched_only=bool(self.options.get("injector_trust_service_worker_target")),
