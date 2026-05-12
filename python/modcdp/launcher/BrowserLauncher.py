@@ -15,6 +15,7 @@ class BrowserLaunchOptions(TypedDict, total=False):
     args: list[str]
     extra_args: list[str]
     remote_debugging: str
+    loopback_cdp: bool
     cleanup_user_data_dir: bool
     chrome_ready_timeout_ms: int
     chrome_ready_poll_interval_ms: int

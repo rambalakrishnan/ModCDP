@@ -42,7 +42,8 @@ class LocalBrowserLauncher(BrowserLauncher):
         merged = cast(BrowserLaunchOptions, {**self.options, **dict(options or {})})
         executable_path = self.findChromeBinary(merged.get("executable_path"))
         use_pipe = merged.get("remote_debugging") == "pipe"
-        port = int(merged.get("port") or LocalBrowserLauncher.freePort())
+        use_loopback_cdp = (not use_pipe) or bool(merged.get("loopback_cdp")) or merged.get("port") is not None
+        port = int(merged.get("port") or LocalBrowserLauncher.freePort()) if use_loopback_cdp else None
         temp_profile_dir: tempfile.TemporaryDirectory[str] | None = None
         profile_dir = merged.get("user_data_dir")
         if not profile_dir:
@@ -66,8 +67,8 @@ class LocalBrowserLauncher(BrowserLauncher):
             "--use-mock-keychain",
             "--disable-gpu",
             f"--user-data-dir={profile_dir}",
-            "--remote-debugging-address=127.0.0.1",
-            f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1" if use_loopback_cdp else None,
+            f"--remote-debugging-port={port}" if use_loopback_cdp else None,
             "--remote-debugging-pipe" if use_pipe else None,
         ]
         args = [arg for arg in args if arg is not None]
@@ -91,19 +92,22 @@ class LocalBrowserLauncher(BrowserLauncher):
             pipe_write = os.fdopen(parent_write, "wb", buffering=0)
             try:
                 _wait_for_pipe_ready(pipe_read, pipe_write, int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS))
-                loopback_cdp_url = _wait_for_cdp_websocket_url(
-                    f"http://127.0.0.1:{port}",
-                    int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS),
-                    int(merged.get("chrome_ready_poll_interval_ms") or DEFAULT_CHROME_READY_POLL_INTERVAL_MS),
+                loopback_cdp_url = (
+                    _wait_for_cdp_websocket_url(
+                        f"http://127.0.0.1:{port}",
+                        int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS),
+                        int(merged.get("chrome_ready_poll_interval_ms") or DEFAULT_CHROME_READY_POLL_INTERVAL_MS),
+                    )
+                    if port is not None
+                    else None
                 )
             except Exception:
                 pipe_read.close()
                 pipe_write.close()
                 _close(process, temp_profile_dir, cleanup_profile_dir=cleanup_profile_dir)
                 raise
-            self.launched = {
+            launched: LaunchedBrowser = {
                 "cdp_url": f"pipe://{process.pid}",
-                "loopback_cdp_url": loopback_cdp_url,
                 "profile_dir": profile_dir,
                 "pipe_read": pipe_read,
                 "pipe_write": pipe_write,
@@ -115,6 +119,9 @@ class LocalBrowserLauncher(BrowserLauncher):
                     cleanup_profile_dir=cleanup_profile_dir,
                 ),
             }
+            if loopback_cdp_url:
+                launched["loopback_cdp_url"] = loopback_cdp_url
+            self.launched = launched
             return self.launched
 
         process = subprocess.Popen(

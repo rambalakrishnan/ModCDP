@@ -6,6 +6,8 @@ import (
 	"fmt"
 	modcdp "github.com/pirate/ModCDP/go/modcdp/client"
 	. "github.com/pirate/ModCDP/go/modcdp/transport"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -197,11 +199,13 @@ func waitForReversePeerDisconnect(t *testing.T, transport *ReverseWebSocketUpstr
 
 func TestReverseWebSocketUpstreamTransportAcceptsRealExtensionReverseConnectionAndRoutesCDPThroughLoopback(t *testing.T) {
 	reverseBind := "127.0.0.1:29292"
+	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
+	sandbox := runtime.GOOS != "linux"
 	cdp := modcdp.New(modcdp.Options{
 		Launcher: modcdp.LauncherConfig{LauncherMode: "local",
 			LauncherOptions: modcdp.LaunchOptions{
-				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
+				Headless: boolPtr(headless),
+				Sandbox:  boolPtr(sandbox),
 			},
 		},
 		Upstream: modcdp.UpstreamConfig{UpstreamMode: "reversews", UpstreamReverseWSBind: reverseBind},

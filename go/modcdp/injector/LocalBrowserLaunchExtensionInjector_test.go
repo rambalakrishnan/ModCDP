@@ -3,7 +3,9 @@ package injector_test
 import (
 	modcdp "github.com/pirate/ModCDP/go/modcdp/client"
 	. "github.com/pirate/ModCDP/go/modcdp/injector"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,11 +15,13 @@ func TestLocalBrowserLaunchExtensionInjectorLoadsRealExtensionDuringLocalLaunch(
 	if err != nil {
 		t.Fatal(err)
 	}
+	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
+	sandbox := runtime.GOOS != "linux"
 	cdp := modcdp.New(modcdp.Options{
 		Launcher: modcdp.LauncherConfig{LauncherMode: "local",
 			LauncherOptions: modcdp.LaunchOptions{
-				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
+				Headless: boolPtr(headless),
+				Sandbox:  boolPtr(sandbox),
 			},
 		},
 		Upstream: modcdp.UpstreamConfig{UpstreamMode: "ws"},

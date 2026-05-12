@@ -51,6 +51,7 @@ type NativeMessagingUpstreamTransport struct {
 	closeCh                                        chan struct{}
 	stateMu                                        sync.Mutex
 	closed                                         bool
+	generation                                     int64
 }
 
 type NativeMessagingUpstreamTransportOptions struct {
@@ -164,6 +165,12 @@ func (t *NativeMessagingUpstreamTransport) Send(message map[string]any) error {
 	defer t.writeMu.Unlock()
 	conn := t.Conn
 	if conn == nil {
+		if err := t.WaitForPeer(); err != nil {
+			return err
+		}
+		conn = t.Conn
+	}
+	if conn == nil {
 		return fmt.Errorf("no native messaging peer is connected for %s", t.UpstreamNativeMessagingHostName)
 	}
 	return writeLengthPrefixedJSON(conn, message)
@@ -184,6 +191,12 @@ func (t *NativeMessagingUpstreamTransport) WaitForPeer() error {
 	case <-time.After(time.Duration(t.WaitTimeoutMS) * time.Millisecond):
 		return fmt.Errorf("timed out waiting %dms for native messaging host %s", t.WaitTimeoutMS, t.UpstreamNativeMessagingHostName)
 	}
+}
+
+func (t *NativeMessagingUpstreamTransport) PeerGeneration() int64 {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	return t.generation
 }
 
 func (t *NativeMessagingUpstreamTransport) Close() error {
@@ -230,6 +243,9 @@ func (t *NativeMessagingUpstreamTransport) accept(conn net.Conn) {
 		_ = t.Conn.Close()
 	}
 	t.Conn = conn
+	t.stateMu.Lock()
+	t.generation++
+	t.stateMu.Unlock()
 	t.peerOnce.Do(func() { close(t.peerCh) })
 	for {
 		message, err := readLengthPrefixedJSON(conn)

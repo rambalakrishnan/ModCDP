@@ -28,57 +28,59 @@ import (
 )
 
 func optionsFor(mode, upstreamMode, cdpURL, extensionPath string, launchOptions modcdp.LaunchOptions) modcdp.Options {
-	directNormalEventRoutes := map[string]string{
-		"Target.setDiscoverTargets": "direct_cdp",
-		"Target.createTarget":       "direct_cdp",
-		"Target.activateTarget":     "direct_cdp",
-	}
-	routes := func(base map[string]string) map[string]string {
-		for k, v := range directNormalEventRoutes {
-			base[k] = v
-		}
-		return base
-	}
 	if mode == "direct" {
 		return modcdp.Options{
 			Launcher: modcdp.LauncherConfig{LauncherMode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], LauncherOptions: launchOptions},
 			Upstream: modcdp.UpstreamConfig{UpstreamMode: upstreamMode, UpstreamCDPURL: cdpURL},
 			Injector: modcdp.InjectorConfig{InjectorMode: "auto", InjectorExtensionPath: extensionPath},
-			Client: modcdp.ClientConfig{ClientRoutes: routes(map[string]string{
-				"Mod.*":    "service_worker",
-				"Custom.*": "service_worker",
-				"*.*":      "direct_cdp",
-			})},
+			Client:   modcdp.ClientConfig{ClientRoutes: clientRoutesFor(mode)},
 		}
 	}
 	server := &modcdp.ServerConfig{
-		ServerRoutes: serverRoutesFor(mode),
+		ServerRoutes: serverRoutesFor(mode, upstreamMode),
 	}
 	return modcdp.Options{
 		Launcher: modcdp.LauncherConfig{LauncherMode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], LauncherOptions: launchOptions},
 		Upstream: modcdp.UpstreamConfig{UpstreamMode: upstreamMode, UpstreamCDPURL: cdpURL},
 		Injector: modcdp.InjectorConfig{InjectorMode: "auto", InjectorExtensionPath: extensionPath},
-		Client: modcdp.ClientConfig{ClientRoutes: routes(map[string]string{
-			"Mod.*":    "service_worker",
-			"Custom.*": "service_worker",
-			"*.*":      "service_worker",
-		})},
-		Server: server,
+		Client:   modcdp.ClientConfig{ClientRoutes: clientRoutesFor(mode)},
+		Server:   server,
 	}
 }
 
-func serverRoutesFor(mode string) map[string]string {
+func clientRoutesFor(mode string) map[string]string {
+	route := "service_worker"
+	if mode == "direct" {
+		route = "direct_cdp"
+	}
+	return map[string]string{
+		"Mod.*":                     "service_worker",
+		"Custom.*":                  "service_worker",
+		"*.*":                       route,
+		"Target.setDiscoverTargets": "direct_cdp",
+		"Target.createTarget":       "direct_cdp",
+		"Target.activateTarget":     "direct_cdp",
+	}
+}
+
+func serverRoutesFor(mode, upstreamMode string) map[string]string {
 	serverRoute := "auto"
 	if mode == "loopback" {
 		serverRoute = "loopback_cdp"
 	} else if mode == "debugger" {
 		serverRoute = "chrome_debugger"
 	}
-	return map[string]string{
+	routes := map[string]string{
 		"Mod.*":    "service_worker",
 		"Custom.*": "service_worker",
 		"*.*":      serverRoute,
 	}
+	if mode == "loopback" || upstreamMode == "reversews" || upstreamMode == "nativemessaging" || upstreamMode == "nats" {
+		routes["Target.setDiscoverTargets"] = "loopback_cdp"
+		routes["Target.createTarget"] = "loopback_cdp"
+		routes["Target.activateTarget"] = "loopback_cdp"
+	}
+	return routes
 }
 
 func mustMap(value any, label string) map[string]any {
@@ -191,7 +193,7 @@ func main() {
 	} else {
 		headless := false
 		sandbox := true
-		if runtime.GOOS == "linux" {
+		if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
 			headless = true
 			sandbox = false
 		}
@@ -225,15 +227,19 @@ func main() {
 		fmt.Println("connect timing    ->", string(b))
 	}
 
-	serverConfig := map[string]any{"server_routes": serverRoutesFor(mode)}
-	configureParams := map[string]any{"server": serverConfig}
+	serverConfig := map[string]any{"server_routes": serverRoutesFor(mode, upstreamMode)}
+	configureParams := map[string]any{
+		"upstream": map[string]any{"upstream_mode": upstreamMode},
+		"client":   map[string]any{"client_routes": clientRoutesFor(mode)},
+		"server":   serverConfig,
+	}
 	configureRaw, err := cdp.Mod.Configure(configureParams)
 	if err != nil {
 		log.Fatalf("Mod.configure: %v", err)
 	}
 	configure := mustMap(configureRaw, "Mod.configure")
 	configureRoutes := mustMap(configure["routes"], "Mod.configure.routes")
-	if configureRoutes["*.*"] != serverRoutesFor(mode)["*.*"] {
+	if configureRoutes["*.*"] != serverRoutesFor(mode, upstreamMode)["*.*"] {
 		log.Fatalf("unexpected Mod.configure result: %v", configure)
 	}
 	fmt.Println("Mod.configure    ->", configureRoutes)
@@ -301,7 +307,8 @@ func main() {
 		log.Fatalf("Mod.evaluate: %v", err)
 	} else {
 		modcdpEval, _ := r.(map[string]any)
-		if modcdpEval["extension_id"] != cdp.ExtensionID {
+		extensionID, _ := modcdpEval["extension_id"].(string)
+		if extensionID == "" || (cdp.ExtensionID != "" && extensionID != cdp.ExtensionID) {
 			log.Fatalf("unexpected Mod.evaluate result: %v", modcdpEval)
 		}
 		b, _ := json.Marshal(r)
@@ -429,12 +436,15 @@ func main() {
 		eventsMu.Unlock()
 	})
 	if _, err := cdp.Mod.Evaluate(map[string]any{
-		"expression": `chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+		"expression": `async () => {
+          chrome.tabs.onActivated.addListener(async ({ tabId }) => {
             const targets = await chrome.debugger.getTargets();
             const target = targets.find(target => target.type === "page" && target.tabId === tabId);
             const tab = await chrome.tabs.get(tabId).catch(() => null);
             await cdp.emit("Custom.foregroundTargetChanged", { tabId, targetId: target?.id ?? null, url: target?.url ?? tab?.url ?? null });
-          })`,
+          });
+          return true;
+        }`,
 	}); err != nil {
 		log.Fatal(err)
 	}

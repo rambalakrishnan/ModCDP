@@ -7,6 +7,7 @@ type LaunchOptions struct {
 	Headless                       *bool          `json:"headless,omitempty"`
 	Port                           int            `json:"port,omitempty"`
 	RemoteDebugging                string         `json:"remote_debugging,omitempty"`
+	LoopbackCDP                    *bool          `json:"loopback_cdp,omitempty"`
 	Sandbox                        *bool          `json:"sandbox,omitempty"`
 	UserDataDir                    string         `json:"user_data_dir,omitempty"`
 	CleanupUserDataDir             *bool          `json:"cleanup_user_data_dir,omitempty"`

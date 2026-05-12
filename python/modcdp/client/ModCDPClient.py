@@ -721,6 +721,7 @@ class ModCDPClient(CDPSurfaceMixin):
         for injector in injectors:
             transport.update(injector.getTransportConfig())
         launcher.update(cast(BrowserLaunchOptions, transport.getLauncherConfig()))
+        launcher.update({"loopback_cdp": self._server_needs_loopback_cdp()})
         transport.update(launcher.getTransportConfig())
 
         if transport.endpoint_kind == "modcdp_server":
@@ -747,7 +748,7 @@ class ModCDPClient(CDPSurfaceMixin):
             self.upstream["upstream_cdp_url"] = transport.url
         server_config = (
             {"server_loopback_cdp_url": launched_cdp_url}
-            if transport.endpoint_kind == "modcdp_server" and launched_cdp_url
+            if transport.endpoint_kind == "modcdp_server" and launched_cdp_url and not launched_cdp_url.startswith("pipe://")
             else {}
         )
         transport_server_config = transport.getServerConfig()
@@ -760,6 +761,11 @@ class ModCDPClient(CDPSurfaceMixin):
                 launched_cdp_url,
             ):
                 self.server = cast(ModCDPServerConfig, {**self.server, **server_config})
+
+    def _server_needs_loopback_cdp(self) -> bool:
+        if self.server is None or self.server.get("server_loopback_cdp_url"):
+            return False
+        return "loopback_cdp" in set((self.server.get("server_routes") or {}).values())
 
     def _upstream_transport_config(self) -> dict[str, Any]:
         return {

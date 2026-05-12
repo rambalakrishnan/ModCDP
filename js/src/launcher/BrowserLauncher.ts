@@ -11,6 +11,7 @@ export type BrowserLaunchOptions = {
   args?: string[];
   extra_args?: string[];
   remote_debugging?: "port" | "pipe";
+  loopback_cdp?: boolean;
   cleanup_user_data_dir?: boolean;
   chrome_ready_timeout_ms?: number;
   chrome_ready_poll_interval_ms?: number;

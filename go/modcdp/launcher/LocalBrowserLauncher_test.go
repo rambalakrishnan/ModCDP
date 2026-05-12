@@ -134,6 +134,9 @@ func TestLocalBrowserLauncherLaunchesRealBrowserOverRemoteDebuggingPipe(t *testi
 	if !strings.HasPrefix(chrome.CDPURL, "pipe://") {
 		t.Fatalf("CDPURL = %q", chrome.CDPURL)
 	}
+	if chrome.LoopbackCDPURL != "" {
+		t.Fatalf("LoopbackCDPURL = %q", chrome.LoopbackCDPURL)
+	}
 	if chrome.PipeRead == nil || chrome.PipeWrite == nil {
 		t.Fatal("expected pipe handles")
 	}
@@ -151,6 +154,48 @@ func TestLocalBrowserLauncherLaunchesRealBrowserOverRemoteDebuggingPipe(t *testi
 	product, _ := result["product"].(string)
 	if !strings.Contains(product, "Chrome") && !strings.Contains(product, "Chromium") {
 		t.Fatalf("product = %q", product)
+	}
+}
+
+func TestLocalBrowserLauncherLaunchesPipeBrowserWithAuxiliaryLoopbackOnlyWhenRequested(t *testing.T) {
+	headless := true
+	sandbox := false
+	loopbackCDP := true
+	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
+		Headless:             &headless,
+		Sandbox:              &sandbox,
+		ChromeReadyTimeoutMS: 45_000,
+	}).Launch(LaunchOptions{RemoteDebugging: "pipe", LoopbackCDP: &loopbackCDP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chrome.Close()
+	if !strings.HasPrefix(chrome.CDPURL, "pipe://") {
+		t.Fatalf("CDPURL = %q", chrome.CDPURL)
+	}
+	if !strings.HasPrefix(chrome.LoopbackCDPURL, "ws://127.0.0.1:") {
+		t.Fatalf("LoopbackCDPURL = %q", chrome.LoopbackCDPURL)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, _, _, err := ws.Dial(ctx, chrome.LoopbackCDPURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := wsutil.WriteClientText(conn, []byte(`{"id":1,"method":"Browser.getVersion","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	body, err := wsutil.ReadServerText(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["id"] != float64(1) {
+		t.Fatalf("response id = %v", response["id"])
 	}
 }
 

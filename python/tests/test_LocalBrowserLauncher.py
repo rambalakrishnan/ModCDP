@@ -75,12 +75,39 @@ class LocalBrowserLauncherTests(unittest.TestCase):
 
         try:
             self.assertRegex(chrome["cdp_url"] or "", r"^pipe://\d+$")
+            self.assertNotIn("loopback_cdp_url", chrome)
             pipe_write.write(json.dumps({"id": 10, "method": "Browser.getVersion", "params": {}}).encode() + b"\0")
             pipe_write.flush()
             response = _read_pipe_message(pipe_read)
             self.assertEqual(response["id"], 10)
             self.assertIn("Chrome", response["result"]["product"])
         finally:
+            chrome["close"]()
+
+    def test_launches_pipe_browser_with_auxiliary_loopback_only_when_requested(self) -> None:
+        chrome = LocalBrowserLauncher(
+            {
+                "headless": True,
+                "sandbox": False,
+                "remote_debugging": "pipe",
+                "loopback_cdp": True,
+                "chrome_ready_timeout_ms": 45_000,
+            }
+        ).launch()
+        loopback_cdp_url = chrome.get("loopback_cdp_url")
+        if not isinstance(loopback_cdp_url, str):
+            raise AssertionError("expected launcher to return loopback_cdp_url")
+        ws = create_connection(loopback_cdp_url, timeout=10)
+
+        try:
+            self.assertRegex(chrome["cdp_url"] or "", r"^pipe://\d+$")
+            self.assertRegex(loopback_cdp_url, r"^ws://127\.0\.0\.1:\d+/")
+            ws.send(json.dumps({"id": 1, "method": "Browser.getVersion", "params": {}}))
+            version = json.loads(ws.recv())
+            self.assertEqual(version["id"], 1)
+            self.assertIn("Chrome", version["result"]["product"])
+        finally:
+            ws.close()
             chrome["close"]()
 
 

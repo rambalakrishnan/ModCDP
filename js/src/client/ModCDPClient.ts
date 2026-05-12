@@ -796,6 +796,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     for (const injector of injectors) launcher.update(injector.getLauncherConfig());
     for (const injector of injectors) transport.update(injector.getTransportConfig());
     launcher.update(transport.getLauncherConfig());
+    launcher.update({ loopback_cdp: this._serverNeedsLoopbackCdp() });
     transport.update(launcher.getTransportConfig());
 
     if (transport.endpoint_kind === "modcdp_server") await transport.connect();
@@ -814,7 +815,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
     // For ws mode, cdp_url has been resolved to the concrete WebSocket CDP endpoint after connect().
     if (transport.mode === "ws" && transport.url) this.upstream.upstream_cdp_url = transport.url;
     const server_config = {
-      ...(transport.endpoint_kind === "modcdp_server" && launched_cdp_url
+      ...(transport.endpoint_kind === "modcdp_server" && launched_cdp_url && !launched_cdp_url.startsWith("pipe://")
         ? { server_loopback_cdp_url: launched_cdp_url }
         : {}),
       ...launcher.getServerConfig(),
@@ -863,6 +864,11 @@ export class ModCDPClient extends ModCDPEventEmitter {
       ...(this.launcher.launcher_executable_path ? { executable_path: this.launcher.launcher_executable_path } : {}),
       ...(this.launcher.launcher_user_data_dir ? { user_data_dir: this.launcher.launcher_user_data_dir } : {}),
     };
+  }
+
+  _serverNeedsLoopbackCdp() {
+    if (!this.server || this.server.server_loopback_cdp_url) return false;
+    return Object.values(this.server.server_routes ?? {}).includes("loopback_cdp");
   }
 
   _upstreamTransportConfig() {

@@ -87,20 +87,35 @@ function parseArgs(argv) {
   return { mode, live, upstream_mode };
 }
 
-function serverRoutesFor(mode) {
-  return {
+function serverRoutesFor(mode, upstream_mode) {
+  const routes = {
     "Mod.*": "service_worker",
     "Custom.*": "service_worker",
     "*.*": mode === "loopback" ? "loopback_cdp" : mode === "debugger" ? "chrome_debugger" : "auto",
   };
+  if (mode === "loopback" || ["reversews", "nativemessaging", "nats"].includes(upstream_mode)) {
+    routes["Target.setDiscoverTargets"] = "loopback_cdp";
+    routes["Target.createTarget"] = "loopback_cdp";
+    routes["Target.activateTarget"] = "loopback_cdp";
+  }
+  return routes;
 }
 
-function clientOptionsFor(mode, upstream_mode, cdp_url, launch_options = {}) {
+function clientRoutesFor(mode) {
   const directNormalEventRoutes = {
     "Target.setDiscoverTargets": "direct_cdp",
     "Target.createTarget": "direct_cdp",
     "Target.activateTarget": "direct_cdp",
   };
+  return {
+    "Mod.*": "service_worker",
+    "Custom.*": "service_worker",
+    "*.*": mode === "direct" ? "direct_cdp" : "service_worker",
+    ...directNormalEventRoutes,
+  };
+}
+
+function clientOptionsFor(mode, upstream_mode, cdp_url, launch_options = {}) {
   const launcher = cdp_url
     ? ({ launcher_mode: "remote" } as const)
     : ({ launcher_mode: "local", launcher_options: launch_options } as const);
@@ -116,12 +131,7 @@ function clientOptionsFor(mode, upstream_mode, cdp_url, launch_options = {}) {
       upstream,
       injector,
       client: {
-        client_routes: {
-          "Mod.*": "service_worker",
-          "Custom.*": "service_worker",
-          "*.*": "direct_cdp",
-          ...directNormalEventRoutes,
-        },
+        client_routes: clientRoutesFor(mode),
       },
     };
   }
@@ -130,15 +140,10 @@ function clientOptionsFor(mode, upstream_mode, cdp_url, launch_options = {}) {
     upstream,
     injector,
     client: {
-      client_routes: {
-        "Mod.*": "service_worker",
-        "Custom.*": "service_worker",
-        "*.*": "service_worker",
-        ...directNormalEventRoutes,
-      },
+      client_routes: clientRoutesFor(mode),
     },
     server: {
-      server_routes: serverRoutesFor(mode),
+      server_routes: serverRoutesFor(mode, upstream_mode),
     },
   };
 }
@@ -232,7 +237,7 @@ async function main() {
   } else {
     cdp_url = null;
     launch_options = {
-      headless: process.platform === "linux",
+      headless: process.platform === "linux" && !process.env.DISPLAY,
       sandbox: process.platform !== "linux",
     };
   }
@@ -254,13 +259,19 @@ async function main() {
 
     const configureResult = assertObject(
       await cdp.Mod.configure({
+        upstream: {
+          upstream_mode,
+        },
+        client: {
+          client_routes: clientRoutesFor(mode),
+        },
         server: {
-          server_routes: serverRoutesFor(mode),
+          server_routes: serverRoutesFor(mode, upstream_mode),
         },
       }),
       "Mod.configure",
     );
-    if (configureResult.routes?.["*.*"] !== serverRoutesFor(mode)["*.*"]) {
+    if (configureResult.routes?.["*.*"] !== serverRoutesFor(mode, upstream_mode)["*.*"]) {
       throw new Error(`unexpected Mod.configure result ${JSON.stringify(configureResult)}`);
     }
     console.log("Mod.configure    ->", configureResult.routes);
@@ -315,7 +326,10 @@ async function main() {
     })) as {
       extension_id?: string;
     };
-    if (modcdpEval.extension_id !== cdp.extension_id)
+    if (
+      typeof modcdpEval.extension_id !== "string" ||
+      (cdp.extension_id && modcdpEval.extension_id !== cdp.extension_id)
+    )
       throw new Error(`unexpected Mod.evaluate result ${JSON.stringify(modcdpEval)}`);
     console.log("Mod.evaluate     ->", modcdpEval);
 
@@ -465,12 +479,15 @@ async function main() {
       foregroundEvents.push(event);
     });
     await cdp.Mod.evaluate({
-      expression: `chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+      expression: `async () => {
+        chrome.tabs.onActivated.addListener(async ({ tabId }) => {
           const targets = await chrome.debugger.getTargets();
           const target = targets.find(target => target.type === "page" && target.tabId === tabId);
           const tab = await chrome.tabs.get(tabId).catch(() => null);
           await cdp.emit("Custom.foregroundTargetChanged", { tabId, targetId: target?.id ?? null, url: target?.url ?? tab?.url ?? null });
-        })`,
+        });
+        return true;
+      }`,
     });
 
     await cdp.Target.setDiscoverTargets({ discover: true });
@@ -493,7 +510,13 @@ async function main() {
     const tabFromTarget = await cdp.send("Custom.TabIdFromTargetId", {
       targetId: createdTarget.targetId,
     });
-    if (typeof tabFromTarget !== "number")
+    const tabFromTargetId =
+      typeof tabFromTarget === "number"
+        ? tabFromTarget
+        : tabFromTarget && typeof tabFromTarget === "object"
+          ? (tabFromTarget as { tabId?: unknown }).tabId
+          : null;
+    if (typeof tabFromTargetId !== "number")
       throw new Error(`unexpected Custom.TabIdFromTargetId result ${JSON.stringify(tabFromTarget)}`);
     console.log("Custom.TabIdFromTargetId ->", tabFromTarget);
 
@@ -507,7 +530,7 @@ async function main() {
     }
     const foreground = foregroundEvents.find((event) => event.targetId === createdTarget.targetId);
     if (!foreground) throw new Error(`expected Custom.foregroundTargetChanged for ${createdTarget.targetId}`);
-    if (foreground.tabId !== tabFromTarget)
+    if (foreground.tabId !== tabFromTargetId)
       throw new Error(`unexpected Custom.foregroundTargetChanged result ${JSON.stringify(foreground)}`);
 
     const targetFromTab = await cdp.send("Custom.targetIdFromTabId", {

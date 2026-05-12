@@ -1168,7 +1168,12 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
       const event = registryMatch(eventBindings, eventName);
       if (!event) return { event: eventName, emitted: false, reason: "event_not_registered" };
       const customBinding = globalScope[CUSTOM_EVENT_BINDING_NAME];
-      if (typeof customBinding !== "function" && reverseBridgeSocket?.readyState !== WebSocket.OPEN)
+      if (
+        typeof customBinding !== "function" &&
+        reverseBridgeSocket?.readyState !== WebSocket.OPEN &&
+        !nativeBridgePort &&
+        nats_bridge_socket?.readyState !== WebSocket.OPEN
+      )
         return { event: eventName, emitted: false, reason: "binding_not_installed" };
       return publishEvent(eventName, payload, cdpSessionId);
     },

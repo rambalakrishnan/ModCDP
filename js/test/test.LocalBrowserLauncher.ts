@@ -88,6 +88,7 @@ describe("LocalBrowserLauncher", () => {
       try {
         expect(chrome.port).toBeUndefined();
         expect(chrome.cdp_url).toEqual(expect.stringMatching(/^pipe:\/\/\d+/));
+        expect(chrome.loopback_cdp_url).toBeUndefined();
         expect(chrome.pipe_read).toBeTruthy();
         expect(chrome.pipe_write).toBeTruthy();
         const pipeCdp = new PipeCdpSocket(chrome.pipe_read!, chrome.pipe_write!);
@@ -101,6 +102,32 @@ describe("LocalBrowserLauncher", () => {
         await expect(stat(profile_dir)).rejects.toMatchObject({
           code: "ENOENT",
         });
+      }
+    },
+  );
+
+  it(
+    "launches a pipe browser with an auxiliary loopback CDP endpoint only when requested",
+    { timeout: LIVE_BROWSER_TIMEOUT_MS },
+    async () => {
+      const chrome = await new LocalBrowserLauncher().launch({
+        headless: true,
+        sandbox: process.platform !== "linux",
+        remote_debugging: "pipe",
+        loopback_cdp: true,
+        chrome_ready_timeout_ms: 45_000,
+      });
+      let cdp: CdpSocket | null = null;
+
+      try {
+        expect(chrome.cdp_url).toEqual(expect.stringMatching(/^pipe:\/\/\d+/));
+        expect(chrome.port).toEqual(expect.any(Number));
+        expect(chrome.loopback_cdp_url).toEqual(expect.stringMatching(/^ws:\/\/127\.0\.0\.1:\d+\//));
+        cdp = await CdpSocket.connect(chrome.loopback_cdp_url!);
+        await expectCdpBrowserSurface(cdp);
+      } finally {
+        await cdp?.close();
+        await chrome.close();
       }
     },
   );

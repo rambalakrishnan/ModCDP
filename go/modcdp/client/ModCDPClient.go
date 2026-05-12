@@ -56,6 +56,10 @@ const DefaultServiceWorkerPollIntervalMS = 100
 const DefaultTargetSessionPollIntervalMS = 20
 const DefaultWSConnectErrorSettleTimeoutMS = 250
 
+func boolPointer(value bool) *bool {
+	return &value
+}
+
 type LaunchOptions = types.LaunchOptions
 type LaunchedBrowser = launcher.LaunchedBrowser
 type BrowserLauncher = launcher.BrowserLauncher
@@ -371,39 +375,40 @@ type ModCDPClient struct {
 	WebAuthn             WebAuthnDomain
 	Mod                  ModDomain
 
-	Launcher                LauncherConfig
-	Upstream                UpstreamConfig
-	Injector                InjectorConfig
-	Client                  ClientConfig
-	Server                  *ServerConfig
-	CustomCommands          []CustomCommand
-	CustomEvents            []CustomEvent
-	CustomMiddlewares       []CustomMiddleware
-	UpstreamEndpointKind    UpstreamEndpointKind
-	CDPURL                  string
-	transport               upstreamTransportClient
-	mu                      sync.Mutex
-	nextID                  int64
-	pending                 map[int64]chan map[string]any
-	handlers                map[string][]handlerEntry
-	cdpHandlers             map[string][]func(CDPEvent)
-	commandParamsSchemas    map[string]map[string]any
-	commandResultSchemas    map[string]map[string]any
-	commandResultUnwrapKeys map[string]string
-	event_schemas           map[string]map[string]any
-	schemaMu                sync.RWMutex
-	handlersMu              sync.Mutex
-	autoSessions            *AutoSessionRouter
-	ExtensionID             string
-	ExtTargetID             string
-	ExtSessionID            string
-	ExtExecutionContextID   int
-	Latency                 map[string]any
-	ConnectTiming           map[string]any
-	LastCommandTiming       map[string]any
-	LastRawTiming           map[string]any
-	launchedBrowser         *LaunchedBrowser
-	extensionInjectors      []extensionInjector
+	Launcher                 LauncherConfig
+	Upstream                 UpstreamConfig
+	Injector                 InjectorConfig
+	Client                   ClientConfig
+	Server                   *ServerConfig
+	CustomCommands           []CustomCommand
+	CustomEvents             []CustomEvent
+	CustomMiddlewares        []CustomMiddleware
+	UpstreamEndpointKind     UpstreamEndpointKind
+	CDPURL                   string
+	transport                upstreamTransportClient
+	mu                       sync.Mutex
+	nextID                   int64
+	pending                  map[int64]chan map[string]any
+	handlers                 map[string][]handlerEntry
+	cdpHandlers              map[string][]func(CDPEvent)
+	commandParamsSchemas     map[string]map[string]any
+	commandResultSchemas     map[string]map[string]any
+	commandResultUnwrapKeys  map[string]string
+	event_schemas            map[string]map[string]any
+	schemaMu                 sync.RWMutex
+	handlersMu               sync.Mutex
+	autoSessions             *AutoSessionRouter
+	ExtensionID              string
+	ExtTargetID              string
+	ExtSessionID             string
+	ExtExecutionContextID    int
+	Latency                  map[string]any
+	ConnectTiming            map[string]any
+	LastCommandTiming        map[string]any
+	LastRawTiming            map[string]any
+	launchedBrowser          *LaunchedBrowser
+	extensionInjectors       []extensionInjector
+	configuredPeerGeneration int64
 }
 
 type extensionInjector interface {
@@ -434,6 +439,7 @@ type upstreamTransportClient interface {
 	OnRecv(func(map[string]any)) func()
 	OnClose(func(error)) func()
 	WaitForPeer() error
+	PeerGeneration() int64
 }
 
 func New(opts Options) *ModCDPClient {
@@ -582,6 +588,7 @@ func (c *ModCDPClient) Connect() error {
 				c.Close()
 				return err
 			}
+			c.configuredPeerGeneration = c.transport.PeerGeneration()
 		}
 		go func() { _ = c.measurePingLatency() }()
 		connectedAt := time.Now().UnixMilli()
@@ -739,6 +746,7 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 		transport.Update(injector.GetTransportConfig())
 	}
 	launcher.Update(transport.GetLauncherConfig())
+	launcher.Update(LaunchOptions{LoopbackCDP: boolPointer(c.serverNeedsLoopbackCDP())})
 	transport.Update(launcher.GetTransportConfig())
 
 	if transportpkg.EndpointKindForUpstream(c.Upstream.UpstreamMode) == UpstreamEndpointKindModCDPServer {
@@ -784,7 +792,9 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 	}
 
 	serverConfig := map[string]any{}
-	if transportpkg.EndpointKindForUpstream(c.Upstream.UpstreamMode) == UpstreamEndpointKindModCDPServer && launchedCDPURL != "" {
+	if transportpkg.EndpointKindForUpstream(c.Upstream.UpstreamMode) == UpstreamEndpointKindModCDPServer &&
+		launchedCDPURL != "" &&
+		!strings.HasPrefix(launchedCDPURL, "pipe://") {
 		serverConfig["server_loopback_cdp_url"] = launchedCDPURL
 	}
 	for key, value := range launcher.GetServerConfig() {
@@ -803,6 +813,36 @@ func (c *ModCDPClient) connectUpstreamTransport() error {
 			}
 		}
 	}
+	return nil
+}
+
+func (c *ModCDPClient) serverNeedsLoopbackCDP() bool {
+	if c.Server == nil || c.Server.ServerLoopbackCDPURL != "" {
+		return false
+	}
+	for _, route := range c.Server.ServerRoutes {
+		if route == "loopback_cdp" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ModCDPClient) ensureModCDPServerConfigured() error {
+	if c.Server == nil || c.transport == nil {
+		return nil
+	}
+	if err := c.transport.WaitForPeer(); err != nil {
+		return err
+	}
+	peerGeneration := c.transport.PeerGeneration()
+	if peerGeneration == c.configuredPeerGeneration {
+		return nil
+	}
+	if _, err := c.sendMessage("Mod.configure", c.serverConfigureParams(nil, nil, nil), ""); err != nil {
+		return err
+	}
+	c.configuredPeerGeneration = peerGeneration
 	return nil
 }
 
@@ -1024,6 +1064,27 @@ func (c *ModCDPClient) registerCustomEventParams(params map[string]any) (string,
 			c.event_schemas[name] = schema
 		}
 	}
+	found := false
+	for index, event := range c.CustomEvents {
+		if event.Name == name {
+			found = true
+			if rawSchema, exists := params["event_schema"]; exists {
+				if schemaObject, ok := rawSchema.(map[string]any); ok {
+					c.CustomEvents[index].EventSchema = cloneSchema(schemaObject)
+				}
+			}
+			break
+		}
+	}
+	if !found {
+		event := CustomEvent{Name: name}
+		if rawSchema, exists := params["event_schema"]; exists {
+			if schemaObject, ok := rawSchema.(map[string]any); ok {
+				event.EventSchema = cloneSchema(schemaObject)
+			}
+		}
+		c.CustomEvents = append(c.CustomEvents, event)
+	}
 	return name, nil
 }
 
@@ -1163,7 +1224,7 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		if err != nil {
 			return nil, err
 		}
-		if c.ExtSessionID == "" {
+		if c.ExtSessionID == "" && transportpkg.EndpointKindForUpstream(c.Upstream.UpstreamMode) != UpstreamEndpointKindModCDPServer {
 			completedAt := time.Now().UnixMilli()
 			c.LastCommandTiming = map[string]any{
 				"method":       method,
@@ -1181,6 +1242,11 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		}
 	}
 	if transportpkg.EndpointKindForUpstream(c.Upstream.UpstreamMode) == UpstreamEndpointKindModCDPServer {
+		if method != "Mod.configure" {
+			if err := c.ensureModCDPServerConfigured(); err != nil {
+				return nil, err
+			}
+		}
 		rawResult, err := c.sendMessage(method, params, "")
 		var result any = rawResult
 		completedAt := time.Now().UnixMilli()
@@ -1193,6 +1259,9 @@ func (c *ModCDPClient) sendCommand(method string, params map[string]any, targetS
 		}
 		if err != nil {
 			return nil, err
+		}
+		if method == "Mod.configure" && c.transport != nil {
+			c.configuredPeerGeneration = c.transport.PeerGeneration()
 		}
 		if validateSchema {
 			var err error

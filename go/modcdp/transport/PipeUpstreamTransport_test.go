@@ -3,7 +3,9 @@ package transport_test
 import (
 	modcdp "github.com/pirate/ModCDP/go/modcdp/client"
 	. "github.com/pirate/ModCDP/go/modcdp/transport"
+	"os"
 	"regexp"
+	"runtime"
 	"testing"
 )
 
@@ -28,11 +30,13 @@ func TestPipeUpstreamTransportConstructorUpdateLauncherConfigAndUnconnectedError
 }
 
 func TestPipeUpstreamTransportLaunchesRealBrowserAndUsesPIDScopedPipeURL(t *testing.T) {
+	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
+	sandbox := runtime.GOOS != "linux"
 	cdp := modcdp.New(modcdp.Options{
 		Launcher: modcdp.LauncherConfig{LauncherMode: "local",
 			LauncherOptions: modcdp.LaunchOptions{
-				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
+				Headless: boolPtr(headless),
+				Sandbox:  boolPtr(sandbox),
 			},
 		},
 		Upstream: modcdp.UpstreamConfig{UpstreamMode: "pipe"},

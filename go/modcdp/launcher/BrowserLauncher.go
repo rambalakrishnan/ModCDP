@@ -145,6 +145,9 @@ func mergeLaunchOptions(existing LaunchOptions, incoming LaunchOptions) LaunchOp
 	if incoming.RemoteDebugging != "" {
 		merged.RemoteDebugging = incoming.RemoteDebugging
 	}
+	if incoming.LoopbackCDP != nil {
+		merged.LoopbackCDP = incoming.LoopbackCDP
+	}
 	if incoming.UserDataDir != "" {
 		merged.UserDataDir = incoming.UserDataDir
 	}

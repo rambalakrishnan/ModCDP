@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -462,11 +463,13 @@ func TestModCDPClientOnlyExposesInjectorAttachAfterCDPSendIsAvailable(t *testing
 }
 
 func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
+	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
+	sandbox := runtime.GOOS != "linux"
 	cdp := New(Options{
 		Launcher: LauncherConfig{LauncherMode: "local",
 			LauncherOptions: LaunchOptions{
-				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
+				Headless: boolPtr(headless),
+				Sandbox:  boolPtr(sandbox),
 			},
 		},
 		Upstream: UpstreamConfig{UpstreamMode: "ws"},

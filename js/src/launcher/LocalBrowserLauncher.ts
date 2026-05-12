@@ -264,13 +264,15 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       args = [],
       extra_args = [],
       remote_debugging = "port",
+      loopback_cdp = false,
       cleanup_user_data_dir = false,
       chrome_ready_timeout_ms = DEFAULT_CHROME_READY_TIMEOUT_MS,
       chrome_ready_poll_interval_ms = DEFAULT_CHROME_READY_POLL_INTERVAL_MS,
     } = { ...this.options, ...options };
     const exe = LocalBrowserLauncher.findChromeBinary(executable_path);
     const usePipe = remote_debugging === "pipe";
-    const usePort = port || (await LocalBrowserLauncher.freePort());
+    const useLoopbackCdp = !usePipe || loopback_cdp || port != null;
+    const usePort = useLoopbackCdp ? port || (await LocalBrowserLauncher.freePort()) : null;
     const profile_dir = user_data_dir || (await mkdtemp(path.join(tmpdir(), "modcdp.")));
     const needsNoSandbox = headless && process.platform === "linux" && !process.env.DISPLAY && sandbox !== true;
     const flags = [
@@ -279,8 +281,8 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       "--disable-gpu",
       needsNoSandbox ? "--no-sandbox" : null,
       `--user-data-dir=${profile_dir}`,
-      "--remote-debugging-address=127.0.0.1",
-      `--remote-debugging-port=${usePort}`,
+      useLoopbackCdp ? "--remote-debugging-address=127.0.0.1" : null,
+      useLoopbackCdp ? `--remote-debugging-port=${usePort}` : null,
       usePipe ? "--remote-debugging-pipe" : null,
       ...args,
       ...extra_args,
@@ -320,16 +322,19 @@ export class LocalBrowserLauncher extends BrowserLauncher {
         throw spawnError;
       }
       await waitForPipeReady(pipe_read, pipe_write, chrome_ready_timeout_ms);
-      const loopback_cdp_url = await waitForCdpWebSocketUrl(
-        `http://127.0.0.1:${usePort}`,
-        chrome_ready_timeout_ms,
-        chrome_ready_poll_interval_ms,
-      );
+      const loopback_cdp_url =
+        usePort == null
+          ? null
+          : await waitForCdpWebSocketUrl(
+              `http://127.0.0.1:${usePort}`,
+              chrome_ready_timeout_ms,
+              chrome_ready_poll_interval_ms,
+            );
       this.launched = {
         proc,
-        port: usePort,
+        ...(usePort == null ? {} : { port: usePort }),
         cdp_url: `pipe://${proc.pid}`,
-        loopback_cdp_url,
+        ...(loopback_cdp_url == null ? {} : { loopback_cdp_url }),
         pipe_read,
         pipe_write,
         profile_dir,
@@ -338,7 +343,8 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       return this.launched;
     }
 
-    const cdp_url = `http://127.0.0.1:${usePort}`;
+    const cdp_port = usePort as number;
+    const cdp_url = `http://127.0.0.1:${cdp_port}`;
     const deadline = Date.now() + chrome_ready_timeout_ms;
     while (Date.now() < deadline) {
       if (spawnError) {
@@ -356,7 +362,7 @@ export class LocalBrowserLauncher extends BrowserLauncher {
           // cdp_url is resolved from the HTTP discovery endpoint before returning.
           this.launched = {
             proc,
-            port: usePort,
+            port: cdp_port,
             cdp_url: version.webSocketDebuggerUrl ?? cdp_url,
             loopback_cdp_url: version.webSocketDebuggerUrl ?? cdp_url,
             profile_dir,

@@ -41,12 +41,28 @@ def expect_object(value: object, label: str) -> ProtocolPayload:
     return cast(ProtocolPayload, value)
 
 
-def server_routes_for(mode: str) -> ProtocolPayload:
+def server_routes_for(mode: str, upstream_mode: str) -> ProtocolPayload:
     route = "loopback_cdp" if mode == "loopback" else "chrome_debugger" if mode == "debugger" else "auto"
     routes: ProtocolPayload = {
         "Mod.*": "service_worker",
         "Custom.*": "service_worker",
         "*.*": route,
+    }
+    if mode == "loopback" or upstream_mode in {"reversews", "nativemessaging", "nats"}:
+        routes["Target.setDiscoverTargets"] = "loopback_cdp"
+        routes["Target.createTarget"] = "loopback_cdp"
+        routes["Target.activateTarget"] = "loopback_cdp"
+    return routes
+
+
+def client_routes_for(mode: str) -> ProtocolPayload:
+    routes: ProtocolPayload = {
+        "Mod.*": "service_worker",
+        "Custom.*": "service_worker",
+        "*.*": "direct_cdp" if mode == "direct" else "service_worker",
+        "Target.setDiscoverTargets": "direct_cdp",
+        "Target.createTarget": "direct_cdp",
+        "Target.activateTarget": "direct_cdp",
     }
     return routes
 
@@ -81,26 +97,21 @@ def parse_args(argv):
 
 
 def client_options_for(mode, upstream_mode, cdp_url, launch_options=None):
-    direct_normal_event_routes = {
-        "Target.setDiscoverTargets": "direct_cdp",
-        "Target.createTarget": "direct_cdp",
-        "Target.activateTarget": "direct_cdp",
-    }
     if mode == "direct":
         return {
             "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
             "upstream": {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url},
             "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
-            "client": {"client_routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "direct_cdp", **direct_normal_event_routes}},
+            "client": {"client_routes": client_routes_for(mode)},
         }
     server = {
-        "server_routes": server_routes_for(mode),
+        "server_routes": server_routes_for(mode, upstream_mode),
     }
     return {
         "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
         "upstream": {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url},
         "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
-        "client": {"client_routes": {"Mod.*": "service_worker", "Custom.*": "service_worker", "*.*": "service_worker", **direct_normal_event_routes}},
+        "client": {"client_routes": client_routes_for(mode)},
         "server": server,
     }
 
@@ -136,7 +147,7 @@ def main():
         else:
             cdp_url = None
             launch_options: dict[str, object] = {
-                "headless": sys.platform.startswith("linux"),
+                "headless": sys.platform.startswith("linux") and not os.environ.get("DISPLAY"),
                 "sandbox": not sys.platform.startswith("linux"),
             }
             if os.environ.get("CHROME_PATH"):
@@ -164,10 +175,14 @@ def main():
         print(f"connected; ext {cdp.extension_id} session {cdp.ext_session_id}")
         print(f"connect timing    -> {cdp.connect_timing}")
 
-        server_config: ProtocolPayload = {"server_routes": server_routes_for(mode)}
-        configure_params: ProtocolPayload = {"server": server_config}
+        server_config: ProtocolPayload = {"server_routes": server_routes_for(mode, upstream_mode)}
+        configure_params: ProtocolPayload = {
+            "upstream": {"upstream_mode": upstream_mode},
+            "client": {"client_routes": client_routes_for(mode)},
+            "server": server_config,
+        }
         configure_result = expect_object(cdp.send("Mod.configure", configure_params), "Mod.configure")
-        if expect_object(configure_result.get("routes"), "Mod.configure.routes").get("*.*") != server_routes_for(mode)["*.*"]:
+        if expect_object(configure_result.get("routes"), "Mod.configure.routes").get("*.*") != server_routes_for(mode, upstream_mode)["*.*"]:
             raise RuntimeError(f"unexpected Mod.configure result {configure_result}")
         print(f"Mod.configure    -> {configure_result.get('routes')}")
 
@@ -220,7 +235,7 @@ def main():
             print(f"Browser.getVersion -> {version}")
 
         modcdp_eval = expect_object(cdp.send("Mod.evaluate", {"expression": "({ extension_id: chrome.runtime.id })"}), "Mod.evaluate")
-        if modcdp_eval.get("extension_id") != cdp.extension_id:
+        if not isinstance(modcdp_eval.get("extension_id"), str) or (cdp.extension_id and modcdp_eval.get("extension_id") != cdp.extension_id):
             raise RuntimeError(f"unexpected Mod.evaluate result {modcdp_eval}")
         print(f"Mod.evaluate     -> {modcdp_eval}")
 
@@ -310,12 +325,15 @@ def main():
         if foreground_event_registration.get("registered") is not True:
             raise RuntimeError(f"unexpected foreground event registration {foreground_event_registration}")
         cdp.on("Custom.foregroundTargetChanged", on_foreground_changed)
-        cdp.send("Mod.evaluate", {"expression": '''chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+        cdp.send("Mod.evaluate", {"expression": '''async () => {
+          chrome.tabs.onActivated.addListener(async ({ tabId }) => {
             const targets = await chrome.debugger.getTargets();
             const target = targets.find(target => target.type === "page" && target.tabId === tabId);
             const tab = await chrome.tabs.get(tabId).catch(() => null);
             await cdp.emit("Custom.foregroundTargetChanged", { tabId, targetId: target?.id ?? null, url: target?.url ?? tab?.url ?? null });
-          })'''})
+          });
+          return true;
+        }'''})
 
         cdp.send("Target.setDiscoverTargets", {"discover": True})
         created_target = expect_object(cdp.send("Target.createTarget", {"url": "https://example.com", "background": True}), "Target.createTarget")

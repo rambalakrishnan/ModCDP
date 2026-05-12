@@ -28,6 +28,7 @@ type ReverseWebSocketUpstreamTransport struct {
 	closeCh       chan struct{}
 	stateMu       sync.Mutex
 	PeerInfo      map[string]any
+	generation    int64
 }
 
 type ReverseWebSocketUpstreamTransportOptions struct {
@@ -100,6 +101,12 @@ func (t *ReverseWebSocketUpstreamTransport) Send(message map[string]any) error {
 	defer t.writeMu.Unlock()
 	conn := t.Conn
 	if conn == nil {
+		if err := t.WaitForPeer(); err != nil {
+			return err
+		}
+		conn = t.Conn
+	}
+	if conn == nil {
 		return fmt.Errorf("no reverse ModCDP extension peer is connected at %s", t.URL)
 	}
 	return wsutil.WriteServerText(conn, body)
@@ -124,6 +131,12 @@ func (t *ReverseWebSocketUpstreamTransport) WaitForPeer() error {
 	case <-time.After(time.Duration(t.WaitTimeoutMS) * time.Millisecond):
 		return fmt.Errorf("timed out waiting %dms for reverse ModCDP extension connection", t.WaitTimeoutMS)
 	}
+}
+
+func (t *ReverseWebSocketUpstreamTransport) PeerGeneration() int64 {
+	t.stateMu.Lock()
+	defer t.stateMu.Unlock()
+	return t.generation
 }
 
 func (t *ReverseWebSocketUpstreamTransport) Close() error {
@@ -186,6 +199,9 @@ func (t *ReverseWebSocketUpstreamTransport) accept(conn net.Conn) {
 	}
 	t.Conn = conn
 	t.PeerInfo = hello
+	t.stateMu.Lock()
+	t.generation++
+	t.stateMu.Unlock()
 	t.peerOnce.Do(func() { close(t.peerCh) })
 	for {
 		data, err := wsutil.ReadClientText(conn)

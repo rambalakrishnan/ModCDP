@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -202,11 +203,13 @@ func waitForNativePeerDisconnect(t *testing.T, transport *NativeMessagingUpstrea
 
 func TestNativeMessagingUpstreamTransportInstallsLaunchProfileManifestAndConnectsToRealExtension(t *testing.T) {
 	nativeHostName := "com.modcdp.bridge"
+	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
+	sandbox := runtime.GOOS != "linux"
 	cdp := modcdp.New(modcdp.Options{
 		Launcher: modcdp.LauncherConfig{LauncherMode: "local",
 			LauncherOptions: modcdp.LaunchOptions{
-				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
+				Headless: boolPtr(headless),
+				Sandbox:  boolPtr(sandbox),
 			},
 		},
 		Upstream: modcdp.UpstreamConfig{UpstreamMode: "nativemessaging", UpstreamNativeMessagingHostName: nativeHostName},

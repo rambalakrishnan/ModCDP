@@ -42,15 +42,15 @@ jobs:
         run: |
           case "${{ matrix.client }}" in
             js)
-              pnpm exec vitest run --fileParallelism=false
+              xvfb-run -a pnpm exec vitest run --fileParallelism=false
               ;;
             python)
               cd python
-              uv run python -m unittest discover -s tests
+              xvfb-run -a uv run python -m unittest discover -s tests
               ;;
             go)
               cd go
-              go test -count=1 -p 1 ./...
+              xvfb-run -a go test -count=1 -p 1 ./...
               ;;
             *)
               echo "unknown client: ${{ matrix.client }}" >&2
@@ -102,15 +102,15 @@ jobs:
         run: |
           case "${{ matrix.client }}" in
             js)
-              node dist/js/examples/demo.js --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
+              xvfb-run -a node dist/js/examples/demo.js --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
               ;;
             python)
               cd python
-              uv run python examples/demo.py --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
+              xvfb-run -a uv run python examples/demo.py --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
               ;;
             go)
               cd go
-              go run ./examples/demo --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
+              xvfb-run -a go run ./examples/demo --${{ matrix.mode }} --upstream=${{ matrix.upstream }}
               ;;
             *)
               echo "unknown client: ${{ matrix.client }}" >&2
@@ -143,4 +143,4 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
-      - run: ${{ matrix.command }}
+      - run: xvfb-run -a ${{ matrix.command }}

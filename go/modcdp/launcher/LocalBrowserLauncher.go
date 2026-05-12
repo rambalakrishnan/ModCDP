@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -49,8 +50,9 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 		chromeReadyPollIntervalMS = DefaultChromeReadyPollIntervalMS
 	}
 	usePipe := options.RemoteDebugging == "pipe"
+	useLoopbackCDP := !usePipe || options.Port != 0 || (options.LoopbackCDP != nil && *options.LoopbackCDP)
 	port := options.Port
-	if port == 0 {
+	if useLoopbackCDP && port == 0 {
 		port, err = l.FreePort()
 		if err != nil {
 			return nil, err
@@ -86,8 +88,9 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 		"--use-mock-keychain",
 		"--disable-gpu",
 		fmt.Sprintf("--user-data-dir=%s", profileDir),
-		"--remote-debugging-address=127.0.0.1",
-		fmt.Sprintf("--remote-debugging-port=%d", port),
+	}
+	if useLoopbackCDP {
+		args = append(args, "--remote-debugging-address=127.0.0.1", fmt.Sprintf("--remote-debugging-port=%d", port))
 	}
 	if usePipe {
 		args = append(args, "--remote-debugging-pipe")
@@ -106,6 +109,9 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 	args = append(args, options.ExtraArgs...)
 	args = append(args, "about:blank")
 	cmd := exec.Command(executablePath, args...)
+	if runtime.GOOS != "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 	var pipeRead *os.File
 	var pipeWrite *os.File
 	if usePipe {
@@ -151,11 +157,29 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 			_ = pipeWrite.Close()
 		}
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
+			if runtime.GOOS != "windows" {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			} else {
+				_ = cmd.Process.Kill()
+			}
+			done := make(chan struct{})
+			go func() {
+				_, _ = cmd.Process.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				if runtime.GOOS != "windows" {
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				} else {
+					_ = cmd.Process.Kill()
+				}
+				<-done
+			}
 		}
 		if cleanupProfileDir {
-			_ = os.RemoveAll(profileDir)
+			removeProfileDir(profileDir)
 		}
 	}
 	if usePipe {
@@ -163,10 +187,13 @@ func (l *LocalBrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, 
 			close()
 			return nil, err
 		}
-		loopbackCDPURL, err := waitForCdpWebSocketURL(fmt.Sprintf("http://127.0.0.1:%d", port), time.Duration(chromeReadyTimeoutMS)*time.Millisecond, time.Duration(chromeReadyPollIntervalMS)*time.Millisecond)
-		if err != nil {
-			close()
-			return nil, err
+		loopbackCDPURL := ""
+		if useLoopbackCDP {
+			loopbackCDPURL, err = waitForCdpWebSocketURL(fmt.Sprintf("http://127.0.0.1:%d", port), time.Duration(chromeReadyTimeoutMS)*time.Millisecond, time.Duration(chromeReadyPollIntervalMS)*time.Millisecond)
+			if err != nil {
+				close()
+				return nil, err
+			}
 		}
 		launched := &LaunchedBrowser{
 			CDPURL:         fmt.Sprintf("pipe://%d", cmd.Process.Pid),
@@ -249,6 +276,18 @@ func waitForCdpWebSocketURL(cdpURL string, timeout time.Duration, pollInterval t
 		return "", fmt.Errorf("Chrome at %s did not expose a WebSocket CDP URL within %s: %w", cdpURL, timeout, lastErr)
 	}
 	return "", fmt.Errorf("Chrome at %s did not expose a WebSocket CDP URL within %s", cdpURL, timeout)
+}
+
+func removeProfileDir(profileDir string) {
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := os.RemoveAll(profileDir); err == nil {
+			if _, statErr := os.Stat(profileDir); os.IsNotExist(statErr) {
+				return
+			}
+		}
+		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+	}
+	_ = os.RemoveAll(profileDir)
 }
 
 func WritePipeMessage(pipeWrite *os.File, message map[string]any) error {

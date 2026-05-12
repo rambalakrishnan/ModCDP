@@ -137,6 +137,10 @@ func (e *UpstreamTransport) WaitForPeer() error {
 	return nil
 }
 
+func (e *UpstreamTransport) PeerGeneration() int64 {
+	return 0
+}
+
 func EndpointKindForUpstream(mode string) UpstreamEndpointKind {
 	if mode == "ws" || mode == "pipe" {
 		return UpstreamEndpointKindRawCDP
