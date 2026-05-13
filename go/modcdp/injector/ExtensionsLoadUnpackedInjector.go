@@ -28,9 +28,6 @@ func (i *ExtensionsLoadUnpackedInjector) Prepare() error {
 	}
 	i.UnpackedExtensionPath = unpackedPath
 	i.CleanupPath = cleanupPath
-	if err := WriteModCDPExtensionRuntimeConfig(i.UnpackedExtensionPath, i.Options); err != nil {
-		return err
-	}
 	return nil
 }
 

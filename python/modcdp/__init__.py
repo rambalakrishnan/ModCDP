@@ -4,7 +4,7 @@ from .injector.BorrowedExtensionInjector import BorrowedExtensionInjector
 from .launcher.BrowserbaseBrowserLauncher import BrowserbaseBrowserLauncher
 from .launcher.BrowserLauncher import BrowserLauncher
 from .injector.DiscoveredExtensionInjector import DiscoveredExtensionInjector
-from .injector.ExtensionInjector import ExtensionInjector, defaultModCDPExtensionPath, writeModCDPExtensionRuntimeConfig
+from .injector.ExtensionInjector import ExtensionInjector, defaultModCDPExtensionPath
 from .injector.ExtensionsLoadUnpackedInjector import ExtensionsLoadUnpackedInjector
 from .injector.LocalBrowserLaunchExtensionInjector import LocalBrowserLaunchExtensionInjector
 from .launcher.LocalBrowserLauncher import LocalBrowserLauncher
@@ -28,7 +28,6 @@ __all__ = [
     "DiscoveredExtensionInjector",
     "ExtensionInjector",
     "defaultModCDPExtensionPath",
-    "writeModCDPExtensionRuntimeConfig",
     "ExtensionsLoadUnpackedInjector",
     "LocalBrowserLaunchExtensionInjector",
     "LocalBrowserLauncher",

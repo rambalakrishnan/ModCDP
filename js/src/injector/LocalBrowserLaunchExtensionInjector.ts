@@ -2,11 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { BrowserLaunchOptions } from "../launcher/BrowserLauncher.js";
-import {
-  defaultModCDPExtensionPath,
-  ExtensionInjector,
-  writeModCDPExtensionRuntimeConfig,
-} from "./ExtensionInjector.js";
+import { defaultModCDPExtensionPath, ExtensionInjector } from "./ExtensionInjector.js";
 
 function firstString(...values: unknown[]) {
   for (const value of values) {
@@ -30,7 +26,6 @@ export class LocalBrowserLaunchExtensionInjector extends ExtensionInjector {
       const unpacked_path = fs.mkdtempSync(path.join(os.tmpdir(), "modcdp-extension-"));
       fs.cpSync(extension_path, unpacked_path, { recursive: true });
       this.unpacked_extension_path = extensionRoot(unpacked_path);
-      writeModCDPExtensionRuntimeConfig(this.unpacked_extension_path, this.options);
       this.cleanup = async () => fs.rmSync(unpacked_path, { recursive: true, force: true });
       await this.resolveExtensionId();
       await super.prepare();
@@ -40,7 +35,6 @@ export class LocalBrowserLaunchExtensionInjector extends ExtensionInjector {
     const unpacked_path = fs.mkdtempSync(path.join(os.tmpdir(), "modcdp-extension-"));
     execFileSync("unzip", ["-q", extension_path, "-d", unpacked_path]);
     this.unpacked_extension_path = extensionRoot(unpacked_path);
-    writeModCDPExtensionRuntimeConfig(this.unpacked_extension_path, this.options);
     this.cleanup = async () => fs.rmSync(unpacked_path, { recursive: true, force: true });
     await this.resolveExtensionId();
     await super.prepare();

@@ -70,7 +70,6 @@ var NewReverseWebSocketUpstreamTransport = transport.NewReverseWebSocketUpstream
 var NewNativeMessagingUpstreamTransport = transport.NewNativeMessagingUpstreamTransport
 var NewNatsUpstreamTransport = transport.NewNatsUpstreamTransport
 var NewAutoSessionRouter = client.NewAutoSessionRouter
-var WriteModCDPExtensionRuntimeConfig = injector.WriteModCDPExtensionRuntimeConfig
 
 const UpstreamModeWS = transport.UpstreamModeWS
 const UpstreamModePipe = transport.UpstreamModePipe

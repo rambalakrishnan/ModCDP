@@ -244,12 +244,10 @@ class ModCDPClientTests(unittest.TestCase):
             chrome["close"]()
 
     def test_close_keeps_injector_files_until_after_launched_browser_shutdown(self) -> None:
-        reverse_port = LocalBrowserLauncher.freePort()
         cdp = ModCDPClient(
             launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
             upstream={
                 "upstream_mode": "reversews",
-                "upstream_reversews_bind": f"127.0.0.1:{reverse_port}",
                 "upstream_reversews_wait_timeout_ms": 30_000,
             },
             injector={

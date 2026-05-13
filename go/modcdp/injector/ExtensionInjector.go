@@ -1,10 +1,7 @@
 package injector
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -25,27 +22,6 @@ var DefaultModCDPServiceWorkerURLSuffixes = []string{"/modcdp/service_worker.js"
 var extIDFromURL = regexp.MustCompile(`^chrome-extension://([a-z]+)/`)
 
 const modcdpReadyExpression = `Boolean(globalThis.ModCDP?.__ModCDPServerVersion === 1 && globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)`
-
-func WriteModCDPExtensionRuntimeConfig(extensionPath string, options ExtensionInjectorConfig) error {
-	upstream := map[string]any{}
-	if options.UpstreamReverseWSURL != "" {
-		upstream["upstream_reversews_url"] = options.UpstreamReverseWSURL
-	}
-	if options.UpstreamNativeMessagingHostName != "" {
-		upstream["upstream_nativemessaging_host_name"] = options.UpstreamNativeMessagingHostName
-	}
-	if options.UpstreamNATSURL != "" {
-		upstream["upstream_nats_url"] = options.UpstreamNATSURL
-	}
-	if options.UpstreamNATSSubjectPrefix != "" {
-		upstream["upstream_nats_subject_prefix"] = options.UpstreamNATSSubjectPrefix
-	}
-	body, err := json.MarshalIndent(map[string]any{"upstream": upstream}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(extensionPath, "config.js"), []byte("globalThis.__MODCDP_RUNTIME_CONFIG__ = "+string(body)+";\nexport {};\n"), 0o644)
-}
 
 type SendCDP = types.SendCDP
 type SessionIDForTarget = types.SessionIDForTarget

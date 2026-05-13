@@ -1,15 +1,12 @@
 // Extension service worker entry point.
 
-import "./config.js";
 import { ModCDPServer } from "../../js/src/server/ModCDPServer.js";
 
 const bridge = ModCDPServer as Record<string, any>;
 const started_at = new Date().toISOString();
-const runtime_config = (globalThis.__MODCDP_RUNTIME_CONFIG__ ?? {}) as Record<string, any>;
-const runtime_upstream_config = (runtime_config.upstream ?? {}) as Record<string, any>;
-const DEFAULT_REVERSEWS_URL = runtime_upstream_config.upstream_reversews_url ?? "ws://127.0.0.1:29292";
+const DEFAULT_REVERSEWS_URL = "ws://127.0.0.1:29292";
 const DEFAULT_REVERSEWS_RECONNECT_INTERVAL_MS = 2_000;
-const DEFAULT_NATIVE_HOST_NAME = runtime_upstream_config.upstream_nativemessaging_host_name ?? "com.modcdp.bridge";
+const DEFAULT_NATIVE_HOST_NAME = "com.modcdp.bridge";
 const DEFAULT_NATIVE_RECONNECT_INTERVAL_MS = 2_000;
 const downstream_clients: Record<string, any> = {};
 const upstream_servers: Record<string, any> = {};

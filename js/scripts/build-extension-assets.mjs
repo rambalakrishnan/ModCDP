@@ -7,16 +7,10 @@ import path from "node:path";
 const root = process.cwd();
 const dist_extension = path.join(root, "dist", "extension");
 
-for (const owned_path of [
-  "manifest.json",
-  "options.html",
-  "options.js",
-  "js",
-  "modcdp",
-  "offscreen",
-  "pages",
-]) {
-  fs.rmSync(path.join(dist_extension, owned_path), { recursive: true, force: true });
+if (fs.existsSync(dist_extension)) {
+  for (const entry of fs.readdirSync(dist_extension, { withFileTypes: true })) {
+    if (entry.name !== "src") fs.rmSync(path.join(dist_extension, entry.name), { recursive: true, force: true });
+  }
 }
 
 const copy = (from, to) => {
@@ -30,10 +24,6 @@ const write = (to, contents) => {
 };
 
 copy("extension/manifest.json", "dist/extension/manifest.json");
-copy("dist/extension/src/config.js", "dist/extension/config.js");
-if (fs.existsSync(path.join(root, "dist/extension/src/config.js.map"))) {
-  copy("dist/extension/src/config.js.map", "dist/extension/config.js.map");
-}
 copy("extension/src/pages/options.html", "dist/extension/options.html");
 copy("dist/extension/src/pages/options.js", "dist/extension/options.js");
 copy("extension/src/pages/wake.html", "dist/extension/modcdp/wake.html");
@@ -47,7 +37,6 @@ if (fs.existsSync(path.join(root, "dist/js/src/server/ModCDPServer.js.map"))) {
 
 const service_worker = fs
   .readFileSync(path.join(root, "dist/extension/src/service_worker.js"), "utf8")
-  .replace("./config.js", "../config.js")
   .replace("../../js/src/server/ModCDPServer.js", "../js/src/server/ModCDPServer.js");
 write("dist/extension/modcdp/service_worker.js", service_worker);
 copy("dist/extension/src/service_worker.js.map", "dist/extension/modcdp/service_worker.js.map");

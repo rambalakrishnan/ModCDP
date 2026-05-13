@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import threading
 import time
@@ -65,27 +64,6 @@ class ExtensionInjectorConfig(TypedDict, total=False):
 def defaultModCDPExtensionPath() -> str | None:
     bundled_extension = Path(__file__).resolve().parent.parent / "extension.zip"
     return str(bundled_extension) if bundled_extension.exists() else None
-
-
-def writeModCDPExtensionRuntimeConfig(extension_path: str, options: ExtensionInjectorConfig) -> None:
-    upstream = {
-        **({"upstream_reversews_url": options.get("upstream_reversews_url")} if options.get("upstream_reversews_url") else {}),
-        **(
-            {"upstream_nativemessaging_host_name": options.get("upstream_nativemessaging_host_name")}
-            if options.get("upstream_nativemessaging_host_name")
-            else {}
-        ),
-        **({"upstream_nats_url": options.get("upstream_nats_url")} if options.get("upstream_nats_url") else {}),
-        **(
-            {"upstream_nats_subject_prefix": options.get("upstream_nats_subject_prefix")}
-            if options.get("upstream_nats_subject_prefix")
-            else {}
-        ),
-    }
-    (Path(extension_path) / "config.js").write_text(
-        f"globalThis.__MODCDP_RUNTIME_CONFIG__ = {json.dumps({'upstream': upstream}, indent=2)};\nexport {{}};\n",
-        encoding="utf-8",
-    )
 
 
 class ExtensionInjectionResult(TypedDict):

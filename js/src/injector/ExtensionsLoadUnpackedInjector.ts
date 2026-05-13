@@ -1,12 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  defaultModCDPExtensionPath,
-  ExtensionInjector,
-  writeModCDPExtensionRuntimeConfig,
-  type TargetInfo,
-} from "./ExtensionInjector.js";
+import { defaultModCDPExtensionPath, ExtensionInjector, type TargetInfo } from "./ExtensionInjector.js";
 
 export class ExtensionsLoadUnpackedInjector extends ExtensionInjector {
   private unpacked_extension_path: string | null = null;
@@ -22,7 +17,6 @@ export class ExtensionsLoadUnpackedInjector extends ExtensionInjector {
       const unpacked_path = fs.mkdtempSync(path.join(os.tmpdir(), "modcdp-extension-"));
       fs.cpSync(extension_path, unpacked_path, { recursive: true });
       this.unpacked_extension_path = extensionRoot(unpacked_path);
-      writeModCDPExtensionRuntimeConfig(this.unpacked_extension_path, this.options);
       this.cleanup = async () => fs.rmSync(unpacked_path, { recursive: true, force: true });
       await super.prepare();
       return;
@@ -31,7 +25,6 @@ export class ExtensionsLoadUnpackedInjector extends ExtensionInjector {
     const unpacked_path = fs.mkdtempSync(path.join(os.tmpdir(), "modcdp-extension-"));
     execFileSync("unzip", ["-q", extension_path, "-d", unpacked_path]);
     this.unpacked_extension_path = extensionRoot(unpacked_path);
-    writeModCDPExtensionRuntimeConfig(this.unpacked_extension_path, this.options);
     this.cleanup = async () => fs.rmSync(unpacked_path, { recursive: true, force: true });
     await super.prepare();
   }

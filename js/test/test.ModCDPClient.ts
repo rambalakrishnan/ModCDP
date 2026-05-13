@@ -342,7 +342,6 @@ test("ModCDPClient.close does not close a remote browser it did not launch", asy
 }, 60_000);
 
 test("ModCDPClient.close keeps injector files until after launched browser shutdown", async () => {
-  const reverse_port = await LocalBrowserLauncher.freePort();
   const cdp = new ModCDPClient({
     launcher: {
       launcher_mode: "local",
@@ -350,7 +349,6 @@ test("ModCDPClient.close keeps injector files until after launched browser shutd
     },
     upstream: {
       upstream_mode: "reversews",
-      upstream_reversews_bind: `127.0.0.1:${reverse_port}`,
       upstream_reversews_wait_timeout_ms: 30_000,
     },
     injector: {

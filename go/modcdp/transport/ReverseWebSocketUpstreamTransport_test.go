@@ -210,11 +210,6 @@ func waitForReversePeerDisconnect(t *testing.T, transport *ReverseWebSocketUpstr
 }
 
 func TestReverseWebSocketUpstreamTransportAcceptsRealExtensionReverseConnectionAndRoutesCDPThroughLoopback(t *testing.T) {
-	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
-	reverseBind := fmt.Sprintf("127.0.0.1:%d", port)
 	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
 	sandbox := runtime.GOOS != "linux"
 	cdp := modcdp.New(modcdp.Options{
@@ -224,7 +219,7 @@ func TestReverseWebSocketUpstreamTransportAcceptsRealExtensionReverseConnectionA
 				Sandbox:  boolPtr(sandbox),
 			},
 		},
-		Upstream: modcdp.UpstreamConfig{UpstreamMode: "reversews", UpstreamReverseWSBind: reverseBind},
+		Upstream: modcdp.UpstreamConfig{UpstreamMode: "reversews"},
 		Injector: modcdp.InjectorConfig{
 			InjectorMode:                     "auto",
 			InjectorServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},

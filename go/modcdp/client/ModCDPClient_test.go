@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -667,10 +666,6 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	reversePort, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
 	cdp := New(Options{
 		Launcher: LauncherConfig{LauncherMode: "local",
 			LauncherOptions: LaunchOptions{
@@ -680,7 +675,6 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 		},
 		Upstream: UpstreamConfig{
 			UpstreamMode:                   "reversews",
-			UpstreamReverseWSBind:          fmt.Sprintf("127.0.0.1:%d", reversePort),
 			UpstreamReverseWSWaitTimeoutMS: 30_000,
 		},
 		Injector: InjectorConfig{

@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 from ..launcher.BrowserLauncher import BrowserLaunchOptions
-from ..injector.ExtensionInjector import DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult, defaultModCDPExtensionPath, writeModCDPExtensionRuntimeConfig
+from ..injector.ExtensionInjector import DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult, defaultModCDPExtensionPath
 
 
 class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
@@ -29,7 +29,6 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
             self.cleanup_dir = tempfile.TemporaryDirectory(prefix="modcdp-extension-")
             shutil.copytree(extension_path, self.cleanup_dir.name, dirs_exist_ok=True)
             self.unpacked_extension_path = _extension_root(self.cleanup_dir.name)
-            writeModCDPExtensionRuntimeConfig(self.unpacked_extension_path, self.options)
             self._resolveExtensionId()
             super().prepare()
             return
@@ -37,7 +36,6 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
         with zipfile.ZipFile(extension_path) as archive:
             archive.extractall(self.cleanup_dir.name)
         self.unpacked_extension_path = _extension_root(self.cleanup_dir.name)
-        writeModCDPExtensionRuntimeConfig(self.unpacked_extension_path, self.options)
         self._resolveExtensionId()
         super().prepare()
 

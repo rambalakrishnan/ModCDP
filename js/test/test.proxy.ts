@@ -254,7 +254,6 @@ test("proxy CLI maps ws upstream URL and route shorthands into an existing real 
 
 test("proxy CLI maps user-facing flags into a real reversews local launch", async () => {
   const proxy_port = await LocalBrowserLauncher.freePort();
-  const reverse_port = await LocalBrowserLauncher.freePort();
   const proxy_script = path.resolve(HERE, "..", "..", "dist", "js", "src", "proxy", "proxy.js");
   const proc = spawn(
     process.execPath,
@@ -266,8 +265,6 @@ test("proxy CLI maps user-facing flags into a real reversews local launch", asyn
       "--launcher-options",
       JSON.stringify({ headless: true, sandbox: process.platform !== "linux" }),
       "--upstream-mode=reversews",
-      "--upstream-reversews-bind",
-      `127.0.0.1:${reverse_port}`,
       "--upstream-reversews-wait-timeout-ms",
       "10000",
       "--injector-mode=auto",
@@ -331,7 +328,6 @@ test("proxy upgrades a vanilla CDP websocket to ModCDP against a real browser ov
 
 test("proxy reversews local launch auto-injects the extension through the real client path", async () => {
   const proxy_port = await LocalBrowserLauncher.freePort();
-  const reverse_bind = `127.0.0.1:${await LocalBrowserLauncher.freePort()}`;
   const proxy = await startProxy({
     port: proxy_port,
     launcher: {
@@ -340,7 +336,6 @@ test("proxy reversews local launch auto-injects the extension through the real c
     },
     upstream: {
       upstream_mode: "reversews",
-      upstream_reversews_bind: reverse_bind,
       upstream_reversews_wait_timeout_ms: 10_000,
     },
     injector: {
