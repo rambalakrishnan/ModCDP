@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { BrowserLaunchOptions } from "../launcher/BrowserLauncher.js";
-import { defaultModCDPExtensionPath, ExtensionInjector, writeModCDPExtensionRuntimeConfig } from "./ExtensionInjector.js";
+import {
+  defaultModCDPExtensionPath,
+  ExtensionInjector,
+  writeModCDPExtensionRuntimeConfig,
+} from "./ExtensionInjector.js";
 
 function firstString(...values: unknown[]) {
   for (const value of values) {

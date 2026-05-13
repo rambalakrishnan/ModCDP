@@ -59,10 +59,7 @@ test("nativemessaging upstream config owns manifest, host, wait timeout, loopbac
       path.join("/tmp/modcdp-profile-two", "Default", "NativeMessagingHosts", "com.modcdp.updated.json"),
     ],
   );
-  assert.throws(
-    () => transport.send({ id: 1, method: "Browser.getVersion" }),
-    /No native messaging peer is connected/,
-  );
+  assert.throws(() => transport.send({ id: 1, method: "Browser.getVersion" }), /No native messaging peer is connected/);
   await assert.rejects(
     () => transport.waitForPeer(),
     /Timed out waiting 5ms for native messaging host com\.modcdp\.updated/,

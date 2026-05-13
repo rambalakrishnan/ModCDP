@@ -82,7 +82,9 @@ export function writeModCDPExtensionRuntimeConfig(extension_path: string, option
       ? { upstream_nativemessaging_host_name: options.upstream_nativemessaging_host_name }
       : {}),
     ...(options.upstream_nats_url ? { upstream_nats_url: options.upstream_nats_url } : {}),
-    ...(options.upstream_nats_subject_prefix ? { upstream_nats_subject_prefix: options.upstream_nats_subject_prefix } : {}),
+    ...(options.upstream_nats_subject_prefix
+      ? { upstream_nats_subject_prefix: options.upstream_nats_subject_prefix }
+      : {}),
   };
   fs.writeFileSync(
     path.join(extension_path, "config.js"),

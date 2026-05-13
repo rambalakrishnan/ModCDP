@@ -13,7 +13,12 @@ export {
   ExtensionInjector,
   defaultModCDPExtensionPath,
 } from "./injector/ExtensionInjector.js";
-export type { ExtensionInjectionResult, ExtensionInjectorConfig, SendCDP, TargetInfo } from "./injector/ExtensionInjector.js";
+export type {
+  ExtensionInjectionResult,
+  ExtensionInjectorConfig,
+  SendCDP,
+  TargetInfo,
+} from "./injector/ExtensionInjector.js";
 export { LocalBrowserLaunchExtensionInjector } from "./injector/LocalBrowserLaunchExtensionInjector.js";
 export { ExtensionsLoadUnpackedInjector } from "./injector/ExtensionsLoadUnpackedInjector.js";
 export { DiscoveredExtensionInjector } from "./injector/DiscoveredExtensionInjector.js";

@@ -57,31 +57,27 @@ describe("RemoteBrowserLauncher", () => {
     },
   );
 
-  it(
-    "lets launch options override constructor cdp_url",
-    { timeout: LIVE_BROWSER_TIMEOUT_MS },
-    async () => {
-      const first = await new LocalBrowserLauncher().launch({
-        port: await LocalBrowserLauncher.freePort(),
-        headless: true,
-        sandbox: process.platform !== "linux",
-      });
-      const second = await new LocalBrowserLauncher().launch({
-        port: await LocalBrowserLauncher.freePort(),
-        headless: true,
-        sandbox: process.platform !== "linux",
-      });
+  it("lets launch options override constructor cdp_url", { timeout: LIVE_BROWSER_TIMEOUT_MS }, async () => {
+    const first = await new LocalBrowserLauncher().launch({
+      port: await LocalBrowserLauncher.freePort(),
+      headless: true,
+      sandbox: process.platform !== "linux",
+    });
+    const second = await new LocalBrowserLauncher().launch({
+      port: await LocalBrowserLauncher.freePort(),
+      headless: true,
+      sandbox: process.platform !== "linux",
+    });
 
-      try {
-        const launched = await new RemoteBrowserLauncher({ cdp_url: first.cdp_url }).launch({
-          cdp_url: `127.0.0.1:${second.port}`,
-        });
-        expect(launched.cdp_url).toBe(second.cdp_url);
-        await launched.close();
-      } finally {
-        await first.close();
-        await second.close();
-      }
-    },
-  );
+    try {
+      const launched = await new RemoteBrowserLauncher({ cdp_url: first.cdp_url }).launch({
+        cdp_url: `127.0.0.1:${second.port}`,
+      });
+      expect(launched.cdp_url).toBe(second.cdp_url);
+      await launched.close();
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
 });
