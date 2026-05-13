@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	modcdp "github.com/pirate/ModCDP/go/modcdp/client"
-	. "github.com/pirate/ModCDP/go/modcdp/injector"
+	modcdp "github.com/browserbase/modcdp/go/modcdp/client"
+	. "github.com/browserbase/modcdp/go/modcdp/injector"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -256,7 +256,7 @@ func TestExtensionInjectorKeepsModCDPServiceWorkerAliveThroughOffscreenKeepalive
 		t.Fatal(err)
 	}
 	versionResult, _ := version["result"].(map[string]any)
-	if versionResult["value"] != float64(1) {
+	if versionResult["value"] != float64(2) {
 		t.Fatalf("ModCDP server version = %#v", versionResult["value"])
 	}
 }

@@ -164,7 +164,7 @@ class _ModDomain:
         return self._client._send_command("Mod.ping", params)
 
 MODCDP_READY_EXPRESSION = (
-    "Boolean(globalThis.ModCDP?.__ModCDPServerVersion === 1 && "
+    "Boolean(globalThis.ModCDP?.__ModCDPServerVersion >= 1 && "
     "globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)"
 )
 DEFAULT_SERVER = object()
@@ -655,15 +655,15 @@ class ModCDPClient(CDPSurfaceMixin):
         if self._closed:
             return
         self._closed = True
+        if self._launched_browser is not None:
+            self._launched_browser["close"]()
+            self._launched_browser = None
         try:
             if self.transport:
                 self.transport.close()
         except Exception:
             pass
         self.transport = None
-        if self._launched_browser is not None:
-            self._launched_browser["close"]()
-            self._launched_browser = None
         for injector in self._extension_injectors:
             try:
                 injector.close()

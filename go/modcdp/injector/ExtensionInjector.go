@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pirate/ModCDP/go/modcdp/types"
+	"github.com/browserbase/modcdp/go/modcdp/types"
 )
 
 const DefaultModCDPExtensionID = "mdedooklbnfejodmnhmkdpkaedafkehf"
@@ -21,7 +21,7 @@ const DefaultTargetSessionPollIntervalMS = 20
 var DefaultModCDPServiceWorkerURLSuffixes = []string{"/modcdp/service_worker.js"}
 var extIDFromURL = regexp.MustCompile(`^chrome-extension://([a-z]+)/`)
 
-const modcdpReadyExpression = `Boolean(globalThis.ModCDP?.__ModCDPServerVersion === 1 && globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)`
+const modcdpReadyExpression = `Boolean(globalThis.ModCDP?.__ModCDPServerVersion >= 1 && globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)`
 
 type SendCDP = types.SendCDP
 type SessionIDForTarget = types.SessionIDForTarget

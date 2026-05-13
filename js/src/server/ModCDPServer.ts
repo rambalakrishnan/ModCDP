@@ -42,7 +42,7 @@ type ModCDPGlobalScope = typeof globalThis &
   };
 
 export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis as ModCDPGlobalScope) {
-  const MODCDP_SERVER_VERSION = 1;
+  const MODCDP_SERVER_VERSION = 2;
   const DEFAULT_CDP_SEND_TIMEOUT_MS = 10_000;
   const DEFAULT_LOOPBACK_EXECUTION_CONTEXT_TIMEOUT_MS = 10_000;
   const DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS = 250;
@@ -638,7 +638,7 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     if (!chromeApi?.debugger?.getTargets || !chromeApi?.debugger?.attach) {
       throw new Error("chrome.debugger is unavailable for reverse expression evaluation.");
     }
-    const serviceWorkerUrl = chromeApi.runtime.getURL("modcdp/service_worker.js");
+    const serviceWorkerUrl = currentServiceWorkerUrl();
     const targets = await chromeApi.debugger.getTargets();
     const target = targets.find((candidate) => candidate.url === serviceWorkerUrl);
     if (!target?.id) throw new Error(`Could not find ModCDP service worker debugger target ${serviceWorkerUrl}.`);
@@ -652,6 +652,20 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
     );
     selfDebuggee = debuggee;
     return debuggee;
+  }
+
+  function currentServiceWorkerUrl() {
+    const chromeApi = globalScope.chrome;
+    const manifest = chromeApi?.runtime?.getManifest?.();
+    const service_worker =
+      manifest && typeof manifest === "object" && "background" in manifest
+        ? (manifest.background as { service_worker?: unknown } | undefined)?.service_worker
+        : null;
+    const service_worker_path =
+      typeof service_worker === "string" && service_worker.length > 0
+        ? service_worker.replace(/^\//, "")
+        : "modcdp/service_worker.js";
+    return chromeApi.runtime.getURL(service_worker_path);
   }
 
   async function evaluateInSelf(expression: string): Promise<ProtocolResult> {
@@ -1064,7 +1078,12 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
             })()
           `)) as Record<string, unknown>;
           if (result?.__ModCDP_middleware_next__ === true && typeof next === "function") {
-            return await next(result.value);
+            const nextResult = await next(result.value);
+            const { __ModCDP_middleware_next__, value, ...overrides } = result;
+            if (Object.keys(overrides).length === 0) return nextResult;
+            return nextResult != null && typeof nextResult === "object" && !Array.isArray(nextResult)
+              ? { ...(nextResult as Record<string, unknown>), ...overrides }
+              : overrides;
           }
           return result;
         };
@@ -1196,11 +1215,9 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
 
         this.loopback_cdp_url = version.webSocketDebuggerUrl;
         const { targetInfos } = (await callLoopbackWS("Target.getTargets")) as cdp.types.ts.Target.GetTargetsResult;
-        const chromeApi = globalScope.chrome;
+        const serviceWorkerUrl = currentServiceWorkerUrl();
         const worker = targetInfos.find(
-          (target) =>
-            target.type === "service_worker" &&
-            target.url === `chrome-extension://${chromeApi.runtime.id}/modcdp/service_worker.js`,
+          (target) => target.type === "service_worker" && target.url === serviceWorkerUrl,
         );
         if (!worker) return fail(version);
 
