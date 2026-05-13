@@ -3,12 +3,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
 
 from ..launcher.BrowserLauncher import BrowserLaunchOptions
-from ..injector.ExtensionInjector import DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult
+from ..injector.ExtensionInjector import DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult, defaultModCDPExtensionPath, writeModCDPExtensionRuntimeConfig
 
 
 class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
@@ -19,12 +20,16 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
         self.cleanup_dir: tempfile.TemporaryDirectory[str] | None = None
 
     def prepare(self) -> None:
-        extension_path = self.options.get("injector_extension_path")
+        extension_path = self.options.get("injector_extension_path") or defaultModCDPExtensionPath()
         if not extension_path or self.unpacked_extension_path:
             super().prepare()
             return
+        self.options["injector_extension_path"] = extension_path
         if not extension_path.endswith(".zip"):
-            self.unpacked_extension_path = extension_path
+            self.cleanup_dir = tempfile.TemporaryDirectory(prefix="modcdp-extension-")
+            shutil.copytree(extension_path, self.cleanup_dir.name, dirs_exist_ok=True)
+            self.unpacked_extension_path = _extension_root(self.cleanup_dir.name)
+            writeModCDPExtensionRuntimeConfig(self.unpacked_extension_path, self.options)
             self._resolveExtensionId()
             super().prepare()
             return
@@ -32,6 +37,7 @@ class LocalBrowserLaunchExtensionInjector(ExtensionInjector):
         with zipfile.ZipFile(extension_path) as archive:
             archive.extractall(self.cleanup_dir.name)
         self.unpacked_extension_path = _extension_root(self.cleanup_dir.name)
+        writeModCDPExtensionRuntimeConfig(self.unpacked_extension_path, self.options)
         self._resolveExtensionId()
         super().prepare()
 

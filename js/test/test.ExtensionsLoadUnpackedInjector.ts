@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
 import { ExtensionsLoadUnpackedInjector } from "../src/injector/ExtensionsLoadUnpackedInjector.js";
 import { LocalBrowserLauncher } from "../src/launcher/LocalBrowserLauncher.js";
 import { CdpSocket } from "./helpers.BrowserLauncher.js";
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_PATH = path.resolve(HERE, "..", "..", "dist", "extension");
 
 test("ExtensionsLoadUnpackedInjector exercises the real CDP loadUnpacked path", async () => {
   const chrome = await new LocalBrowserLauncher({
@@ -19,7 +14,6 @@ test("ExtensionsLoadUnpackedInjector exercises the real CDP loadUnpacked path", 
   const injector = new ExtensionsLoadUnpackedInjector({
     send: (method, params = {}, session_id = null) =>
       cdp.send(method, params as Record<string, unknown>, session_id ?? undefined),
-    injector_extension_path: EXTENSION_PATH,
   });
 
   try {

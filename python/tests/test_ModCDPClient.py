@@ -37,6 +37,8 @@ class ModCDPClientTests(unittest.TestCase):
                 "upstream_cdp_url": "http://127.0.0.1:9222",
                 "upstream_nats_wait_timeout_ms": 345,
                 "upstream_reversews_wait_timeout_ms": 456,
+                "upstream_nativemessaging_manifest": "/tmp/native-host.json",
+                "upstream_nativemessaging_manifests": ["/tmp/native-host-extra.json"],
                 "upstream_nativemessaging_host_name": "com.modcdp.custom",
                 "upstream_nativemessaging_wait_timeout_ms": 567,
                 "upstream_ws_connect_error_settle_timeout_ms": 321,
@@ -76,6 +78,8 @@ class ModCDPClientTests(unittest.TestCase):
         self.assertEqual(cdp._launch_options().get("user_data_dir"), "/tmp/profile")
         self.assertEqual(cdp.upstream["upstream_nats_wait_timeout_ms"], 345)
         self.assertEqual(cdp.upstream["upstream_reversews_wait_timeout_ms"], 456)
+        self.assertEqual(cdp.upstream["upstream_nativemessaging_manifest"], "/tmp/native-host.json")
+        self.assertEqual(cdp.upstream["upstream_nativemessaging_manifests"], ["/tmp/native-host-extra.json"])
         self.assertEqual(cdp.upstream["upstream_nativemessaging_host_name"], "com.modcdp.custom")
         self.assertEqual(cdp.upstream["upstream_nativemessaging_wait_timeout_ms"], 567)
         self.assertEqual(cdp.upstream["upstream_ws_connect_error_settle_timeout_ms"], 321)
@@ -240,11 +244,12 @@ class ModCDPClientTests(unittest.TestCase):
             chrome["close"]()
 
     def test_close_keeps_injector_files_until_after_launched_browser_shutdown(self) -> None:
+        reverse_port = LocalBrowserLauncher.freePort()
         cdp = ModCDPClient(
             launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
             upstream={
                 "upstream_mode": "reversews",
-                "upstream_reversews_bind": "127.0.0.1:29292",
+                "upstream_reversews_bind": f"127.0.0.1:{reverse_port}",
                 "upstream_reversews_wait_timeout_ms": 30_000,
             },
             injector={
@@ -265,7 +270,7 @@ class ModCDPClientTests(unittest.TestCase):
             )
             unpacked_extension_path = getattr(injector, "unpacked_extension_path")
             self.assertIsInstance(unpacked_extension_path, str)
-            self.assertEqual(unpacked_extension_path, str(EXTENSION_PATH))
+            self.assertNotEqual(unpacked_extension_path, str(EXTENSION_PATH))
 
             launched = cdp._launched_browser
             if launched is None:
@@ -283,7 +288,7 @@ class ModCDPClientTests(unittest.TestCase):
             cdp.close()
 
             self.assertTrue(browser_close_saw_extension)
-            self.assertTrue(Path(unpacked_extension_path).exists())
+            self.assertFalse(Path(unpacked_extension_path).exists())
         finally:
             cdp.close()
 

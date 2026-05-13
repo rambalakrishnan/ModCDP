@@ -36,6 +36,18 @@ func TestReverseWebSocketUpstreamTransportConfigOwnsBindUpdatesWaitTimeoutAndInj
 	}
 }
 
+func TestReverseWebSocketUpstreamTransportSendBeforePeerErrorsImmediately(t *testing.T) {
+	transport := NewReverseWebSocketUpstreamTransport(ReverseWebSocketUpstreamTransportOptions{UpstreamReverseWSBind: "127.0.0.1:29292", UpstreamReverseWSWaitTimeoutMS: 5_000})
+	started := time.Now()
+	err := transport.Send(map[string]any{"id": 1, "method": "Browser.getVersion"})
+	if err == nil || !strings.Contains(err.Error(), "no reverse ModCDP extension peer is connected at ws://127.0.0.1:29292") {
+		t.Fatalf("Send error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("Send waited for peer: elapsed = %s", elapsed)
+	}
+}
+
 func TestReverseWebSocketUpstreamTransportCloseResetsPeerWaitState(t *testing.T) {
 	port, err := freePort()
 	if err != nil {
@@ -198,7 +210,11 @@ func waitForReversePeerDisconnect(t *testing.T, transport *ReverseWebSocketUpstr
 }
 
 func TestReverseWebSocketUpstreamTransportAcceptsRealExtensionReverseConnectionAndRoutesCDPThroughLoopback(t *testing.T) {
-	reverseBind := "127.0.0.1:29292"
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverseBind := fmt.Sprintf("127.0.0.1:%d", port)
 	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
 	sandbox := runtime.GOOS != "linux"
 	cdp := modcdp.New(modcdp.Options{

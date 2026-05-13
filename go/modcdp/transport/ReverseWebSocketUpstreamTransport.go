@@ -101,12 +101,6 @@ func (t *ReverseWebSocketUpstreamTransport) Send(message map[string]any) error {
 	defer t.writeMu.Unlock()
 	conn := t.Conn
 	if conn == nil {
-		if err := t.WaitForPeer(); err != nil {
-			return err
-		}
-		conn = t.Conn
-	}
-	if conn == nil {
 		return fmt.Errorf("no reverse ModCDP extension peer is connected at %s", t.URL)
 	}
 	return wsutil.WriteServerText(conn, body)

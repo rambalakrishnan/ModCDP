@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 from ..launcher.BrowserLauncher import BrowserLaunchOptions
-from ..injector.ExtensionInjector import DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult
+from ..injector.ExtensionInjector import DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS, ExtensionInjector, ExtensionInjectionResult, defaultModCDPExtensionPath
 
 DEFAULT_BROWSERBASE_BASE_URL = "https://api.browserbase.com"
 
@@ -29,9 +29,10 @@ class BBBrowserExtensionInjector(ExtensionInjector):
             return
         if self.extension_id:
             return
-        extension_path = self.options.get("injector_extension_path")
+        extension_path = self.options.get("injector_extension_path") or defaultModCDPExtensionPath()
         if not extension_path:
             return
+        self.options["injector_extension_path"] = extension_path
         self.zip_path = extension_path if extension_path.endswith(".zip") else self._zipExtensionDir(extension_path)
         try:
             self.extension_id = self._uploadExtension(self.zip_path)

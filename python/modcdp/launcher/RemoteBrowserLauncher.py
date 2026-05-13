@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
-import urllib.request
-
 from typing import cast
 
-from ..launcher.BrowserLauncher import BrowserLaunchOptions, BrowserLauncher, LaunchedBrowser
+from ..launcher.BrowserLauncher import BrowserLaunchOptions, BrowserLauncher, LaunchedBrowser, resolveCdpWebSocketUrl
 
 
 class RemoteBrowserLauncher(BrowserLauncher):
@@ -18,17 +15,6 @@ class RemoteBrowserLauncher(BrowserLauncher):
         if not cdp_url:
             raise RuntimeError("launcher.launcher_mode=remote requires upstream.upstream_cdp_url.")
         # cdp_url is resolved here so downstream transports can dial it directly.
-        cdp_url = _websocket_url_for(cdp_url)
+        cdp_url = resolveCdpWebSocketUrl(cdp_url, "remote cdp_url")
         self.launched = {"cdp_url": cdp_url, "close": lambda: None}
         return self.launched
-
-
-def _websocket_url_for(endpoint: str) -> str:
-    if endpoint.startswith("ws://") or endpoint.startswith("wss://"):
-        return endpoint
-    with urllib.request.urlopen(f"{endpoint.rstrip('/')}/json/version", timeout=5) as response:
-        version = json.loads(response.read())
-    cdp_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
-    if not isinstance(cdp_url, str) or not cdp_url:
-        raise RuntimeError(f"HTTP discovery for {endpoint} returned no webSocketDebuggerUrl")
-    return cdp_url

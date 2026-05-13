@@ -10,7 +10,6 @@
 // Public methods: connect, send(method, params), on(event, handler), close.
 
 // oxlint-disable typescript-eslint/no-unsafe-declaration-merging -- alias members are assigned by connect().
-import { existsSync } from "node:fs";
 import type { z } from "zod";
 
 import { createCdpAliases, type CdpAliases } from "../types/generated/aliases.js";
@@ -119,6 +118,7 @@ export type UpstreamOptions = {
   upstream_reversews_bind?: string | null;
   upstream_reversews_wait_timeout_ms?: number;
   upstream_nativemessaging_manifest?: string | null;
+  upstream_nativemessaging_manifests?: string[] | null;
   upstream_nativemessaging_host_name?: string | null;
   upstream_nativemessaging_wait_timeout_ms?: number;
   upstream_ws_connect_error_settle_timeout_ms?: number;
@@ -275,6 +275,7 @@ function normalizeClientOptions({
       upstream_reversews_wait_timeout_ms:
         upstream.upstream_reversews_wait_timeout_ms ?? DEFAULT_UPSTREAM_REVERSEWS_WAIT_TIMEOUT_MS,
       upstream_nativemessaging_manifest: upstream.upstream_nativemessaging_manifest ?? null,
+      upstream_nativemessaging_manifests: upstream.upstream_nativemessaging_manifests ?? null,
       upstream_nativemessaging_host_name: upstream.upstream_nativemessaging_host_name ?? null,
       upstream_nativemessaging_wait_timeout_ms:
         upstream.upstream_nativemessaging_wait_timeout_ms ?? DEFAULT_UPSTREAM_NATIVEMESSAGING_WAIT_TIMEOUT_MS,
@@ -283,7 +284,7 @@ function normalizeClientOptions({
     },
     injector: {
       injector_mode,
-      injector_extension_path: injector.injector_extension_path ?? defaultExtensionPath(),
+      injector_extension_path: injector.injector_extension_path ?? null,
       injector_extension_id: injector.injector_extension_id ?? null,
       injector_wake_path: injector.injector_wake_path ?? DEFAULT_MODCDP_WAKE_PATH,
       injector_wake_url: injector.injector_wake_url ?? null,
@@ -379,23 +380,6 @@ function defineCustomCommandMethod(client: ModCDPClient, name: string) {
     },
   });
   target[domain][method] = alias;
-}
-
-function defaultExtensionPath() {
-  if (typeof process === "object" && process?.versions?.node && import.meta.url.startsWith("file:")) {
-    const candidates = [
-      "../../../dist/extension",
-      "../../../extension",
-      "../../../../dist/extension",
-      "../../../../extension",
-    ].map((relative_path) => decodeURIComponent(new URL(/* @vite-ignore */ relative_path, import.meta.url).pathname));
-    return candidates.find(isBuiltExtensionPath) ?? candidates[0];
-  }
-  return "../../../dist/extension";
-}
-
-function isBuiltExtensionPath(candidate: string) {
-  return existsSync(`${candidate}/modcdp/service_worker.js`);
 }
 
 function hasCommandExpression(
@@ -737,9 +721,13 @@ export class ModCDPClient extends ModCDPEventEmitter {
   }
 
   _serverConfigureParams(): ModCDPConfigureParams {
+    const transport_injector_config = this.transport?.getInjectorConfig?.() ?? {};
     return {
       upstream: {
         upstream_mode: this.upstream.upstream_mode,
+        ...(transport_injector_config.upstream_reversews_url
+          ? { upstream_reversews_url: transport_injector_config.upstream_reversews_url }
+          : {}),
         ...(this.upstream.upstream_nats_url ? { upstream_nats_url: this.upstream.upstream_nats_url } : {}),
         ...(this.upstream.upstream_nats_subject_prefix
           ? {
@@ -880,6 +868,7 @@ export class ModCDPClient extends ModCDPEventEmitter {
       upstream_reversews_bind: this.upstream.upstream_reversews_bind,
       upstream_reversews_wait_timeout_ms: this.upstream.upstream_reversews_wait_timeout_ms,
       upstream_nativemessaging_manifest: this.upstream.upstream_nativemessaging_manifest,
+      upstream_nativemessaging_manifests: this.upstream.upstream_nativemessaging_manifests,
       upstream_nativemessaging_host_name: this.upstream.upstream_nativemessaging_host_name,
       upstream_nativemessaging_wait_timeout_ms: this.upstream.upstream_nativemessaging_wait_timeout_ms,
       injector_extension_id: this.injector.injector_extension_id,
@@ -1145,7 +1134,14 @@ export class ModCDPClient extends ModCDPEventEmitter {
           reject(new Error(`${method} timed out after ${timeout_ms}ms`));
         }, timeout_ms);
       }
-      this.transport?.send(message);
+      void (async () => {
+        try {
+          if (this.upstream_endpoint_kind === "modcdp_server") await this.transport?.waitForPeer?.();
+          this.transport?.send(message);
+        } catch (error) {
+          if (this.pending.delete(id)) reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      })();
     });
   }
 

@@ -97,8 +97,20 @@ export function normalizeModCDPPayloadSchema(schema: ModCDPPayloadSchemaSpec | n
   if (!schema) return null;
   if (isZodType(schema)) return schema;
   if (Object.values(schema).every(isZodType)) return z.object(schema as ModCDPPayloadShape).passthrough();
-  if (schema.type === "object") return z.object({}).passthrough();
+  if (typeof schema === "object") {
+    const zod_schema = z.fromJSONSchema(schema);
+    return isScalarJsonSchema(schema) ? z.object({ value: zod_schema }).passthrough() : zod_schema;
+  }
   throw new Error("Unsupported payload schema; pass a Zod schema, Zod shape, or object JSON schema.");
+}
+
+function isScalarJsonSchema(schema: Record<string, unknown>) {
+  return (
+    typeof schema.type === "string" &&
+    !["object", "array"].includes(schema.type) &&
+    !("properties" in schema) &&
+    !("items" in schema)
+  );
 }
 
 export const ModCDPEvaluateParamsSchema = z.object({
@@ -141,8 +153,10 @@ export const ModCDPUpstreamOptionsSchema = z
     upstream_nats_subject_prefix: z.string().nullable().optional(),
     upstream_nats_wait_timeout_ms: z.number().positive().optional(),
     upstream_reversews_bind: z.string().nullable().optional(),
+    upstream_reversews_url: z.string().nullable().optional(),
     upstream_reversews_wait_timeout_ms: z.number().positive().optional(),
     upstream_nativemessaging_manifest: z.string().nullable().optional(),
+    upstream_nativemessaging_manifests: z.array(z.string()).nullable().optional(),
     upstream_nativemessaging_host_name: z.string().nullable().optional(),
     upstream_nativemessaging_wait_timeout_ms: z.number().positive().optional(),
   })

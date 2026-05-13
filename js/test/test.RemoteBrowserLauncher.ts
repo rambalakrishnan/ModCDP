@@ -27,11 +27,16 @@ describe("RemoteBrowserLauncher", () => {
 
       try {
         const http_endpoint = `http://127.0.0.1:${local.port}`;
+        const bare_endpoint = `127.0.0.1:${local.port}`;
         const fromHttp = await new RemoteBrowserLauncher({}, http_endpoint).launch();
         expect(fromHttp.cdp_url).toBe(local.cdp_url);
         cdp = await CdpSocket.connect(fromHttp.cdp_url!);
         await expectCdpBrowserSurface(cdp);
         await fromHttp.close();
+
+        const fromBare = await new RemoteBrowserLauncher({}, bare_endpoint).launch();
+        expect(fromBare.cdp_url).toBe(local.cdp_url);
+        await fromBare.close();
 
         const fromOptions = await new RemoteBrowserLauncher({
           cdp_url: local.cdp_url,
@@ -48,6 +53,34 @@ describe("RemoteBrowserLauncher", () => {
       } finally {
         await cdp?.close();
         await local.close();
+      }
+    },
+  );
+
+  it(
+    "lets launch options override constructor cdp_url",
+    { timeout: LIVE_BROWSER_TIMEOUT_MS },
+    async () => {
+      const first = await new LocalBrowserLauncher().launch({
+        port: await LocalBrowserLauncher.freePort(),
+        headless: true,
+        sandbox: process.platform !== "linux",
+      });
+      const second = await new LocalBrowserLauncher().launch({
+        port: await LocalBrowserLauncher.freePort(),
+        headless: true,
+        sandbox: process.platform !== "linux",
+      });
+
+      try {
+        const launched = await new RemoteBrowserLauncher({ cdp_url: first.cdp_url }).launch({
+          cdp_url: `127.0.0.1:${second.port}`,
+        });
+        expect(launched.cdp_url).toBe(second.cdp_url);
+        await launched.close();
+      } finally {
+        await first.close();
+        await second.close();
       }
     },
   );

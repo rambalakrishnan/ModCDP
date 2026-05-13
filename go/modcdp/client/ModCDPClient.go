@@ -220,17 +220,18 @@ type LauncherConfig struct {
 }
 
 type UpstreamConfig struct {
-	UpstreamMode                          string `json:"upstream_mode,omitempty"`
-	UpstreamCDPURL                        string `json:"upstream_cdp_url,omitempty"`
-	UpstreamNATSURL                       string `json:"upstream_nats_url,omitempty"`
-	UpstreamNATSSubjectPrefix             string `json:"upstream_nats_subject_prefix,omitempty"`
-	UpstreamNATSWaitTimeoutMS             int    `json:"upstream_nats_wait_timeout_ms,omitempty"`
-	UpstreamReverseWSBind                 string `json:"upstream_reversews_bind,omitempty"`
-	UpstreamReverseWSWaitTimeoutMS        int    `json:"upstream_reversews_wait_timeout_ms,omitempty"`
-	UpstreamNativeMessagingManifest       string `json:"upstream_nativemessaging_manifest,omitempty"`
-	UpstreamNativeMessagingHostName       string `json:"upstream_nativemessaging_host_name,omitempty"`
-	UpstreamNativeMessagingWaitTimeoutMS  int    `json:"upstream_nativemessaging_wait_timeout_ms,omitempty"`
-	UpstreamWSConnectErrorSettleTimeoutMS int    `json:"upstream_ws_connect_error_settle_timeout_ms,omitempty"`
+	UpstreamMode                          string   `json:"upstream_mode,omitempty"`
+	UpstreamCDPURL                        string   `json:"upstream_cdp_url,omitempty"`
+	UpstreamNATSURL                       string   `json:"upstream_nats_url,omitempty"`
+	UpstreamNATSSubjectPrefix             string   `json:"upstream_nats_subject_prefix,omitempty"`
+	UpstreamNATSWaitTimeoutMS             int      `json:"upstream_nats_wait_timeout_ms,omitempty"`
+	UpstreamReverseWSBind                 string   `json:"upstream_reversews_bind,omitempty"`
+	UpstreamReverseWSWaitTimeoutMS        int      `json:"upstream_reversews_wait_timeout_ms,omitempty"`
+	UpstreamNativeMessagingManifest       string   `json:"upstream_nativemessaging_manifest,omitempty"`
+	UpstreamNativeMessagingManifests      []string `json:"upstream_nativemessaging_manifests,omitempty"`
+	UpstreamNativeMessagingHostName       string   `json:"upstream_nativemessaging_host_name,omitempty"`
+	UpstreamNativeMessagingWaitTimeoutMS  int      `json:"upstream_nativemessaging_wait_timeout_ms,omitempty"`
+	UpstreamWSConnectErrorSettleTimeoutMS int      `json:"upstream_ws_connect_error_settle_timeout_ms,omitempty"`
 }
 
 type InjectorConfig struct {
@@ -394,7 +395,7 @@ type ModCDPClient struct {
 	commandParamsSchemas     map[string]map[string]any
 	commandResultSchemas     map[string]map[string]any
 	commandResultUnwrapKeys  map[string]string
-	event_schemas            map[string]map[string]any
+	eventSchemas             map[string]map[string]any
 	schemaMu                 sync.RWMutex
 	handlersMu               sync.Mutex
 	autoSessions             *AutoSessionRouter
@@ -550,7 +551,7 @@ func New(opts Options) *ModCDPClient {
 		commandParamsSchemas:    map[string]map[string]any{},
 		commandResultSchemas:    map[string]map[string]any{},
 		commandResultUnwrapKeys: map[string]string{},
-		event_schemas:           map[string]map[string]any{},
+		eventSchemas:            map[string]map[string]any{},
 	}
 	client.Mod = ModDomain{client: client}
 	client.autoSessions = NewAutoSessionRouter(
@@ -855,6 +856,7 @@ func (c *ModCDPClient) upstreamTransportConfig() map[string]any {
 		"upstream_reversews_bind":                  c.Upstream.UpstreamReverseWSBind,
 		"upstream_reversews_wait_timeout_ms":       c.Upstream.UpstreamReverseWSWaitTimeoutMS,
 		"upstream_nativemessaging_manifest":        c.Upstream.UpstreamNativeMessagingManifest,
+		"upstream_nativemessaging_manifests":       c.Upstream.UpstreamNativeMessagingManifests,
 		"upstream_nativemessaging_host_name":       c.Upstream.UpstreamNativeMessagingHostName,
 		"upstream_nativemessaging_wait_timeout_ms": c.Upstream.UpstreamNativeMessagingWaitTimeoutMS,
 		"injector_extension_id":                    c.Injector.InjectorExtensionID,
@@ -926,6 +928,11 @@ func (c *ModCDPClient) serverConfigureParams(customCommands []map[string]any, cu
 	}
 	if c.Upstream.UpstreamNATSSubjectPrefix != "" {
 		upstream["upstream_nats_subject_prefix"] = c.Upstream.UpstreamNATSSubjectPrefix
+	}
+	if c.transport != nil {
+		if reverseWSURL := c.transport.GetInjectorConfig().UpstreamReverseWSURL; reverseWSURL != "" {
+			upstream["upstream_reversews_url"] = reverseWSURL
+		}
 	}
 	return map[string]any{
 		"upstream": upstream,
@@ -1012,7 +1019,7 @@ func (c *ModCDPClient) hydrateCustomSurface() {
 			continue
 		}
 		if schema := cloneSchema(event.EventSchema); schema != nil {
-			c.event_schemas[name] = schema
+			c.eventSchemas[name] = schema
 		}
 	}
 }
@@ -1061,7 +1068,7 @@ func (c *ModCDPClient) registerCustomEventParams(params map[string]any) (string,
 			return "", fmt.Errorf("event_schema must be a JSON Schema object")
 		}
 		if schema := cloneSchema(schemaObject); schema != nil {
-			c.event_schemas[name] = schema
+			c.eventSchemas[name] = schema
 		}
 	}
 	found := false
@@ -1133,7 +1140,7 @@ func (c *ModCDPClient) validateAndUnwrapCommandResult(method string, result any)
 
 func (c *ModCDPClient) validateEventData(event string, data any) (any, bool) {
 	c.schemaMu.RLock()
-	schema := c.event_schemas[event]
+	schema := c.eventSchemas[event]
 	c.schemaMu.RUnlock()
 	if schema == nil {
 		return data, true

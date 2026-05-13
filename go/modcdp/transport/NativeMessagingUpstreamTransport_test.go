@@ -77,6 +77,21 @@ func TestNativeMessagingUpstreamTransportConfigOwnsManifestHostWaitTimeoutLoopba
 	}
 }
 
+func TestNativeMessagingUpstreamTransportSendBeforePeerErrorsImmediately(t *testing.T) {
+	transport := NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{
+		UpstreamNativeMessagingHostName:      "com.modcdp.send.before.peer",
+		UpstreamNativeMessagingWaitTimeoutMS: 5_000,
+	})
+	started := time.Now()
+	err := transport.Send(map[string]any{"id": 1, "method": "Browser.getVersion"})
+	if err == nil || !strings.Contains(err.Error(), "no native messaging peer is connected for com.modcdp.send.before.peer") {
+		t.Fatalf("Send error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("Send waited for peer: elapsed = %s", elapsed)
+	}
+}
+
 func TestNativeMessagingUpstreamTransportCloseResetsPeerWaitState(t *testing.T) {
 	nativeHostName := fmt.Sprintf("com.modcdp.close.reset.go.%d", os.Getpid())
 	transport := NewNativeMessagingUpstreamTransport(NativeMessagingUpstreamTransportOptions{

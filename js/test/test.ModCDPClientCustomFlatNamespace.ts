@@ -89,3 +89,94 @@ test("custom events validate raw string handlers through a real service worker",
     await cdp.close();
   }
 }, 60_000);
+
+test("schema-only custom commands register without a websocket", async () => {
+  const cdp = new ModCDPClient();
+
+  const result = await cdp.send("Mod.addCustomCommand", {
+    name: "Custom.echo",
+    params_schema: {
+      type: "object",
+      properties: { text: { type: "string", minLength: 1 } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    result_schema: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  });
+
+  assert.deepEqual(result, { name: "Custom.echo", registered: true });
+  const command_params_schemas = (cdp as unknown as { command_params_schemas: Map<string, z.ZodType> })
+    .command_params_schemas;
+  const command_result_schemas = (cdp as unknown as { command_result_schemas: Map<string, z.ZodType> })
+    .command_result_schemas;
+  assert.deepEqual(command_params_schemas.get("Custom.echo")?.parse({ text: "ok" }), { text: "ok" });
+  assert.throws(() => command_params_schemas.get("Custom.echo")?.parse({ text: "" }));
+  assert.throws(() => command_params_schemas.get("Custom.echo")?.parse({ text: "ok", extra: true }));
+  assert.deepEqual(command_result_schemas.get("Custom.echo")?.parse({ text: "ok" }), { text: "ok" });
+  assert.throws(() => command_result_schemas.get("Custom.echo")?.parse({ text: 123 }));
+});
+
+test("constructor custom command and event schemas validate nested payloads", () => {
+  const cdp = new ModCDPClient({
+    custom_commands: [
+      {
+        name: "Custom.collect",
+        params_schema: {
+          type: "object",
+          properties: {
+            items: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  count: { type: "integer", minimum: 1 },
+                },
+                required: ["id", "count"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["items"],
+          additionalProperties: false,
+        },
+      },
+    ],
+    custom_events: [
+      {
+        name: "Custom.ready",
+        event_schema: {
+          type: "object",
+          properties: {
+            url: { type: "string", pattern: "^https://" },
+            ready: { type: "boolean" },
+          },
+          required: ["url", "ready"],
+          additionalProperties: false,
+        },
+      },
+      { name: "Custom.count", event_schema: { type: "integer", minimum: 1 } },
+    ],
+  });
+  const command_params_schemas = (cdp as unknown as { command_params_schemas: Map<string, z.ZodType> })
+    .command_params_schemas;
+  const event_schemas = (cdp as unknown as { event_schemas: Map<string, z.ZodType> }).event_schemas;
+
+  const valid_params = { items: [{ id: "a", count: 1 }] };
+  assert.deepEqual(command_params_schemas.get("Custom.collect")?.parse(valid_params), valid_params);
+  assert.throws(() => command_params_schemas.get("Custom.collect")?.parse({ items: [{ id: "a", count: 0 }] }));
+  assert.throws(() => command_params_schemas.get("Custom.collect")?.parse({ items: [] }));
+  assert.deepEqual(event_schemas.get("Custom.ready")?.parse({ url: "https://example.com", ready: true }), {
+    url: "https://example.com",
+    ready: true,
+  });
+  assert.throws(() => event_schemas.get("Custom.ready")?.parse({ url: "http://example.com", ready: true }));
+  assert.deepEqual(event_schemas.get("Custom.count")?.parse({ value: 3 }), { value: 3 });
+  assert.throws(() => event_schemas.get("Custom.count")?.parse({ value: 0 }));
+});

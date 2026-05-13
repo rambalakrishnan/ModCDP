@@ -16,6 +16,18 @@ EXTENSION_PATH = ROOT / "dist" / "extension"
 
 
 class ExtensionsLoadUnpackedInjectorTests(unittest.TestCase):
+    def test_prepares_default_packaged_extension_zip_when_path_is_omitted(self) -> None:
+        injector = ExtensionsLoadUnpackedInjector()
+        try:
+            injector.prepare()
+            unpacked_extension_path = injector.unpacked_extension_path
+            self.assertIsInstance(unpacked_extension_path, str)
+            unpacked_extension_path = cast(str, unpacked_extension_path)
+            self.assertTrue((Path(unpacked_extension_path) / "manifest.json").exists())
+            self.assertTrue(str(injector.options.get("injector_extension_path", "")).endswith("extension.zip"))
+        finally:
+            injector.close()
+
     def test_exercises_real_cdp_load_unpacked_path(self) -> None:
         chrome = LocalBrowserLauncher({"headless": True, "sandbox": False}).launch()
         ws = create_connection(cast(str, chrome["cdp_url"]), timeout=10)

@@ -30,6 +30,10 @@ const write = (to, contents) => {
 };
 
 copy("extension/manifest.json", "dist/extension/manifest.json");
+copy("dist/extension/src/config.js", "dist/extension/config.js");
+if (fs.existsSync(path.join(root, "dist/extension/src/config.js.map"))) {
+  copy("dist/extension/src/config.js.map", "dist/extension/config.js.map");
+}
 copy("extension/src/pages/options.html", "dist/extension/options.html");
 copy("dist/extension/src/pages/options.js", "dist/extension/options.js");
 copy("extension/src/pages/wake.html", "dist/extension/modcdp/wake.html");
@@ -43,6 +47,7 @@ if (fs.existsSync(path.join(root, "dist/js/src/server/ModCDPServer.js.map"))) {
 
 const service_worker = fs
   .readFileSync(path.join(root, "dist/extension/src/service_worker.js"), "utf8")
+  .replace("./config.js", "../config.js")
   .replace("../../js/src/server/ModCDPServer.js", "../js/src/server/ModCDPServer.js");
 write("dist/extension/modcdp/service_worker.js", service_worker);
 copy("dist/extension/src/service_worker.js.map", "dist/extension/modcdp/service_worker.js.map");

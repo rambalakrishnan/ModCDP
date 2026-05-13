@@ -3,6 +3,7 @@ package transport_test
 import (
 	modcdp "github.com/pirate/ModCDP/go/modcdp/client"
 	. "github.com/pirate/ModCDP/go/modcdp/transport"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,19 @@ func TestWebSocketUpstreamTransportResolvesRealHTTPCDPEndpointToBrowserWebSocket
 	result, _ := message["result"].(map[string]any)
 	if _, ok := result["product"].(string); !ok {
 		t.Fatalf("Browser.getVersion response = %#v", message)
+	}
+
+	parsedCDPURL, err := url.Parse(chrome.CDPURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPortTransport := NewWebSocketUpstreamTransport(WebSocketUpstreamTransportOptions{CDPURL: parsedCDPURL.Host})
+	if err := hostPortTransport.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer hostPortTransport.Close()
+	if !strings.HasPrefix(hostPortTransport.URL, "ws://") && !strings.HasPrefix(hostPortTransport.URL, "wss://") {
+		t.Fatalf("hostPortTransport.URL = %q", hostPortTransport.URL)
 	}
 }
 

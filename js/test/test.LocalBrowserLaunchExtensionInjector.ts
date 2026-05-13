@@ -22,7 +22,6 @@ test("LocalBrowserLaunchExtensionInjector loads the real extension during local 
     upstream: { upstream_mode: "ws" },
     injector: {
       injector_mode: "inject",
-      injector_extension_path: EXTENSION_PATH,
       injector_service_worker_url_suffixes: ["/modcdp/service_worker.js"],
       injector_trust_service_worker_target: true,
       injector_service_worker_probe_timeout_ms: 30_000,
@@ -57,6 +56,20 @@ test("LocalBrowserLaunchExtensionInjector prepares launcher config", async () =>
     const extra_args = injector.getLauncherConfig().extra_args ?? [];
     assert.equal(extra_args.length, 1);
     assert.match(extra_args[0], /^--load-extension=/);
+    assert.equal(injector.options.injector_extension_id, DEFAULT_MODCDP_EXTENSION_ID);
+  } finally {
+    await injector.close();
+  }
+});
+
+test("LocalBrowserLaunchExtensionInjector falls back to the default extension zip", async () => {
+  const injector = new LocalBrowserLaunchExtensionInjector();
+
+  try {
+    await injector.prepare();
+    const extra_args = injector.getLauncherConfig().extra_args ?? [];
+    assert.equal(extra_args.length, 1);
+    assert.match(extra_args[0], /^--load-extension=.*modcdp-extension-/);
     assert.equal(injector.options.injector_extension_id, DEFAULT_MODCDP_EXTENSION_ID);
   } finally {
     await injector.close();

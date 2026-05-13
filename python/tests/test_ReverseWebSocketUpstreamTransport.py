@@ -16,10 +16,19 @@ from modcdp.transport.ReverseWebSocketUpstreamTransport import ReverseWebSocketU
 
 class ReverseWebSocketUpstreamTransportTests(unittest.TestCase):
     def test_config_owns_bind_updates_wait_timeout_and_injector_config(self) -> None:
-        transport = ReverseWebSocketUpstreamTransport({"upstream_reversews_bind": "127.0.0.1:29292", "upstream_reversews_wait_timeout_ms": 10})
+        transport = ReverseWebSocketUpstreamTransport({
+            "upstream_reversews_bind": "127.0.0.1:29292",
+            "upstream_reversews_wait_timeout_ms": 10,
+        })
         self.assertEqual(transport.url, "ws://127.0.0.1:29292")
         self.assertEqual(transport.getInjectorConfig(), {"upstream_reversews_url": "ws://127.0.0.1:29292"})
-        self.assertIs(transport.update({"upstream_reversews_bind": "127.0.0.1:29293", "upstream_reversews_wait_timeout_ms": 5}), transport)
+        self.assertIs(
+            transport.update({
+                "upstream_reversews_bind": "127.0.0.1:29293",
+                "upstream_reversews_wait_timeout_ms": 5,
+            }),
+            transport,
+        )
         self.assertEqual(transport.url, "ws://127.0.0.1:29293")
         self.assertEqual(transport.getInjectorConfig(), {"upstream_reversews_url": "ws://127.0.0.1:29293"})
         with self.assertRaisesRegex(RuntimeError, "Timed out waiting 5ms"):
@@ -124,7 +133,7 @@ class ReverseWebSocketUpstreamTransportTests(unittest.TestCase):
             transport.close()
 
     def test_accepts_real_extension_reverse_connection_and_routes_cdp_through_loopback(self) -> None:
-        reverse_bind = "127.0.0.1:29292"
+        reverse_bind = f"127.0.0.1:{_free_port()}"
         cdp = ModCDPClient(
             launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
             upstream={"upstream_mode": "reversews", "upstream_reversews_bind": reverse_bind},

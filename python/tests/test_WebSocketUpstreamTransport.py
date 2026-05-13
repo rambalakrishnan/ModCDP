@@ -86,6 +86,23 @@ class WebSocketUpstreamTransportTests(unittest.TestCase):
             transport.close()
             chrome["close"]()
 
+    def test_resolves_real_host_port_cdp_endpoint_to_browser_websocket(self) -> None:
+        port = LocalBrowserLauncher.freePort()
+        chrome = LocalBrowserLauncher({"port": port, "headless": True, "sandbox": False}).launch()
+        transport = WebSocketUpstreamTransport({"cdp_url": f"127.0.0.1:{port}"})
+        received: Queue[dict] = Queue()
+        transport.onRecv(lambda message: received.put(message))
+        try:
+            transport.connect()
+            self.assertEqual(transport.url, chrome["cdp_url"])
+            transport.send({"id": 1, "method": "Browser.getVersion", "params": {}})
+            response = received.get(timeout=5)
+            self.assertEqual(response["id"], 1)
+            self.assertIsInstance(response["result"]["product"], str)
+        finally:
+            transport.close()
+            chrome["close"]()
+
     def test_close_clears_connection_state(self) -> None:
         chrome = LocalBrowserLauncher({"headless": True, "sandbox": False}).launch()
         transport = WebSocketUpstreamTransport({"cdp_url": chrome["cdp_url"]})

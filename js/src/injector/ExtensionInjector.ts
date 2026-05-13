@@ -3,6 +3,9 @@ import type { UpstreamTransportConfig } from "../transport/UpstreamTransport.js"
 import type { ProtocolParams, ProtocolResult } from "../types/modcdp.js";
 import { commands as RuntimeCommands } from "../types/generated/zod/Runtime.js";
 import { commands as TargetCommands } from "../types/generated/zod/Target.js";
+import { existsSync } from "node:fs";
+import fs from "node:fs";
+import path from "node:path";
 
 const EXT_ID_FROM_URL = /^chrome-extension:\/\/([a-z]+)\//;
 export const DEFAULT_MODCDP_EXTENSION_ID = "mdedooklbnfejodmnhmkdpkaedafkehf";
@@ -60,6 +63,31 @@ export type ExtensionInjectionResult = {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function defaultModCDPExtensionPath() {
+  if (typeof process === "object" && process?.versions?.node && import.meta.url.startsWith("file:")) {
+    const candidates = ["../../../dist/extension.zip", "../../../../dist/extension.zip"].map((relative_path) =>
+      decodeURIComponent(new URL(/* @vite-ignore */ relative_path, import.meta.url).pathname),
+    );
+    return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+  }
+  return "../../../dist/extension.zip";
+}
+
+export function writeModCDPExtensionRuntimeConfig(extension_path: string, options: ExtensionInjectorConfig) {
+  const upstream = {
+    ...(options.upstream_reversews_url ? { upstream_reversews_url: options.upstream_reversews_url } : {}),
+    ...(options.upstream_nativemessaging_host_name
+      ? { upstream_nativemessaging_host_name: options.upstream_nativemessaging_host_name }
+      : {}),
+    ...(options.upstream_nats_url ? { upstream_nats_url: options.upstream_nats_url } : {}),
+    ...(options.upstream_nats_subject_prefix ? { upstream_nats_subject_prefix: options.upstream_nats_subject_prefix } : {}),
+  };
+  fs.writeFileSync(
+    path.join(extension_path, "config.js"),
+    `globalThis.__MODCDP_RUNTIME_CONFIG__ = ${JSON.stringify({ upstream }, null, 2)};\nexport {};\n`,
+  );
 }
 
 export class ExtensionInjector {

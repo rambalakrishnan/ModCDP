@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import redirect_stderr
+from io import StringIO
 from queue import Queue
 import unittest
 from pathlib import Path
@@ -96,6 +98,27 @@ class ModCDPClientCustomFlatNamespaceTests(unittest.TestCase):
             self.assertEqual(seen.get(timeout=10), "ok")
         finally:
             client.close()
+
+    def test_schema_only_custom_event_registers_without_websocket(self) -> None:
+        client = ModCDPClient()
+
+        result = client.send(
+            "Mod.addCustomEvent",
+            {
+                "name": "Custom.schemaOnly",
+                "event_schema": {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                    "additionalProperties": False,
+                },
+            },
+        )
+
+        self.assertEqual(result, {"name": "Custom.schemaOnly", "registered": True})
+        self.assertEqual(client._validate_event_payload("Custom.schemaOnly", {"ok": True}), {"ok": True})
+        with redirect_stderr(StringIO()):
+            self.assertIsNone(client._validate_event_payload("Custom.schemaOnly", {"ok": True, "extra": True}))
 
 
 if __name__ == "__main__":

@@ -71,12 +71,12 @@ test("ws upstream launches a real browser and speaks raw CDP", async () => {
   }
 }, 60_000);
 
-test("ws upstream resolves a real HTTP CDP endpoint to the browser websocket", async () => {
+test("ws upstream resolves a bare host:port CDP endpoint to the browser websocket", async () => {
   const chrome = await new LocalBrowserLauncher({
     headless: true,
     sandbox: process.platform !== "linux",
   }).launch();
-  const transport = new WebSocketUpstreamTransport({ cdp_url: chrome.cdp_url });
+  const transport = new WebSocketUpstreamTransport({ cdp_url: `127.0.0.1:${chrome.port}` });
 
   try {
     const response = new Promise<Record<string, unknown>>((resolve) => {

@@ -28,6 +28,8 @@ test("ModCDPClient normalizes nested config owners", () => {
       upstream_cdp_url: "http://127.0.0.1:9222",
       upstream_nats_wait_timeout_ms: 345,
       upstream_reversews_wait_timeout_ms: 456,
+      upstream_nativemessaging_manifest: "/tmp/native-host.json",
+      upstream_nativemessaging_manifests: ["/tmp/native-host-extra.json"],
       upstream_nativemessaging_host_name: "com.modcdp.custom",
       upstream_nativemessaging_wait_timeout_ms: 567,
       upstream_ws_connect_error_settle_timeout_ms: 321,
@@ -67,6 +69,8 @@ test("ModCDPClient normalizes nested config owners", () => {
   assert.equal(cdp._launcherOptions().user_data_dir, "/tmp/profile");
   assert.equal(cdp.upstream.upstream_nats_wait_timeout_ms, 345);
   assert.equal(cdp.upstream.upstream_reversews_wait_timeout_ms, 456);
+  assert.equal(cdp.upstream.upstream_nativemessaging_manifest, "/tmp/native-host.json");
+  assert.deepEqual(cdp.upstream.upstream_nativemessaging_manifests, ["/tmp/native-host-extra.json"]);
   assert.equal(cdp.upstream.upstream_nativemessaging_host_name, "com.modcdp.custom");
   assert.equal(cdp.upstream.upstream_nativemessaging_wait_timeout_ms, 567);
   assert.equal(cdp.upstream.upstream_ws_connect_error_settle_timeout_ms, 321);
@@ -338,6 +342,7 @@ test("ModCDPClient.close does not close a remote browser it did not launch", asy
 }, 60_000);
 
 test("ModCDPClient.close keeps injector files until after launched browser shutdown", async () => {
+  const reverse_port = await LocalBrowserLauncher.freePort();
   const cdp = new ModCDPClient({
     launcher: {
       launcher_mode: "local",
@@ -345,7 +350,7 @@ test("ModCDPClient.close keeps injector files until after launched browser shutd
     },
     upstream: {
       upstream_mode: "reversews",
-      upstream_reversews_bind: "127.0.0.1:29292",
+      upstream_reversews_bind: `127.0.0.1:${reverse_port}`,
       upstream_reversews_wait_timeout_ms: 30_000,
     },
     injector: {
@@ -366,7 +371,7 @@ test("ModCDPClient.close keeps injector files until after launched browser shutd
     ) as unknown as { unpacked_extension_path?: string | null } | undefined;
     const unpacked_extension_path = injector?.unpacked_extension_path;
     assert.equal(typeof unpacked_extension_path, "string");
-    assert.equal(unpacked_extension_path, EXTENSION_PATH);
+    assert.notEqual(unpacked_extension_path, EXTENSION_PATH);
 
     const launched = cdp._launched;
     assert.ok(launched);
@@ -380,7 +385,7 @@ test("ModCDPClient.close keeps injector files until after launched browser shutd
     await cdp.close();
 
     assert.equal(browser_close_saw_extension, true);
-    assert.equal(existsSync(unpacked_extension_path!), true);
+    assert.equal(existsSync(unpacked_extension_path!), false);
   } finally {
     await cdp.close();
   }

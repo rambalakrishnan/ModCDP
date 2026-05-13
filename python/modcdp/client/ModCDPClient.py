@@ -17,7 +17,6 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from queue import Queue, Empty
 from typing import Any, cast
 
@@ -195,11 +194,6 @@ def _json_object(value: JsonValue | None) -> ProtocolResult:
     return value if isinstance(value, dict) else {}
 
 
-def default_extension_path() -> str | None:
-    bundled_extension = Path(__file__).resolve().parent.parent / "extension.zip"
-    return str(bundled_extension) if bundled_extension.exists() else None
-
-
 class ModCDPClient(CDPSurfaceMixin):
     def __init__(
         self,
@@ -230,6 +224,11 @@ class ModCDPClient(CDPSurfaceMixin):
                 upstream_input.get("upstream_reversews_wait_timeout_ms") or DEFAULT_UPSTREAM_REVERSEWS_WAIT_TIMEOUT_MS
             ),
             "upstream_nativemessaging_manifest": upstream_input.get("upstream_nativemessaging_manifest"),
+            "upstream_nativemessaging_manifests": list(
+                cast(Sequence[str], upstream_input.get("upstream_nativemessaging_manifests") or [])
+            )
+            if upstream_input.get("upstream_nativemessaging_manifests") is not None
+            else None,
             "upstream_nativemessaging_host_name": upstream_input.get("upstream_nativemessaging_host_name"),
             "upstream_nativemessaging_wait_timeout_ms": int(
                 upstream_input.get("upstream_nativemessaging_wait_timeout_ms") or DEFAULT_UPSTREAM_NATIVEMESSAGING_WAIT_TIMEOUT_MS
@@ -255,7 +254,7 @@ class ModCDPClient(CDPSurfaceMixin):
         raw_service_worker_url_suffixes = injector_input.get("injector_service_worker_url_suffixes")
         self.injector: dict[str, Any] = {
             "injector_mode": injector_mode,
-            "injector_extension_path": injector_input.get("injector_extension_path") or default_extension_path(),
+            "injector_extension_path": injector_input.get("injector_extension_path"),
             "injector_extension_id": injector_input.get("injector_extension_id"),
             "injector_wake_path": injector_input.get("injector_wake_path") or DEFAULT_MODCDP_WAKE_PATH,
             "injector_wake_url": injector_input.get("injector_wake_url"),
@@ -584,6 +583,7 @@ class ModCDPClient(CDPSurfaceMixin):
 
     def _server_configure_params(self) -> ModCDPServerConfig:
         server = dict(self.server or {})
+        transport_injector_config = self.transport.getInjectorConfig() if self.transport is not None else {}
         server_routes = server.pop("server_routes", None)
         server_loopback_cdp_url = server.pop("server_loopback_cdp_url", None)
         server_browser_token = server.pop("server_browser_token", None)
@@ -615,6 +615,11 @@ class ModCDPClient(CDPSurfaceMixin):
         return cast(ModCDPServerConfig, {
             "upstream": {
                 "upstream_mode": self.upstream.get("upstream_mode"),
+                **(
+                    {"upstream_reversews_url": transport_injector_config.get("upstream_reversews_url")}
+                    if transport_injector_config.get("upstream_reversews_url")
+                    else {}
+                ),
                 **({"upstream_nats_url": self.upstream.get("upstream_nats_url")} if self.upstream.get("upstream_nats_url") else {}),
                 **(
                     {"upstream_nats_subject_prefix": self.upstream.get("upstream_nats_subject_prefix")}
@@ -776,6 +781,7 @@ class ModCDPClient(CDPSurfaceMixin):
             "upstream_reversews_bind": self.upstream.get("upstream_reversews_bind"),
             "upstream_reversews_wait_timeout_ms": self.upstream.get("upstream_reversews_wait_timeout_ms"),
             "upstream_nativemessaging_manifest": self.upstream.get("upstream_nativemessaging_manifest"),
+            "upstream_nativemessaging_manifests": self.upstream.get("upstream_nativemessaging_manifests"),
             "upstream_nativemessaging_host_name": self.upstream.get("upstream_nativemessaging_host_name"),
             "upstream_nativemessaging_wait_timeout_ms": self.upstream.get("upstream_nativemessaging_wait_timeout_ms"),
             "injector_extension_id": self.injector.get("injector_extension_id"),

@@ -165,12 +165,6 @@ func (t *NativeMessagingUpstreamTransport) Send(message map[string]any) error {
 	defer t.writeMu.Unlock()
 	conn := t.Conn
 	if conn == nil {
-		if err := t.WaitForPeer(); err != nil {
-			return err
-		}
-		conn = t.Conn
-	}
-	if conn == nil {
 		return fmt.Errorf("no native messaging peer is connected for %s", t.UpstreamNativeMessagingHostName)
 	}
 	return writeLengthPrefixedJSON(conn, message)

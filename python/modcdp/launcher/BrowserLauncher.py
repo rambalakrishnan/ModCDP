@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import re
+import urllib.request
 from collections.abc import Callable
 from typing import Any, TypedDict, cast
 
@@ -49,6 +52,7 @@ class LaunchedBrowser(TypedDict):
 
 DEFAULT_CHROME_READY_TIMEOUT_MS = 45_000
 DEFAULT_CHROME_READY_POLL_INTERVAL_MS = 100
+CDP_URL_SCHEME_RE = re.compile(r"^[a-z][a-z\d+\-.]*://", re.I)
 
 
 class BrowserLauncher:
@@ -117,3 +121,15 @@ def merge_chrome_args(existing: list[str] | None = None, incoming: list[str] | N
         else:
             merged.insert(first_url_index, load_extension_arg)
     return merged
+
+
+def resolveCdpWebSocketUrl(endpoint: str, name: str = "cdp_url") -> str:
+    if endpoint.startswith(("ws://", "wss://")):
+        return endpoint
+    http_endpoint = endpoint if CDP_URL_SCHEME_RE.match(endpoint) else f"http://{endpoint}"
+    with urllib.request.urlopen(f"{http_endpoint.rstrip('/')}/json/version", timeout=10) as response:
+        version = json.loads(response.read().decode())
+    cdp_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
+    if not isinstance(cdp_url, str) or not cdp_url:
+        raise RuntimeError(f"{name} HTTP discovery returned no webSocketDebuggerUrl")
+    return cdp_url

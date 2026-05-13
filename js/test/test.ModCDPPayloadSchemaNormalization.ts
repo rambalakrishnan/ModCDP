@@ -10,7 +10,7 @@ test("payload schema normalization accepts empty zod shapes", () => {
 });
 
 test("payload schema normalization rejects unsupported schema specs", () => {
-  assert.throws(() => normalizeModCDPPayloadSchema({ type: "string" }), /Unsupported payload schema/);
+  assert.throws(() => normalizeModCDPPayloadSchema("not-a-schema" as never), /Unsupported payload schema/);
 });
 
 test("payload schema normalization accepts non-empty zod shapes", () => {

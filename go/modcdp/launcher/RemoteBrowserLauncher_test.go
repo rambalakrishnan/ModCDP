@@ -47,6 +47,16 @@ func TestRemoteBrowserLauncherConnectsToRealBrowserFromHTTPAndWebSocketCDPEndpoi
 	expectCDPBrowserSurface(t, conn)
 	fromHTTP.Close()
 
+	hostPortLauncher := NewRemoteBrowserLauncher(LaunchOptions{}, fmt.Sprintf("127.0.0.1:%d", port))
+	fromHostPort, err := hostPortLauncher.Launch(LaunchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromHostPort.CDPURL != local.CDPURL {
+		t.Fatalf("fromHostPort.CDPURL = %q, want %q", fromHostPort.CDPURL, local.CDPURL)
+	}
+	fromHostPort.Close()
+
 	optionsLauncher := NewRemoteBrowserLauncher(LaunchOptions{CDPURL: local.CDPURL}, "")
 	fromOptions, err := optionsLauncher.Launch(LaunchOptions{})
 	if err != nil {
@@ -74,4 +84,14 @@ func TestRemoteBrowserLauncherConnectsToRealBrowserFromHTTPAndWebSocketCDPEndpoi
 	}
 	expectCDPBrowserSurface(t, conn)
 	fromWS.Close()
+
+	overrideLauncher := NewRemoteBrowserLauncher(LaunchOptions{CDPURL: "127.0.0.1:1"}, "127.0.0.1:2")
+	fromCallTimeOverride, err := overrideLauncher.Launch(LaunchOptions{CDPURL: local.CDPURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromCallTimeOverride.CDPURL != local.CDPURL {
+		t.Fatalf("fromCallTimeOverride.CDPURL = %q, want %q", fromCallTimeOverride.CDPURL, local.CDPURL)
+	}
+	fromCallTimeOverride.Close()
 }

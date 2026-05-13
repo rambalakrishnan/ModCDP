@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,6 +34,8 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 			UpstreamCDPURL:                        "http://127.0.0.1:9222",
 			UpstreamNATSWaitTimeoutMS:             345,
 			UpstreamReverseWSWaitTimeoutMS:        456,
+			UpstreamNativeMessagingManifest:       "/tmp/native-host.json",
+			UpstreamNativeMessagingManifests:      []string{"/tmp/native-host-extra.json"},
 			UpstreamNativeMessagingHostName:       "com.modcdp.custom",
 			UpstreamNativeMessagingWaitTimeoutMS:  567,
 			UpstreamWSConnectErrorSettleTimeoutMS: 321,
@@ -82,6 +85,12 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 	if cdp.Upstream.UpstreamNATSWaitTimeoutMS != 345 {
 		t.Fatalf("Upstream.UpstreamNATSWaitTimeoutMS = %d", cdp.Upstream.UpstreamNATSWaitTimeoutMS)
 	}
+	if cdp.Upstream.UpstreamNativeMessagingManifest != "/tmp/native-host.json" {
+		t.Fatalf("Upstream.UpstreamNativeMessagingManifest = %q", cdp.Upstream.UpstreamNativeMessagingManifest)
+	}
+	if len(cdp.Upstream.UpstreamNativeMessagingManifests) != 1 || cdp.Upstream.UpstreamNativeMessagingManifests[0] != "/tmp/native-host-extra.json" {
+		t.Fatalf("Upstream.UpstreamNativeMessagingManifests = %#v", cdp.Upstream.UpstreamNativeMessagingManifests)
+	}
 	if cdp.Upstream.UpstreamNativeMessagingHostName != "com.modcdp.custom" {
 		t.Fatalf("Upstream.UpstreamNativeMessagingHostName = %q", cdp.Upstream.UpstreamNativeMessagingHostName)
 	}
@@ -109,7 +118,7 @@ func TestModCDPClientNormalizesNestedConfigOwners(t *testing.T) {
 	if cdp.Client.ClientHydrateAliases == nil || *cdp.Client.ClientHydrateAliases {
 		t.Fatalf("Client.ClientHydrateAliases = %#v", cdp.Client.ClientHydrateAliases)
 	}
-	if _, err := cdp.Browser.GetVersion(); err == nil || !strings.Contains(err.Error(), "client.hydrate_aliases is false") {
+	if _, err := cdp.Browser.GetVersion(); err == nil || !strings.Contains(err.Error(), "client_hydrate_aliases is false") {
 		t.Fatalf("Browser.GetVersion with aliases disabled error = %v", err)
 	}
 	if cdp.Client.ClientMirrorUpstreamEvents == nil || *cdp.Client.ClientMirrorUpstreamEvents {
@@ -245,6 +254,7 @@ func TestModCDPClientOptionsMarshalToSnakeCaseConfigShape(t *testing.T) {
 			UpstreamNATSWaitTimeoutMS:             789,
 			UpstreamReverseWSWaitTimeoutMS:        1_234,
 			UpstreamNativeMessagingManifest:       "/tmp/native.json",
+			UpstreamNativeMessagingManifests:      []string{"/tmp/native-extra.json"},
 			UpstreamNativeMessagingHostName:       "com.modcdp.custom",
 			UpstreamNativeMessagingWaitTimeoutMS:  2_345,
 			UpstreamWSConnectErrorSettleTimeoutMS: 321,
@@ -298,6 +308,7 @@ func TestModCDPClientOptionsMarshalToSnakeCaseConfigShape(t *testing.T) {
 		`"upstream_nats_wait_timeout_ms"`,
 		`"upstream_reversews_wait_timeout_ms"`,
 		`"upstream_nativemessaging_manifest"`,
+		`"upstream_nativemessaging_manifests"`,
 		`"upstream_nativemessaging_host_name"`,
 		`"upstream_nativemessaging_wait_timeout_ms"`,
 		`"injector"`,
@@ -656,6 +667,10 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	reversePort, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cdp := New(Options{
 		Launcher: LauncherConfig{LauncherMode: "local",
 			LauncherOptions: LaunchOptions{
@@ -665,7 +680,7 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 		},
 		Upstream: UpstreamConfig{
 			UpstreamMode:                   "reversews",
-			UpstreamReverseWSBind:          "127.0.0.1:29292",
+			UpstreamReverseWSBind:          fmt.Sprintf("127.0.0.1:%d", reversePort),
 			UpstreamReverseWSWaitTimeoutMS: 30_000,
 		},
 		Injector: InjectorConfig{
@@ -691,7 +706,7 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 		t.Fatal("expected LocalBrowserLaunchExtensionInjector")
 	}
 	unpackedExtensionPath := localInjector.UnpackedExtensionPath
-	if unpackedExtensionPath != extensionPath {
+	if unpackedExtensionPath == extensionPath {
 		t.Fatalf("UnpackedExtensionPath = %q", unpackedExtensionPath)
 	}
 
@@ -707,8 +722,8 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 	if !browserCloseSawExtension {
 		t.Fatal("browser close did not see prepared extension files")
 	}
-	if _, err := os.Stat(unpackedExtensionPath); err != nil {
-		t.Fatalf("expected static extension files to remain after close, got %v", err)
+	if _, err := os.Stat(unpackedExtensionPath); err == nil {
+		t.Fatalf("expected prepared temp extension files to be cleaned up after close")
 	}
 	if cdp.transport != nil {
 		t.Fatal("expected transport to be nil")

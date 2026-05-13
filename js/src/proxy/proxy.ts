@@ -22,7 +22,6 @@
 // Or import { startProxy } and embed.
 
 import http from "node:http";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RawData } from "ws";
@@ -68,8 +67,6 @@ import {
 import { events as RuntimeEvents } from "../types/generated/zod/Runtime.js";
 import { events as TargetEvents } from "../types/generated/zod/Target.js";
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_EXTENSION_PATH = defaultExtensionPath();
 const DEFAULT_PORT = 9223;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_UPSTREAM = "http://127.0.0.1:9222";
@@ -86,20 +83,6 @@ const MAGIC_METHODS = new Set(["Mod.evaluate", "Mod.addCustomCommand", "Mod.addC
 const ROUTE_TO_SW_RE = /^(Mod|Custom)\./;
 const isWebSocketEndpoint = (url) => typeof url === "string" && /^wss?:\/\//i.test(url);
 
-function defaultExtensionPath() {
-  const candidates = [
-    path.resolve(ROOT, "..", "..", "..", "dist", "extension"),
-    path.resolve(ROOT, "..", "..", "..", "extension"),
-    path.resolve(ROOT, "..", "..", "..", "..", "dist", "extension"),
-    path.resolve(ROOT, "..", "..", "..", "..", "extension"),
-  ];
-  return candidates.find(isBuiltExtensionPath) ?? candidates[0];
-}
-
-function isBuiltExtensionPath(candidate: string) {
-  return existsSync(path.join(candidate, "modcdp", "service_worker.js"));
-}
-
 // --- public API -------------------------------------------------------------
 
 export async function startProxy({
@@ -107,7 +90,7 @@ export async function startProxy({
   port = DEFAULT_PORT,
   launcher = { launcher_mode: "remote" },
   upstream = { upstream_mode: "ws", upstream_cdp_url: DEFAULT_UPSTREAM },
-  injector = { injector_mode: "auto", injector_extension_path: DEFAULT_EXTENSION_PATH },
+  injector = { injector_mode: "auto" },
   client: clientOptions = {},
   server: serverOptions = {},
   forward_mirrored_upstream_events = false,
@@ -835,6 +818,7 @@ async function handleClientManagedConnection(
       upstream_nats_subject_prefix: upstream.upstream_nats_subject_prefix,
       upstream_nats_wait_timeout_ms: upstream.upstream_nats_wait_timeout_ms,
       upstream_nativemessaging_manifest: upstream.upstream_nativemessaging_manifest,
+      upstream_nativemessaging_manifests: upstream.upstream_nativemessaging_manifests,
       upstream_nativemessaging_host_name: upstream.upstream_nativemessaging_host_name,
       upstream_nativemessaging_wait_timeout_ms: upstream.upstream_nativemessaging_wait_timeout_ms,
       upstream_ws_connect_error_settle_timeout_ms: upstream.upstream_ws_connect_error_settle_timeout_ms,
@@ -918,7 +902,6 @@ function wireClientManagedConnection(
 
 function proxyInjectorOptions(injector: InjectorOptions, default_mode: NonNullable<InjectorOptions["injector_mode"]>) {
   return {
-    injector_extension_path: DEFAULT_EXTENSION_PATH,
     injector_service_worker_url_suffixes: ["/modcdp/service_worker.js"],
     ...injector,
     injector_mode: injector.injector_mode ?? default_mode,
@@ -1172,7 +1155,7 @@ export function runProxyCli(args = process.argv.slice(2)) {
   const injector_extension_path =
     typeof argv["injector-extension-path"] === "string" && argv["injector-extension-path"] !== "true"
       ? path.resolve(argv["injector-extension-path"])
-      : DEFAULT_EXTENSION_PATH;
+      : null;
   const forward_mirrored_upstream_events = argv["forward-mirrored-upstream-events"] === "true";
   const clientConfig =
     typeof argv.client === "string" && argv.client !== "true"
@@ -1234,6 +1217,11 @@ export function runProxyCli(args = process.argv.slice(2)) {
         argv["upstream-nativemessaging-manifest"] !== "true"
           ? String(argv["upstream-nativemessaging-manifest"])
           : null,
+      upstream_nativemessaging_manifests:
+        typeof argv["upstream-nativemessaging-manifests"] === "string" &&
+        argv["upstream-nativemessaging-manifests"] !== "true"
+          ? parseStringList(argv["upstream-nativemessaging-manifests"])
+          : null,
       upstream_nativemessaging_host_name:
         typeof argv["upstream-nativemessaging-host-name"] === "string" &&
         argv["upstream-nativemessaging-host-name"] !== "true"
@@ -1248,6 +1236,19 @@ export function runProxyCli(args = process.argv.slice(2)) {
     injector: {
       injector_mode: String(argv["injector-mode"] || "auto") as InjectorOptions["injector_mode"],
       injector_extension_path,
+      injector_extension_id: optionalStringArg(argv, "injector-extension-id"),
+      injector_wake_path: optionalStringArg(argv, "injector-wake-path"),
+      injector_wake_url: optionalStringArg(argv, "injector-wake-url"),
+      injector_service_worker_url_includes: optionalStringListArg(argv, "injector-service-worker-url-includes"),
+      injector_service_worker_url_suffixes: optionalStringListArg(argv, "injector-service-worker-url-suffixes"),
+      injector_trust_service_worker_target: optionalBooleanArg(argv, "injector-trust-service-worker-target"),
+      injector_require_service_worker_target: optionalBooleanArg(argv, "injector-require-service-worker-target"),
+      injector_service_worker_ready_expression: optionalStringArg(argv, "injector-service-worker-ready-expression"),
+      injector_execution_context_timeout_ms: optionalNumberArg(argv, "injector-execution-context-timeout-ms"),
+      injector_service_worker_probe_timeout_ms: optionalNumberArg(argv, "injector-service-worker-probe-timeout-ms"),
+      injector_service_worker_ready_timeout_ms: optionalNumberArg(argv, "injector-service-worker-ready-timeout-ms"),
+      injector_service_worker_poll_interval_ms: optionalNumberArg(argv, "injector-service-worker-poll-interval-ms"),
+      injector_target_session_poll_interval_ms: optionalNumberArg(argv, "injector-target-session-poll-interval-ms"),
     },
     client: clientConfig as ClientConfigOptions,
     server: serverConfig as ModCDPServerOptions,
@@ -1291,4 +1292,36 @@ function parseProxyArgs(args: string[]) {
     if (next && !next.startsWith("--")) i += 1;
   }
   return result;
+}
+
+function optionalStringArg(argv: Record<string, string>, name: string) {
+  const value = argv[name];
+  return typeof value === "string" && value !== "true" ? value : undefined;
+}
+
+function optionalNumberArg(argv: Record<string, string>, name: string) {
+  const value = optionalStringArg(argv, name);
+  return value == null ? undefined : Number(value);
+}
+
+function optionalBooleanArg(argv: Record<string, string>, name: string) {
+  const value = argv[name];
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return Boolean(value);
+}
+
+function optionalStringListArg(argv: Record<string, string>, name: string) {
+  const value = optionalStringArg(argv, name);
+  return value == null ? undefined : parseStringList(value);
+}
+
+function parseStringList(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("[")) return JSON.parse(trimmed) as string[];
+  return trimmed
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }

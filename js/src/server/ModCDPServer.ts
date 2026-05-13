@@ -996,6 +996,9 @@ export function installModCDPServer(globalScope: ModCDPGlobalScope = globalThis 
           upstream_nats_subject_prefix: upstream.upstream_nats_subject_prefix ?? DEFAULT_NATS_BRIDGE_SUBJECT_PREFIX,
         });
       }
+      if (upstream.upstream_mode === "reversews" && upstream.upstream_reversews_url) {
+        this.startReverseBridge(upstream.upstream_reversews_url);
+      }
       if (server_routes) this.routes = { ...defaultRoutes, ...server_routes };
       else {
         this.routes = { ...defaultRoutes };
