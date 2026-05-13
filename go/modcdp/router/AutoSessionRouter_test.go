@@ -66,9 +66,13 @@ func TestAutoSessionRouterBoundsDetachedSessionGuardsAndClearsThemWhenSessionRea
 
 	router.mu.Lock()
 	detachedCount := len(router.detachedSessions)
+	detachedOrderCount := len(router.detachedSessionOrder)
 	router.mu.Unlock()
 	if detachedCount > maxDetachedSessionGuards {
 		t.Fatalf("detached session guard count = %d, want <= %d", detachedCount, maxDetachedSessionGuards)
+	}
+	if detachedOrderCount > maxDetachedSessionGuards {
+		t.Fatalf("detached session guard order count = %d, want <= %d", detachedOrderCount, maxDetachedSessionGuards)
 	}
 
 	recentSessionID := "detached-session-1033"
@@ -88,6 +92,16 @@ func TestAutoSessionRouterBoundsDetachedSessionGuardsAndClearsThemWhenSessionRea
 	}
 	if contextID := router.ExecutionContexts[recentSessionID]; contextID != 43 {
 		t.Fatalf("context id = %d, want 43", contextID)
+	}
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	if router.detachedSessions[recentSessionID] {
+		t.Fatal("reattached session was still marked detached")
+	}
+	for _, detachedSessionID := range router.detachedSessionOrder {
+		if detachedSessionID == recentSessionID {
+			t.Fatal("reattached session stayed in detached session order")
+		}
 	}
 }
 

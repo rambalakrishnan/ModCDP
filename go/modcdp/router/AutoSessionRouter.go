@@ -180,6 +180,13 @@ func (r *AutoSessionRouter) markDetachedSessionLocked(sessionID string) {
 
 func (r *AutoSessionRouter) clearDetachedSessionLocked(sessionID string) {
 	delete(r.detachedSessions, sessionID)
+	filtered := r.detachedSessionOrder[:0]
+	for _, candidateSessionID := range r.detachedSessionOrder {
+		if candidateSessionID != sessionID {
+			filtered = append(filtered, candidateSessionID)
+		}
+	}
+	r.detachedSessionOrder = filtered
 }
 
 func intFromAny(value any) (int, bool) {
