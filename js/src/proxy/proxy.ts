@@ -17,6 +17,8 @@
 // Run as a CLI:
 //   node proxy.js --port 9223 --upstream-mode=ws --upstream-cdp-url=http://127.0.0.1:9222
 //   node proxy.js --port 9223 --launcher-mode=local --upstream-mode=pipe
+//   node proxy.js --port 9223 --launcher-mode=local --upstream-mode=nativemessaging
+//   node proxy.js --port 9223 --launcher-mode=local --upstream-mode=reversews --upstream-reversews-bind=127.0.0.1:29292
 //   node proxy.js --port 9223 --launcher-mode=local --upstream-mode=nats --upstream-nats-url=ws://127.0.0.1:4223
 //
 // Or import { startProxy } and embed.

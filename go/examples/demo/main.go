@@ -6,6 +6,8 @@
 //   --loopback   *.* -> service_worker on client; *.* -> loopback_cdp on server. Default.
 //   --debugger   *.* -> service_worker on client; *.* -> chrome_debugger on server.
 //   --upstream   ws|pipe|reversews|nativemessaging|nats. Defaults to ws.
+//                reversews and nativemessaging use the fixed extension defaults:
+//                ws://127.0.0.1:29292 and com.modcdp.bridge.
 
 package main
 

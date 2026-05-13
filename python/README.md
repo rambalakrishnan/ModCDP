@@ -34,9 +34,11 @@ You can send `Mod.*`, `Custom.*`, etc. through standard Playwright/Puppeteer/oth
 import { ModCDPClient } from "modcdp";
 import { z } from "zod";
 
-const upstream_cdp_url = "http://127.0.0.1:9222"; // ws://... URLs work too
-const cdp = new ModCDPClient({ launcher: { launcher_mode: "remote" },
-  upstream: { upstream_mode: "ws", upstream_cdp_url: upstream_cdp_url }, injector: { injector_mode: "auto" },
+const upstream_cdp_url = "http://127.0.0.1:9222"; // host:port, http(s), and ws(s) URLs work
+const cdp = new ModCDPClient({
+  launcher: { launcher_mode: "remote" },
+  upstream: { upstream_mode: "ws", upstream_cdp_url },
+  injector: { injector_mode: "auto" },
   client: { client_routes: { "Target.getTargets": "service_worker" } },
   server: { server_loopback_cdp_url: upstream_cdp_url, server_routes: { "*.*": "loopback_cdp" } },
 });
@@ -111,14 +113,18 @@ console.log(created);
 
 ## Run the demos
 
-Each demo launches Chrome with the extension loaded, headful on macOS and `--headless=new` on Linux, then exercises every primitive in the chosen mode:
+Each demo launches Chrome with the fixed ModCDP extension artifact loaded, headful on macOS and `--headless=new` on Linux, then exercises raw CDP, `Mod.evaluate`, `Custom.*` commands, custom events, middleware, and latency reporting in the chosen mode. When stdin is a TTY, the demo leaves you in the same mini REPL/TUI across JS, Python, and Go.
 
 ```sh
-pnpm run demo:js                    # defaults to --loopback; also supports --direct / --debugger
-python3 -m pip install websocket-client
+pnpm run demo:js                    # defaults to --loopback --upstream=ws
+pnpm run demo:js -- --debugger --upstream=pipe
+pnpm run demo:js -- --loopback --upstream=reversews
+pnpm run demo:js -- --loopback --upstream=nativemessaging
 pnpm run demo:python
 pnpm run demo:go
 ```
+
+The Python package is managed with `uv`; `pnpm run demo:python` runs the built demo through `uv` and does not require a separate `pip install`. Set `CHROME_PATH=/path/to/chromium` to force a specific browser binary.
 
 ## Transparent Proxy
 
@@ -127,6 +133,7 @@ Upgrade any vanilla CDP client like Stagehand, Playwright, or Puppeteer transpar
 ```sh
 pnpm run proxy -- --upstream-mode=ws --upstream-cdp-url=http://127.0.0.1:9222 --port 9223
 pnpm run proxy -- --launcher-mode=local --upstream-mode=pipe --port 9223
+pnpm run proxy -- --launcher-mode=local --upstream-mode=nativemessaging --port 9223
 pnpm run proxy -- --launcher-mode=local --upstream-mode=nats --upstream-nats-url=ws://127.0.0.1:4223 --port 9223
 # const browser = await playwright.chromium.connectOverCDP("http://127.0.0.1:9223")
 # const session = await browser.contexts()[0].newCDPSession(page)
@@ -134,7 +141,9 @@ pnpm run proxy -- --launcher-mode=local --upstream-mode=nats --upstream-nats-url
 # ✨ All ModCDP commands now work through playwright! you can modify/extend playwright behavior to your heart's content
 ```
 
-The proxy uses the same `--launcher-*`, `--injector-*`, `--upstream-*`, `--client='{"client_routes": {...}}'`, and `--server='{"server_routes": {...}}'` option groups as `ModCDPClient`. `--launcher-options='{...}'` passes launcher-owned options such as `headless` and `sandbox`; `--client-routes='{...}'` and `--server-routes='{...}'` are route-only shorthands. Native messaging uses the default `com.modcdp.bridge` host name unless `--upstream-nativemessaging-host-name=...` is supplied, which is mainly useful for isolating simultaneous local test runs. `ws` keeps a transparent websocket-to-websocket fast path; `pipe`, `nativemessaging`, `nats`, and launched `reversews` proxy downstream CDP-shaped messages through the selected `ModCDPClient` upstream transport.
+The proxy uses the same `--launcher-*`, `--injector-*`, `--upstream-*`, `--client='{"client_routes": {...}}'`, and `--server='{"server_routes": {...}}'` option groups as `ModCDPClient`. `--launcher-options='{...}'` passes launcher-owned options such as `headless` and `sandbox`; `--client-routes='{...}'` and `--server-routes='{...}'` are route-only shorthands. `ws` keeps a transparent websocket-to-websocket fast path; `pipe`, `nativemessaging`, `nats`, and launched `reversews` proxy downstream CDP-shaped messages through the selected `ModCDPClient` upstream transport.
+
+Native messaging mode creates the local native host wrapper and browser manifest on each run. The fixed extension auto-dials the default `com.modcdp.bridge` host, so the 1:1 automatic path does not require preinstalling a host binary at a fixed path. `--upstream-nativemessaging-manifest`, `--upstream-nativemessaging-manifests`, and `--upstream-nativemessaging-host-name` are for custom browser profiles, externally configured extensions, or isolated transport-level tests; the default auto-injected extension expects `com.modcdp.bridge`.
 
 ### Reverse proxy mode
 
@@ -146,7 +155,7 @@ pnpm run proxy -- --launcher-mode=local --upstream-mode=reversews --upstream-rev
 # const browser = await playwright.chromium.connectOverCDP("http://127.0.0.1:9223")
 ```
 
-Reverse mode is opt-in. The shipped extension has no generated runtime config; it always tries the fixed local reverse connector at `ws://127.0.0.1:29292`. With `--launcher-mode=local`, use that default bind and the normal `ModCDPClient` launcher, injector, and `ReverseWebSocketUpstreamTransport` path will wake the service worker and accept its connection. With `--launcher-mode=none` or a non-default bind, an already-running extension or test must call `globalThis.ModCDP.startReverseBridge("ws://127.0.0.1:29292", { reconnect_interval_ms: 2000 })`. `--upstream-reversews-wait-timeout-ms` controls how long the proxy/client waits for that extension connection. Once it connects, it self-identifies as a ModCDP extension service worker and the proxy uses that reverse websocket as its upstream. `Mod.*`, expression-backed `Custom.*` commands, custom event fanout, middleware, and normal CDP commands all stay routed through `globalThis.ModCDP.handleCommand(...)` in the service worker.
+Reverse mode is opt-in. The shipped extension has no generated runtime config; it always tries the fixed local reverse connector at `ws://127.0.0.1:29292`. With `--launcher-mode=local`, use that default bind and the normal `ModCDPClient` launcher, injector, and `ReverseWebSocketUpstreamTransport` path will wake the service worker and accept its connection. With `--launcher-mode=none` or a non-default bind, an already-running extension or test must explicitly call `globalThis.ModCDP.startReverseBridge("ws://host:port", { reconnect_interval_ms: 2000 })` with the chosen endpoint because there is no side channel before the reverse connection exists. `--upstream-reversews-wait-timeout-ms` controls how long the proxy/client waits for that extension connection. Once it connects, it self-identifies as a ModCDP extension service worker and the proxy uses that reverse websocket as its upstream. `Mod.*`, expression-backed `Custom.*` commands, custom event fanout, middleware, and normal CDP commands all stay routed through `globalThis.ModCDP.handleCommand(...)` in the service worker.
 
 Reverse mode is intentionally scoped to one local browser and one reverse extension connection per proxy process. The browser may still have other extensions installed; ModCDP does not require `--disable-extensions-except`.
 
@@ -221,7 +230,7 @@ dist/                     Built JS output used by the extension and Node CLI scr
 3. Attach a session to that SW target and `Runtime.enable` on it.
 4. Call `globalThis.ModCDP.configure(...)` to push the resolved loopback websocket and any explicit server route overrides into the SW. The clients do this automatically by default.
 
-Reverse proxy mode flips the bootstrap direction: `js/src/proxy/proxy.ts --upstream-mode=reversews --upstream-reversews-bind=127.0.0.1:29292` listens for the extension, while still serving downstream clients from `--listen`. The extension artifact is fixed, so automatic launch/injection uses the default `127.0.0.1:29292` connector; non-default reverse binds need an external bootstrap call to `globalThis.ModCDP.startReverseBridge(...)`. The service worker sends a `modcdp.reverse.hello` message and then accepts CDP-shaped command messages from the proxy. The proxy maps downstream request IDs to reverse request IDs and forwards reverse events back to the downstream CDP client.
+Reverse proxy mode flips the bootstrap direction: `js/src/proxy/proxy.ts --upstream-mode=reversews --upstream-reversews-bind=127.0.0.1:29292` listens for the extension, while still serving downstream clients from `--listen`. The extension artifact is fixed, so automatic launch/injection uses the default `127.0.0.1:29292` connector; non-default reverse binds need an external bootstrap call to `globalThis.ModCDP.startReverseBridge(...)` with the same URL. The service worker sends a `modcdp.reverse.hello` message and then accepts CDP-shaped command messages from the proxy. The proxy maps downstream request IDs to reverse request IDs and forwards reverse events back to the downstream CDP client.
 
 ### Send
 

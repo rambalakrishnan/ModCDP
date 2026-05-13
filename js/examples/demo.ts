@@ -14,6 +14,8 @@
 //                 on server.)
 //
 //   --upstream    select the browser/upstream transport. Defaults to ws.
+//                 reversews and nativemessaging use the fixed extension
+//                 defaults: ws://127.0.0.1:29292 and com.modcdp.bridge.
 //
 // Valid CI/local demo combinations exercise the same surface: raw Browser.getVersion, raw
 // Target.targetCreated event handling, Mod.evaluate, Custom.* commands,

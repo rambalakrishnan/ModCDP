@@ -5,6 +5,7 @@
 // support to every CDPSession.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
@@ -13,7 +14,10 @@ import { LocalBrowserLauncher } from "../src/launcher/LocalBrowserLauncher.js";
 import { startProxy } from "../src/proxy/proxy.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const extension_path = path.resolve(here, "../../extension");
+const extension_path =
+  [path.resolve(here, "../../extension"), path.resolve(here, "../../dist/extension")].find((candidate) =>
+    existsSync(path.join(candidate, "modcdp/service_worker.js")),
+  ) ?? path.resolve(here, "../../extension");
 const DEFAULT_CUSTOM_PROXY_EVENT_TIMEOUT_MS = 10_000;
 
 let proxy: Awaited<ReturnType<typeof startProxy>> | null = null;

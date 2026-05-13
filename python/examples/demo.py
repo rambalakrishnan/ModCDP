@@ -8,6 +8,8 @@ Modes (mirror the JS / Go demos):
     --debugger    *.* -> service_worker on the client; *.* -> chrome_debugger
                   on the server.
     --upstream    ws|pipe|reversews|nativemessaging|nats. Defaults to ws.
+                  reversews and nativemessaging use the fixed extension
+                  defaults: ws://127.0.0.1:29292 and com.modcdp.bridge.
 """
 
 import json
