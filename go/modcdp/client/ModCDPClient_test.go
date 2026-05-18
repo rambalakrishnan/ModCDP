@@ -3,9 +3,14 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,7 +172,14 @@ func TestModCDPClientDispatchesRootEventsBeforeExtensionSessionAttached(t *testi
 	cdp.handleEventMessage(map[string]any{
 		"method": "Target.targetCreated",
 		"params": map[string]any{
-			"targetInfo": map[string]any{"targetId": "target-1", "type": "page", "url": "about:blank"},
+			"targetInfo": map[string]any{
+				"targetId":        "target-1",
+				"type":            "page",
+				"title":           "about:blank",
+				"url":             "about:blank",
+				"attached":        false,
+				"canAccessOpener": false,
+			},
 		},
 	})
 
@@ -195,7 +207,14 @@ func TestModCDPClientEventDispatchSnapshotsHandlersWhenOnceRemovesItself(t *test
 	cdp.handleEventMessage(map[string]any{
 		"method": "Target.targetCreated",
 		"params": map[string]any{
-			"targetInfo": map[string]any{"targetId": "target-1", "type": "page", "url": "about:blank"},
+			"targetInfo": map[string]any{
+				"targetId":        "target-1",
+				"type":            "page",
+				"title":           "about:blank",
+				"url":             "about:blank",
+				"attached":        false,
+				"canAccessOpener": false,
+			},
 		},
 	})
 
@@ -215,7 +234,14 @@ func TestModCDPClientEventDispatchSnapshotsHandlersWhenOnceRemovesItself(t *test
 	cdp.handleEventMessage(map[string]any{
 		"method": "Target.targetCreated",
 		"params": map[string]any{
-			"targetInfo": map[string]any{"targetId": "target-2", "type": "page", "url": "about:blank"},
+			"targetInfo": map[string]any{
+				"targetId":        "target-2",
+				"type":            "page",
+				"title":           "about:blank",
+				"url":             "about:blank",
+				"attached":        false,
+				"canAccessOpener": false,
+			},
 		},
 	})
 
@@ -430,6 +456,38 @@ func TestModCDPClientDefaultsLaunchedModCDPServerUpstreamsToExtensionAuto(t *tes
 	}
 }
 
+func TestModCDPClientOrdersLocalAutoInjectionAsLaunchFlagThenLoadUnpackedFallback(t *testing.T) {
+	cdp := New(Options{
+		Launcher: LauncherConfig{LauncherMode: "local"},
+		Injector: InjectorConfig{InjectorMode: "auto"},
+	})
+
+	got := []string{}
+	for _, injector := range cdp.extensionInjectorsForConfig() {
+		switch injector.(type) {
+		case *LocalBrowserLaunchExtensionInjector:
+			got = append(got, "LocalBrowserLaunchExtensionInjector")
+		case *ExtensionsLoadUnpackedInjector:
+			got = append(got, "ExtensionsLoadUnpackedInjector")
+		case *DiscoveredExtensionInjector:
+			got = append(got, "DiscoveredExtensionInjector")
+		case *BorrowedExtensionInjector:
+			got = append(got, "BorrowedExtensionInjector")
+		default:
+			got = append(got, fmt.Sprintf("%T", injector))
+		}
+	}
+	want := []string{
+		"LocalBrowserLaunchExtensionInjector",
+		"ExtensionsLoadUnpackedInjector",
+		"DiscoveredExtensionInjector",
+		"BorrowedExtensionInjector",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("injector order = %#v", got)
+	}
+}
+
 func TestModCDPClientRejectsUnknownComponentModesAtTheirOwningFactoryBoundary(t *testing.T) {
 	cases := []struct {
 		name string
@@ -489,17 +547,21 @@ func TestModCDPClientOnlyExposesInjectorAttachAfterCDPSendIsAvailable(t *testing
 
 func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	headless := runtime.GOOS == "linux" && os.Getenv("DISPLAY") == ""
-	sandbox := runtime.GOOS != "linux"
+	extensionPath, err := filepath.Abs("../../../dist/extension")
+	if err != nil {
+		t.Fatal(err)
+	}
 	cdp := New(Options{
 		Launcher: LauncherConfig{LauncherMode: "local",
 			LauncherOptions: LaunchOptions{
-				Headless: boolPtr(headless),
-				Sandbox:  boolPtr(sandbox),
+				Headless:             boolPtr(headless),
+				ChromeReadyTimeoutMS: 60_000,
 			},
 		},
 		Upstream: UpstreamConfig{UpstreamMode: "ws"},
 		Injector: InjectorConfig{
-			InjectorMode:                        "inject",
+			InjectorMode:                        "auto",
+			InjectorExtensionPath:               extensionPath,
 			InjectorServiceWorkerURLSuffixes:    []string{"/modcdp/service_worker.js"},
 			InjectorTrustServiceWorkerTarget:    true,
 			InjectorServiceWorkerProbeTimeoutMS: 30_000,
@@ -518,7 +580,9 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	if err := cdp.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	if cdp.ConnectTiming["injector_source"] != "local_launch" {
+	switch cdp.ConnectTiming["injector_source"] {
+	case "discovered", "local_launch", "extensions_load_unpacked", "borrowed":
+	default:
 		t.Fatalf("injector_source = %v", cdp.ConnectTiming["injector_source"])
 	}
 	if cdp.ExtensionID != DefaultModCDPExtensionID {
@@ -532,6 +596,24 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 	}
 	if result != "chrome-extension://mdedooklbnfejodmnhmkdpkaedafkehf/modcdp/service_worker.js" {
 		t.Fatalf("Mod.evaluate = %#v", result)
+	}
+	contextsRaw, err := cdp.Mod.Evaluate(map[string]any{
+		"expression": "chrome.runtime.getContexts({}).then((contexts) => contexts.map((context) => ({ type: context.contextType, url: context.documentUrl || context.origin || '' })))",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts, _ := contextsRaw.([]any)
+	foundOffscreen := false
+	for _, rawContext := range contexts {
+		context, _ := rawContext.(map[string]any)
+		if context["type"] == "OFFSCREEN_DOCUMENT" &&
+			context["url"] == "chrome-extension://"+DefaultModCDPExtensionID+"/offscreen/keepalive.html" {
+			foundOffscreen = true
+		}
+	}
+	if !foundOffscreen {
+		t.Fatalf("expected offscreen keepalive context, got %#v", contextsRaw)
 	}
 	directTargetRaw, err := cdp.Send("Target.createTarget", map[string]any{"url": "about:blank#direct-session-routing"})
 	if err != nil {
@@ -624,15 +706,17 @@ func TestModCDPClientConnectsWithLocalLaunchAndInjectorChain(t *testing.T) {
 
 func TestModCDPClientCloseDoesNotCloseRemoteBrowserItDidNotLaunch(t *testing.T) {
 	headless := true
-	sandbox := false
 	extensionPath, err := filepath.Abs("../../../dist/extension")
 	if err != nil {
 		t.Fatal(err)
 	}
 	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
-		Headless:  &headless,
-		Sandbox:   &sandbox,
-		ExtraArgs: []string{"--load-extension=" + extensionPath},
+		Headless:             &headless,
+		ChromeReadyTimeoutMS: 60_000,
+		// This test manually supplies --load-extension, so it intentionally uses
+		// the launch-flag browser path instead of relying on the client fallback.
+		ExecutablePath: reverseWSTestBrowserPath(t),
+		ExtraArgs:      []string{"--load-extension=" + extensionPath},
 	}).Launch(LaunchOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -646,15 +730,18 @@ func TestModCDPClientCloseDoesNotCloseRemoteBrowserItDidNotLaunch(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer rawConn.Close()
-
 	cdp := New(Options{
 		Launcher: LauncherConfig{LauncherMode: "remote"},
 		Upstream: UpstreamConfig{UpstreamMode: "ws", UpstreamCDPURL: chrome.CDPURL},
 		Injector: InjectorConfig{
-			InjectorMode:                     "discover",
-			InjectorServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
-			InjectorTrustServiceWorkerTarget: true,
+			InjectorMode:                        "auto",
+			InjectorExtensionPath:               extensionPath,
+			InjectorServiceWorkerURLSuffixes:    []string{"/modcdp/service_worker.js"},
+			InjectorTrustServiceWorkerTarget:    true,
+			InjectorServiceWorkerReadyTimeoutMS: 30_000,
+			InjectorServiceWorkerProbeTimeoutMS: 30_000,
 		},
+		Client: ClientConfig{ClientRoutes: map[string]string{"*.*": "direct_cdp"}},
 	})
 	if err := cdp.Connect(); err != nil {
 		t.Fatal(err)
@@ -695,12 +782,14 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 		Launcher: LauncherConfig{LauncherMode: "local",
 			LauncherOptions: LaunchOptions{
 				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
+				// After explicit CHROME_PATH and CI /usr/bin/chromium, this test uses
+				// Chrome for Testing because Canary rejects --load-extension in this
+				// local launch injector path.
+				ExecutablePath: reverseWSTestBrowserPath(t),
 			},
 		},
 		Upstream: UpstreamConfig{
-			UpstreamMode:                   "reversews",
-			UpstreamReverseWSWaitTimeoutMS: 30_000,
+			UpstreamMode: "ws",
 		},
 		Injector: InjectorConfig{
 			InjectorMode:                     "auto",
@@ -715,16 +804,16 @@ func TestModCDPClientCloseKeepsInjectorFilesUntilAfterLaunchedBrowserShutdown(t 
 	if err := cdp.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	var localInjector *LocalBrowserLaunchExtensionInjector
+	var localLaunchInjector *LocalBrowserLaunchExtensionInjector
 	for _, injector := range cdp.extensionInjectors {
 		if typed, ok := injector.(*LocalBrowserLaunchExtensionInjector); ok {
-			localInjector = typed
+			localLaunchInjector = typed
 		}
 	}
-	if localInjector == nil {
+	if localLaunchInjector == nil {
 		t.Fatal("expected LocalBrowserLaunchExtensionInjector")
 	}
-	unpackedExtensionPath := localInjector.UnpackedExtensionPath
+	unpackedExtensionPath := localLaunchInjector.UnpackedExtensionPath
 	if unpackedExtensionPath == extensionPath {
 		t.Fatalf("UnpackedExtensionPath = %q", unpackedExtensionPath)
 	}
@@ -760,7 +849,6 @@ func TestModCDPClientCloseClearsTopLevelConnectionState(t *testing.T) {
 		Launcher: LauncherConfig{LauncherMode: "local",
 			LauncherOptions: LaunchOptions{
 				Headless: boolPtr(true),
-				Sandbox:  boolPtr(false),
 			},
 		},
 		Upstream: UpstreamConfig{UpstreamMode: "ws"},
@@ -787,6 +875,108 @@ func TestModCDPClientCloseClearsTopLevelConnectionState(t *testing.T) {
 	if _, err := cdp.SendRaw("Browser.getVersion", map[string]any{}); err == nil || !strings.Contains(err.Error(), "ModCDP upstream is not connected") {
 		t.Fatalf("SendRaw after close error = %v", err)
 	}
+}
+
+func reverseWSTestBrowserPath(t *testing.T) string {
+	t.Helper()
+	explicitCandidates := []string{os.Getenv("CHROME_PATH")}
+	if runtime.GOOS == "linux" {
+		explicitCandidates = append(explicitCandidates, "/usr/bin/chromium")
+	}
+	for _, candidate := range explicitCandidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		localAppData = filepath.Join(home, "AppData", "Local")
+	}
+	var patterns []string
+	switch runtime.GOOS {
+	case "darwin":
+		patterns = []string{
+			filepath.Join(home, "Library", "Caches", "ms-playwright", "chromium-*", "chrome-mac*", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+			filepath.Join(home, "Library", "Caches", "ms-playwright", "chromium-*", "chrome-mac*", "Chromium.app", "Contents", "MacOS", "Chromium"),
+			filepath.Join(home, "Library", "Caches", "puppeteer", "chrome", "mac*-*", "chrome-mac*", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+		}
+	case "windows":
+		patterns = []string{
+			filepath.Join(localAppData, "ms-playwright", "chromium-*", "chrome-win*", "chrome.exe"),
+			filepath.Join(home, ".cache", "puppeteer", "chrome", "win*-*", "chrome.exe"),
+		}
+	default:
+		patterns = []string{
+			filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux*", "chrome"),
+			filepath.Join("/opt", "pw-browsers", "chromium-*", "chrome-linux*", "chrome"),
+			filepath.Join(home, ".cache", "puppeteer", "chrome", "linux-*", "chrome-linux*", "chrome"),
+		}
+	}
+	var candidates []string
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, matches...)
+	}
+	candidates = newestChromeForTestingFirst(candidates)
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	t.Fatal("Reversews tests require CHROME_PATH, /usr/bin/chromium, or Chrome for Testing.")
+	return ""
+}
+
+func newestChromeForTestingFirst(candidates []string) []string {
+	seen := map[string]bool{}
+	deduped := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		deduped = append(deduped, candidate)
+	}
+	sort.SliceStable(deduped, func(i, j int) bool {
+		leftVersion := maxPathNumber(deduped[i])
+		rightVersion := maxPathNumber(deduped[j])
+		if leftVersion != rightVersion {
+			return leftVersion > rightVersion
+		}
+		leftStat, leftErr := os.Stat(deduped[i])
+		rightStat, rightErr := os.Stat(deduped[j])
+		var leftMtime, rightMtime time.Time
+		if leftErr == nil {
+			leftMtime = leftStat.ModTime()
+		}
+		if rightErr == nil {
+			rightMtime = rightStat.ModTime()
+		}
+		if !leftMtime.Equal(rightMtime) {
+			return leftMtime.After(rightMtime)
+		}
+		return deduped[i] < deduped[j]
+	})
+	return deduped
+}
+
+func maxPathNumber(value string) int {
+	maxValue := 0
+	for _, raw := range regexp.MustCompile(`\d+`).FindAllString(value, -1) {
+		number, err := strconv.Atoi(raw)
+		if err == nil && number > maxValue {
+			maxValue = number
+		}
+	}
+	return maxValue
 }
 
 func TestCustomCommandSchemasValidateParamsAndResults(t *testing.T) {
@@ -842,9 +1032,7 @@ func TestCustomEventSchemasValidatePayloads(t *testing.T) {
 	if _, ok := cdp.validateEventData("Custom.changed", map[string]any{"targetId": "target-1"}); !ok {
 		t.Fatal("expected valid event payload")
 	}
-	if _, ok := cdp.validateEventData("Custom.changed", map[string]any{"targetId": 1}); ok {
-		t.Fatal("expected invalid event payload")
-	}
+	expectPanic(t, func() { cdp.validateEventData("Custom.changed", map[string]any{"targetId": 1}) })
 }
 
 func TestTypedCDPSurfaceInitializesAndEncodesParams(t *testing.T) {

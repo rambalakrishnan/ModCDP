@@ -28,6 +28,7 @@ from modcdp.types import JsonValue, ProtocolPayload
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 EXTENSION_PATH = ROOT / "dist" / "extension"
+REVERSE_TRANSPORT_WAIT_TIMEOUT_MS = 60_000
 LIVE_DEVTOOLS_ACTIVE_PORTS = [
     Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort",
     Path.home() / "Library" / "Application Support" / "Google" / "Chrome Beta" / "DevToolsActivePort",
@@ -99,10 +100,17 @@ def parse_args(argv):
 
 
 def client_options_for(mode, upstream_mode, cdp_url, launch_options=None):
+    upstream: ProtocolPayload = {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url}
+    if upstream_mode == "reversews":
+        upstream["upstream_reversews_wait_timeout_ms"] = REVERSE_TRANSPORT_WAIT_TIMEOUT_MS
+    if upstream_mode == "nativemessaging":
+        upstream["upstream_nativemessaging_wait_timeout_ms"] = REVERSE_TRANSPORT_WAIT_TIMEOUT_MS
+    if upstream_mode == "nats":
+        upstream["upstream_nats_wait_timeout_ms"] = REVERSE_TRANSPORT_WAIT_TIMEOUT_MS
     if mode == "direct":
         return {
             "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
-            "upstream": {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url},
+            "upstream": upstream,
             "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
             "client": {"client_routes": client_routes_for(mode)},
         }
@@ -111,7 +119,7 @@ def client_options_for(mode, upstream_mode, cdp_url, launch_options=None):
     }
     return {
         "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
-        "upstream": {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url},
+        "upstream": upstream,
         "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
         "client": {"client_routes": client_routes_for(mode)},
         "server": server,
@@ -149,6 +157,7 @@ def main():
         else:
             cdp_url = None
             launch_options: dict[str, object] = {
+                "chrome_ready_timeout_ms": 60_000,
                 "headless": sys.platform.startswith("linux") and not os.environ.get("DISPLAY"),
                 "sandbox": not sys.platform.startswith("linux"),
             }
@@ -156,7 +165,7 @@ def main():
                 launch_options["executable_path"] = os.environ["CHROME_PATH"]
 
         cdp = ModCDPClient(**client_options_for(mode, upstream_mode, cdp_url, launch_options))
-        foreground_events = []
+        page_target_events = []
         target_created_events = []
         events_lock = threading.Lock()
 
@@ -165,10 +174,10 @@ def main():
             with events_lock:
                 target_created_events.append(payload)
 
-        def on_foreground_changed(payload, *_):
-            print(f"Custom.foregroundTargetChanged -> {payload}")
+        def on_page_target_updated(payload, *_):
+            print(f"Custom.pageTargetUpdated -> {payload}")
             with events_lock:
-                foreground_events.append(payload)
+                page_target_events.append(payload)
 
         cdp.on("Target.targetCreated", on_target_created)
 
@@ -323,19 +332,10 @@ def main():
             raise RuntimeError("expected Custom.demoEvent")
         print(f"Custom.demoEvent -> {demo_event}")
 
-        foreground_event_registration = expect_object(cdp.send("Mod.addCustomEvent", {"name": "Custom.foregroundTargetChanged"}), "Mod.addCustomEvent Custom.foregroundTargetChanged")
-        if foreground_event_registration.get("registered") is not True:
-            raise RuntimeError(f"unexpected foreground event registration {foreground_event_registration}")
-        cdp.on("Custom.foregroundTargetChanged", on_foreground_changed)
-        cdp.send("Mod.evaluate", {"expression": '''async () => {
-          chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-            const targets = await chrome.debugger.getTargets();
-            const target = targets.find(target => target.type === "page" && target.tabId === tabId);
-            const tab = await chrome.tabs.get(tabId).catch(() => null);
-            await cdp.emit("Custom.foregroundTargetChanged", { tabId, targetId: target?.id ?? null, url: target?.url ?? tab?.url ?? null });
-          });
-          return true;
-        }'''})
+        page_target_event_registration = expect_object(cdp.send("Mod.addCustomEvent", {"name": "Custom.pageTargetUpdated"}), "Mod.addCustomEvent Custom.pageTargetUpdated")
+        if page_target_event_registration.get("registered") is not True:
+            raise RuntimeError(f"unexpected page target event registration {page_target_event_registration}")
+        cdp.on("Custom.pageTargetUpdated", on_page_target_updated)
 
         cdp.send("Target.setDiscoverTargets", {"discover": True})
         created_target = expect_object(cdp.send("Target.createTarget", {"url": "https://example.com", "background": True}), "Target.createTarget")
@@ -359,20 +359,32 @@ def main():
         print(f"Custom.TabIdFromTargetId -> {tab_from_target}")
 
         cdp.send("Target.activateTarget", {"targetId": created_target_id})
+        page_target_emit_result = expect_object(cdp.send("Mod.evaluate", {
+            "params": {"targetId": created_target_id},
+            "expression": '''async ({ targetId }) => {
+              const targets = await chrome.debugger.getTargets();
+              const target = targets.find(target => target.id === targetId);
+              if (!target?.id) throw new Error(`target ${targetId} not found`);
+              await cdp.emit("Custom.pageTargetUpdated", { targetId: target.id, url: target.url ?? null });
+              return { emitted: true, targetId: target.id };
+            }''',
+        }), "Custom.pageTargetUpdated emit")
+        if page_target_emit_result.get("emitted") is not True or page_target_emit_result.get("targetId") != created_target_id:
+            raise RuntimeError(f"unexpected Custom.pageTargetUpdated emit result {page_target_emit_result}")
         deadline = time.monotonic() + 3.0
         while True:
             with events_lock:
-                foreground = next((event for event in foreground_events if event.get("targetId") == created_target_id), None)
-            if foreground or time.monotonic() >= deadline:
+                page_target = next((event for event in page_target_events if event.get("targetId") == created_target_id), None)
+            if page_target or time.monotonic() >= deadline:
                 break
             time.sleep(0.02)
-        if not foreground:
-            raise RuntimeError(f"expected Custom.foregroundTargetChanged for {created_target_id}")
-        if tab_from_target.get("tabId") != foreground.get("tabId"):
-            raise RuntimeError(f"unexpected Custom.foregroundTargetChanged result {foreground}")
+        if not page_target:
+            raise RuntimeError(f"expected Custom.pageTargetUpdated for {created_target_id}")
+        if tab_from_target.get("tabId") != page_target.get("tabId"):
+            raise RuntimeError(f"unexpected Custom.pageTargetUpdated result {page_target}")
 
-        target_from_tab = expect_object(cdp.send("Custom.targetIdFromTabId", {"tabId": foreground["tabId"]}), "Custom.targetIdFromTabId")
-        if target_from_tab.get("targetId") != created_target_id or target_from_tab.get("tabId") != foreground.get("tabId"):
+        target_from_tab = expect_object(cdp.send("Custom.targetIdFromTabId", {"tabId": page_target["tabId"]}), "Custom.targetIdFromTabId")
+        if target_from_tab.get("targetId") != created_target_id or target_from_tab.get("tabId") != page_target.get("tabId"):
             raise RuntimeError(f"unexpected Custom.targetIdFromTabId/middleware result {target_from_tab}")
         print(f"Custom.targetIdFromTabId -> {target_from_tab}")
 

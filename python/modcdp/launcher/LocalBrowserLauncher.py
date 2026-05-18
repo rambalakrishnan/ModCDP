@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import glob
+import json
 import os
 import re
 import select
@@ -43,7 +43,8 @@ class LocalBrowserLauncher(BrowserLauncher):
         executable_path = self.findChromeBinary(merged.get("executable_path"))
         use_pipe = merged.get("remote_debugging") == "pipe"
         use_loopback_cdp = (not use_pipe) or bool(merged.get("loopback_cdp")) or merged.get("port") is not None
-        port = int(merged.get("port") or LocalBrowserLauncher.freePort()) if use_loopback_cdp else None
+        requested_port = merged.get("port")
+        port = int(requested_port) if use_loopback_cdp and requested_port is not None else (0 if use_loopback_cdp else None)
         temp_profile_dir: tempfile.TemporaryDirectory[str] | None = None
         profile_dir = merged.get("user_data_dir")
         if not profile_dir:
@@ -75,7 +76,8 @@ class LocalBrowserLauncher(BrowserLauncher):
         default_headless = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
         if merged.get("headless", default_headless):
             args.append("--headless=new")
-        if merged.get("sandbox", False) is False:
+        default_sandbox = not sys.platform.startswith("linux")
+        if merged.get("sandbox", default_sandbox) is False:
             args.append("--no-sandbox")
         args.extend(list(merged.get("args") or []))
         args.extend(list(merged.get("extra_args") or []))
@@ -85,6 +87,8 @@ class LocalBrowserLauncher(BrowserLauncher):
             child_read, parent_write = os.pipe()
             parent_read = _move_fd_if_needed(parent_read, {3, 4})
             parent_write = _move_fd_if_needed(parent_write, {3, 4})
+            child_read = _move_fd_if_needed(child_read, {3, 4})
+            child_write = _move_fd_if_needed(child_write, {3, 4})
             process = _spawn_chrome_with_pipe_fds(executable_path, args, child_read, child_write)
             os.close(child_read)
             os.close(child_write)
@@ -93,10 +97,19 @@ class LocalBrowserLauncher(BrowserLauncher):
             try:
                 _wait_for_pipe_ready(pipe_read, pipe_write, int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS))
                 loopback_cdp_url = (
-                    _wait_for_cdp_websocket_url(
-                        f"http://127.0.0.1:{port}",
-                        int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS),
-                        int(merged.get("chrome_ready_poll_interval_ms") or DEFAULT_CHROME_READY_POLL_INTERVAL_MS),
+                    (
+                        _wait_for_browser_selected_cdp_websocket_url(
+                            str(profile_dir),
+                            int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS),
+                            int(merged.get("chrome_ready_poll_interval_ms") or DEFAULT_CHROME_READY_POLL_INTERVAL_MS),
+                            process,
+                        )
+                        if port == 0
+                        else _wait_for_cdp_websocket_url(
+                            f"http://127.0.0.1:{port}",
+                            int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS),
+                            int(merged.get("chrome_ready_poll_interval_ms") or DEFAULT_CHROME_READY_POLL_INTERVAL_MS),
+                        )
                     )
                     if port is not None
                     else None
@@ -130,11 +143,22 @@ class LocalBrowserLauncher(BrowserLauncher):
             stderr=subprocess.DEVNULL,
             start_new_session=not sys.platform.startswith("win"),
         )
-        cdp_url = f"http://127.0.0.1:{port}"
         timeout_s = int(merged.get("chrome_ready_timeout_ms") or DEFAULT_CHROME_READY_TIMEOUT_MS) / 1000
         poll_s = int(merged.get("chrome_ready_poll_interval_ms") or DEFAULT_CHROME_READY_POLL_INTERVAL_MS) / 1000
         deadline = time.time() + timeout_s
         while time.time() < deadline:
+            exit_code = process.poll()
+            if exit_code is not None:
+                _close(process, temp_profile_dir, cleanup_profile_dir=cleanup_profile_dir)
+                raise RuntimeError(f"Chrome exited before CDP became ready (exit={exit_code}).")
+            if port == 0:
+                active_port = _read_devtools_active_port(str(profile_dir))
+                if active_port is None:
+                    time.sleep(poll_s)
+                    continue
+                cdp_url = f"http://127.0.0.1:{active_port}"
+            else:
+                cdp_url = f"http://127.0.0.1:{port}"
             try:
                 with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=0.5) as response:
                     version = json.loads(response.read())
@@ -149,7 +173,7 @@ class LocalBrowserLauncher(BrowserLauncher):
             except Exception:
                 time.sleep(poll_s)
         _close(process, temp_profile_dir, cleanup_profile_dir=cleanup_profile_dir)
-        raise RuntimeError(f"Chrome at {cdp_url} did not become ready within {timeout_s}s")
+        raise RuntimeError(f"Chrome did not become ready within {timeout_s}s")
 
 
 def _newest_first(candidates: list[str]) -> list[str]:
@@ -205,77 +229,41 @@ def _candidate_paths() -> list[str]:
             str(local_app_data / "Google/Chrome/Application/chrome.exe"),
         ]
     else:
+        chromium = ["/usr/bin/chromium", "/usr/bin/chromium-browser"]
         canary = ["/usr/bin/google-chrome-canary", "/usr/bin/google-chrome-unstable", "/opt/google/chrome-unstable/chrome"]
         stock = ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/opt/google/chrome/chrome"]
-    return [*_chrome_for_testing_candidates(), *canary, *stock]
+        return [*chromium, *canary, *_chrome_for_testing_candidates(), *stock]
+    return [*canary, *_chrome_for_testing_candidates(), *stock]
 
 
 def _move_fd_if_needed(fd: int, reserved: set[int]) -> int:
     if fd not in reserved:
         return fd
     moved = os.dup(fd)
+    while moved in reserved:
+        next_fd = os.dup(fd)
+        os.close(moved)
+        moved = next_fd
     os.close(fd)
     return moved
 
 
-class _SpawnedProcess:
-    def __init__(self, pid: int) -> None:
-        self.pid = pid
-        self.returncode: int | None = None
+def _spawn_chrome_with_pipe_fds(executable_path: str, args: list[str], child_read: int, child_write: int) -> _ChromeProcess:
+    def map_pipe_fds() -> None:
+        os.dup2(child_read, 3)
+        os.dup2(child_write, 4)
+        os.close(child_read)
+        os.close(child_write)
 
-    def terminate(self) -> None:
-        self._signal(signal.SIGTERM)
-
-    def kill(self) -> None:
-        self._signal(signal.SIGKILL)
-
-    def wait(self, timeout: float | None = None) -> int:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            try:
-                waited_pid, status = os.waitpid(self.pid, os.WNOHANG)
-            except ChildProcessError:
-                if self.returncode is None:
-                    self.returncode = 0
-                return self.returncode
-            if waited_pid == self.pid:
-                self.returncode = os.waitstatus_to_exitcode(status)
-                return self.returncode
-            if deadline is not None and time.monotonic() >= deadline:
-                assert timeout is not None
-                raise subprocess.TimeoutExpired([str(self.pid)], timeout)
-            time.sleep(0.05)
-
-    def _signal(self, sig: int) -> None:
-        if self.returncode is not None:
-            return
-        try:
-            os.kill(self.pid, sig)
-        except ProcessLookupError:
-            self.returncode = 0
-
-
-def _spawn_chrome_with_pipe_fds(executable_path: str, args: list[str], child_read: int, child_write: int) -> _SpawnedProcess:
-    if not hasattr(os, "posix_spawn"):
-        raise RuntimeError("remote_debugging='pipe' requires os.posix_spawn support in the Python client.")
-    os.set_inheritable(child_read, True)
-    os.set_inheritable(child_write, True)
-    devnull = os.open(os.devnull, os.O_RDWR)
-    os.set_inheritable(devnull, True)
-    file_actions: list[tuple[int, int] | tuple[int, int, int]] = [
-        (os.POSIX_SPAWN_DUP2, devnull, 0),
-        (os.POSIX_SPAWN_DUP2, devnull, 1),
-        (os.POSIX_SPAWN_DUP2, devnull, 2),
-        (os.POSIX_SPAWN_DUP2, child_read, 3),
-        (os.POSIX_SPAWN_DUP2, child_write, 4),
-    ]
-    for fd in {devnull, child_read, child_write} - {0, 1, 2, 3, 4}:
-        file_actions.append((os.POSIX_SPAWN_CLOSE, fd))
-    try:
-        pid = os.posix_spawn(executable_path, [executable_path, *args], os.environ, file_actions=file_actions)
-        return _SpawnedProcess(pid)
-    finally:
-        os.close(devnull)
+    return subprocess.Popen(
+        [executable_path, *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=sys.platform.startswith("win"),
+        preexec_fn=None if sys.platform.startswith("win") else map_pipe_fds,
+        start_new_session=not sys.platform.startswith("win"),
+    )
 
 
 class _ChromeProcess(Protocol):
@@ -286,6 +274,8 @@ class _ChromeProcess(Protocol):
     def kill(self) -> None: ...
 
     def wait(self, timeout: float | None = None) -> int | None: ...
+
+    def poll(self) -> int | None: ...
 
 
 def _wait_for_pipe_ready(pipe_read, pipe_write, timeout_ms: int) -> None:
@@ -320,6 +310,7 @@ def _wait_for_pipe_ready(pipe_read, pipe_write, timeout_ms: int) -> None:
 def _wait_for_cdp_websocket_url(cdp_url: str, timeout_ms: int, poll_interval_ms: int) -> str:
     deadline = time.time() + timeout_ms / 1000
     poll_s = poll_interval_ms / 1000
+    last_error: Exception | None = None
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=0.5) as response:
@@ -327,10 +318,53 @@ def _wait_for_cdp_websocket_url(cdp_url: str, timeout_ms: int, poll_interval_ms:
                 websocket_url = version.get("webSocketDebuggerUrl")
                 if websocket_url:
                     return str(websocket_url)
-        except Exception:
-            pass
+        except Exception as err:
+            last_error = err
         time.sleep(poll_s)
+    if last_error is not None:
+        raise RuntimeError(f"Chrome at {cdp_url} did not expose a WebSocket CDP URL within {timeout_ms}ms: {last_error}")
     raise RuntimeError(f"Chrome at {cdp_url} did not expose a WebSocket CDP URL within {timeout_ms}ms")
+
+
+def _read_devtools_active_port(profile_dir: str) -> int | None:
+    active_port_path = Path(profile_dir) / "DevToolsActivePort"
+    try:
+        raw_port, websocket_path, *_ = active_port_path.read_text().strip().splitlines()
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return None
+    if not websocket_path:
+        return None
+    port = int(raw_port)
+    if port <= 0:
+        raise RuntimeError(f"Invalid DevToolsActivePort port: {raw_port}")
+    return port
+
+
+def _wait_for_browser_selected_cdp_websocket_url(
+    profile_dir: str,
+    timeout_ms: int,
+    poll_interval_ms: int,
+    process: _ChromeProcess,
+) -> str:
+    deadline = time.time() + timeout_ms / 1000
+    poll_s = poll_interval_ms / 1000
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(f"Chrome exited before CDP became ready (exit={exit_code}).")
+        active_port = _read_devtools_active_port(profile_dir)
+        if active_port is not None:
+            try:
+                return _wait_for_cdp_websocket_url(f"http://127.0.0.1:{active_port}", poll_interval_ms, poll_interval_ms)
+            except Exception as err:
+                last_error = err
+        time.sleep(poll_s)
+    if last_error is not None:
+        raise RuntimeError(f"Chrome did not expose DevToolsActivePort from {profile_dir} within {timeout_ms}ms: {last_error}")
+    raise RuntimeError(f"Chrome did not expose DevToolsActivePort from {profile_dir} within {timeout_ms}ms")
 
 
 def _close(

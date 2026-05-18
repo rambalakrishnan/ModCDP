@@ -25,11 +25,29 @@ test("translate routes, wraps, and unwraps ModCDP protocol messages deterministi
   );
   assert.equal(wrapped.target, "service_worker");
   assert.equal(wrapped.steps[0]?.method, "Runtime.callFunctionOn");
-  assert.match(String(wrapped.steps[0]?.params.functionDeclaration), /attachToSession\("session-1"\)/);
+  const wrapped_step_params = wrapped.steps[0]?.params as { functionDeclaration?: unknown } | undefined;
+  assert.match(String(wrapped_step_params?.functionDeclaration), /attachToSession\("session-1"\)/);
   assert.equal(wrapped.steps[0]?.unwrap, "runtime");
 
   const configured = wrapCommandIfNeeded("Mod.configure", { server: { server_routes: { "*.*": "loopback_cdp" } } });
   assert.equal(configured.steps[0]?.unwrap, "runtime_json");
+
+  const custom = wrapCommandIfNeeded(
+    "Custom.echo",
+    { secret: "x".repeat(100), nested: { ok: true } },
+    { cdpSessionId: "session-1" },
+  );
+  const custom_step_params = custom.steps[0]?.params as
+    | { arguments?: Array<{ value?: unknown }>; functionDeclaration?: unknown }
+    | undefined;
+  assert.match(String(custom_step_params?.functionDeclaration), /JSON\.parse\(paramsJson\)/);
+  assert.doesNotMatch(String(custom_step_params?.functionDeclaration), /xxxxxxxxxx/);
+  assert.equal(custom_step_params?.arguments?.[0]?.value, "Custom.echo");
+  assert.deepEqual(JSON.parse(String(custom_step_params?.arguments?.[1]?.value)), {
+    secret: "x".repeat(100),
+    nested: { ok: true },
+  });
+  assert.equal(custom_step_params?.arguments?.[2]?.value, "session-1");
 
   assert.deepEqual(unwrapResponseIfNeeded({ result: { type: "object", value: { ok: true } } }, "runtime"), {
     ok: true,

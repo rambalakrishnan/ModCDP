@@ -92,7 +92,13 @@ const downstreamClient = (session_id?: string | null) => {
     last_seen: at,
   });
   const id = session_id || "root";
-  const session = (client.sessions[id] ??= { id, commands: 0, events: 0, first_seen: at, last_seen: at });
+  const session = (client.sessions[id] ??= {
+    id,
+    commands: 0,
+    events: 0,
+    first_seen: at,
+    last_seen: at,
+  });
   return { at, client_id, client, session };
 };
 const logTraffic = (direction: "command" | "event", name: string, payload: unknown, session_id?: string | null) => {
@@ -156,7 +162,11 @@ if (bridge) {
     if (start) {
       bridge[method] = (...args: unknown[]) => {
         const result = start(...args);
-        self_transports[key] = { args: compact(args), result: compact(result), updated_at: new Date().toISOString() };
+        self_transports[key] = {
+          args: compact(args),
+          result: compact(result),
+          updated_at: new Date().toISOString(),
+        };
         return result;
       };
     }
@@ -190,15 +200,6 @@ chrome.runtime.onInstalled.addListener(startConfiguredTransports);
 chrome.runtime.onStartup.addListener(startConfiguredTransports);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "modcdp.wake") {
-    startConfiguredTransports();
-    sendResponse({
-      ok: true,
-      extension_id: chrome.runtime.id,
-      service_worker_url: chrome.runtime.getURL("modcdp/service_worker.js"),
-    });
-    return false;
-  }
   if (message?.type !== "modcdp.options.status") return false;
   const self = {
     id: "self",
@@ -221,7 +222,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       native_bridge_last_error: bridge.native_bridge_last_error,
     },
     ...(Object.keys(self_transports).length ? { transports: self_transports } : {}),
-    custom: { commands: [...self_custom.commands], events: [...self_custom.events] },
+    custom: {
+      commands: [...self_custom.commands],
+      events: [...self_custom.events],
+    },
     log: self_log,
   };
   sendResponse({
@@ -240,7 +244,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             },
           }
         : {}),
-      debugger: { ...upstream_servers.debugger, id: "debugger", log: upstream_servers.debugger?.log ?? [] },
+      debugger: {
+        ...upstream_servers.debugger,
+        id: "debugger",
+        log: upstream_servers.debugger?.log ?? [],
+      },
     },
   });
   return false;

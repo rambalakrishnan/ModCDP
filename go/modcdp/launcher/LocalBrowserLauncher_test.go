@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,9 +24,8 @@ func TestLocalBrowserLauncherClassHelpersMatchLocalLauncherSurface(t *testing.T)
 	}
 }
 
-func TestLocalBrowserLauncherLaunchesRealBrowserAndSpeaksCDP(t *testing.T) {
+func TestLocalBrowserLauncherLaunchesRealBrowserOverChosenCDPPortAndHonorsLaunchOptions(t *testing.T) {
 	headless := true
-	sandbox := false
 	profileDir := t.TempDir()
 	port, err := freePort()
 	if err != nil {
@@ -33,7 +33,6 @@ func TestLocalBrowserLauncherLaunchesRealBrowserAndSpeaksCDP(t *testing.T) {
 	}
 	launcher := NewLocalBrowserLauncher(LaunchOptions{
 		Headless:                  &headless,
-		Sandbox:                   &sandbox,
 		ChromeReadyTimeoutMS:      45_000,
 		ChromeReadyPollIntervalMS: 50,
 	})
@@ -103,14 +102,42 @@ func TestLocalBrowserLauncherLaunchesRealBrowserAndSpeaksCDP(t *testing.T) {
 	if response.Result.ProtocolVersion == "" {
 		t.Fatal("expected protocolVersion")
 	}
+	if err := wsutil.WriteClientText(conn, []byte(`{"id":2,"method":"SystemInfo.getInfo","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	systemInfoBody, err := wsutil.ReadServerText(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var systemInfoResponse struct {
+		ID     int `json:"id"`
+		Result struct {
+			CommandLine string `json:"commandLine"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(systemInfoBody, &systemInfoResponse); err != nil {
+		t.Fatal(err)
+	}
+	if systemInfoResponse.ID != 2 {
+		t.Fatalf("unexpected SystemInfo.getInfo response id %d", systemInfoResponse.ID)
+	}
+	command := systemInfoResponse.Result.CommandLine
+	if !strings.Contains(command, "--window-size=900,700") {
+		t.Fatalf("expected browser command to include --window-size=900,700: %s", command)
+	}
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(command, "--no-sandbox") {
+			t.Fatalf("expected Linux browser command to include --no-sandbox: %s", command)
+		}
+	} else if strings.Contains(command, "--no-sandbox") {
+		t.Fatalf("expected browser command not to include --no-sandbox: %s", command)
+	}
 }
 
 func TestLocalBrowserLauncherLaunchesRealBrowserOverRemoteDebuggingPipe(t *testing.T) {
 	headless := true
-	sandbox := false
 	launcher := NewLocalBrowserLauncher(LaunchOptions{
 		Headless:             &headless,
-		Sandbox:              &sandbox,
 		ChromeReadyTimeoutMS: 45_000,
 	})
 	chrome, err := launcher.Launch(LaunchOptions{RemoteDebugging: "pipe"})
@@ -159,11 +186,9 @@ func TestLocalBrowserLauncherLaunchesRealBrowserOverRemoteDebuggingPipe(t *testi
 
 func TestLocalBrowserLauncherLaunchesPipeBrowserWithAuxiliaryLoopbackOnlyWhenRequested(t *testing.T) {
 	headless := true
-	sandbox := false
 	loopbackCDP := true
 	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
 		Headless:             &headless,
-		Sandbox:              &sandbox,
 		ChromeReadyTimeoutMS: 45_000,
 	}).Launch(LaunchOptions{RemoteDebugging: "pipe", LoopbackCDP: &loopbackCDP})
 	if err != nil {
@@ -201,7 +226,6 @@ func TestLocalBrowserLauncherLaunchesPipeBrowserWithAuxiliaryLoopbackOnlyWhenReq
 
 func TestLocalBrowserLauncherCleansExplicitUserDataDirWhenRequested(t *testing.T) {
 	headless := true
-	sandbox := false
 	cleanupUserDataDir := true
 	profileDir, err := os.MkdirTemp("", "modcdp-go-local-profile-")
 	if err != nil {
@@ -209,7 +233,6 @@ func TestLocalBrowserLauncherCleansExplicitUserDataDirWhenRequested(t *testing.T
 	}
 	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
 		Headless:             &headless,
-		Sandbox:              &sandbox,
 		ChromeReadyTimeoutMS: 45_000,
 	}).Launch(LaunchOptions{
 		UserDataDir:        profileDir,

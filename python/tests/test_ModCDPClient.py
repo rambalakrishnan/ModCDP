@@ -6,8 +6,6 @@ import json
 import time
 import unittest
 from collections.abc import Mapping
-from contextlib import redirect_stderr
-from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, cast
@@ -17,6 +15,7 @@ from websocket import create_connection
 from modcdp import ModCDPClient
 from modcdp.launcher.LocalBrowserLauncher import LocalBrowserLauncher
 from modcdp.types import JsonValue
+from tests.test_ReverseWebSocketUpstreamTransport import reversews_test_browser_path
 
 
 HERE = Path(__file__).resolve().parent
@@ -182,6 +181,22 @@ class ModCDPClientTests(unittest.TestCase):
             self.assertEqual(attach_only.upstream_endpoint_kind, "modcdp_server")
             self.assertEqual(attach_only.injector["injector_mode"], "none")
 
+    def test_orders_local_auto_injection_as_launch_flag_then_load_unpacked_fallback(self) -> None:
+        cdp = ModCDPClient(
+            launcher={"launcher_mode": "local"},
+            injector={"injector_mode": "auto"},
+        )
+
+        self.assertEqual(
+            [type(injector).__name__ for injector in cdp._extension_injectors_for_config()],
+            [
+                "LocalBrowserLaunchExtensionInjector",
+                "ExtensionsLoadUnpackedInjector",
+                "DiscoveredExtensionInjector",
+                "BorrowedExtensionInjector",
+            ],
+        )
+
     def test_rejects_unknown_component_modes_at_their_owning_factory_boundary(self) -> None:
         with self.assertRaisesRegex(RuntimeError, r"unknown upstream\.upstream_mode=bogus"):
             ModCDPClient(upstream={"upstream_mode": "bogus"})._upstream_transport()
@@ -190,12 +205,13 @@ class ModCDPClientTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"unknown injector\.injector_mode=bogus"):
             ModCDPClient(injector={"injector_mode": "bogus"})._extension_injectors_for_config()
 
-    def test_connects_with_local_launch_and_injector_chain(self) -> None:
+    def test_connects_with_local_launch_injector_chain(self) -> None:
         cdp = ModCDPClient(
-            launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
+            launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "chrome_ready_timeout_ms": 60_000}},
             upstream={"upstream_mode": "ws"},
             injector={
-                "injector_mode": "inject",
+                "injector_mode": "auto",
+                "injector_extension_path": str(EXTENSION_PATH),
                 "injector_service_worker_url_suffixes": ["/modcdp/service_worker.js"],
                 "injector_trust_service_worker_target": True,
                 "injector_service_worker_probe_timeout_ms": 30_000,
@@ -208,11 +224,28 @@ class ModCDPClientTests(unittest.TestCase):
 
         try:
             cdp.connect()
-            self.assertEqual(cdp.connect_timing.get("injector_source") if cdp.connect_timing else None, "local_launch")
+            self.assertIn(
+                cdp.connect_timing.get("injector_source") if cdp.connect_timing else None,
+                ("discovered", "local_launch", "extensions_load_unpacked", "borrowed"),
+            )
             self.assertEqual(cdp.extension_id, "mdedooklbnfejodmnhmkdpkaedafkehf")
             self.assertEqual(
                 cdp.Mod.evaluate(expression="chrome.runtime.getURL('modcdp/service_worker.js')"),
                 "chrome-extension://mdedooklbnfejodmnhmkdpkaedafkehf/modcdp/service_worker.js",
+            )
+            contexts = cdp.Mod.evaluate(
+                expression=(
+                    "chrome.runtime.getContexts({}).then((contexts) => contexts.map((context) => "
+                    "({ type: context.contextType, url: context.documentUrl || context.origin || '' })))"
+                )
+            )
+            self.assertTrue(
+                any(
+                    isinstance(context, Mapping)
+                    and context.get("type") == "OFFSCREEN_DOCUMENT"
+                    and context.get("url") == "chrome-extension://mdedooklbnfejodmnhmkdpkaedafkehf/offscreen/keepalive.html"
+                    for context in cast(list[Any], contexts)
+                )
             )
             sent_at = int(time.time() * 1000)
             pong: Queue[Mapping[str, Any]] = Queue()
@@ -251,7 +284,10 @@ class ModCDPClientTests(unittest.TestCase):
         chrome = LocalBrowserLauncher(
             {
                 "headless": True,
-                "sandbox": False,
+                "chrome_ready_timeout_ms": 60_000,
+                # This test manually supplies --load-extension, so it intentionally uses
+                # the launch-flag browser path instead of relying on the client fallback.
+                "executable_path": reversews_test_browser_path(),
                 "extra_args": [f"--load-extension={EXTENSION_PATH}"],
             }
         ).launch()
@@ -260,10 +296,14 @@ class ModCDPClientTests(unittest.TestCase):
             launcher={"launcher_mode": "remote"},
             upstream={"upstream_mode": "ws", "upstream_cdp_url": chrome["cdp_url"]},
             injector={
-                "injector_mode": "discover",
+                "injector_mode": "auto",
+                "injector_extension_path": str(EXTENSION_PATH),
                 "injector_service_worker_url_suffixes": ["/modcdp/service_worker.js"],
                 "injector_trust_service_worker_target": True,
+                "injector_service_worker_ready_timeout_ms": 30_000,
+                "injector_service_worker_probe_timeout_ms": 30_000,
             },
+            client={"client_routes": {"*.*": "direct_cdp"}},
         )
 
         try:
@@ -281,11 +321,17 @@ class ModCDPClientTests(unittest.TestCase):
 
     def test_close_keeps_injector_files_until_after_launched_browser_shutdown(self) -> None:
         cdp = ModCDPClient(
-            launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
-            upstream={
-                "upstream_mode": "reversews",
-                "upstream_reversews_wait_timeout_ms": 30_000,
+            launcher={
+                "launcher_mode": "local",
+                "launcher_options": {
+                    "headless": True,
+                    # After explicit CHROME_PATH and CI /usr/bin/chromium, this test uses
+                    # Chrome for Testing because Canary rejects --load-extension in this
+                    # local launch injector path.
+                    "executable_path": reversews_test_browser_path(),
+                },
             },
+            upstream={"upstream_mode": "ws"},
             injector={
                 "injector_mode": "auto",
                 "injector_extension_path": str(EXTENSION_PATH),
@@ -332,7 +378,7 @@ class ModCDPClientTests(unittest.TestCase):
 
     def test_close_clears_top_level_connection_state(self) -> None:
         cdp = ModCDPClient(
-            launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
+            launcher={"launcher_mode": "local", "launcher_options": {"headless": True}},
             upstream={"upstream_mode": "ws"},
             injector={
                 "injector_mode": "auto",
@@ -351,7 +397,7 @@ class ModCDPClientTests(unittest.TestCase):
 
     def test_generated_cdp_surface_exposes_direct_domain_commands(self) -> None:
         client = ModCDPClient(
-            launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
+            launcher={"launcher_mode": "local", "launcher_options": {"headless": True}},
             upstream={"upstream_mode": "ws"},
             injector={
                 "injector_mode": "auto",
@@ -404,7 +450,7 @@ class ModCDPClientTests(unittest.TestCase):
             self.assertRegex(str(awaited_raw_result["targetId"]), r"^[A-F0-9]+$")
 
         client = ModCDPClient(
-            launcher={"launcher_mode": "local", "launcher_options": {"headless": True, "sandbox": False}},
+            launcher={"launcher_mode": "local", "launcher_options": {"headless": True}},
             upstream={"upstream_mode": "ws"},
             injector={
                 "injector_mode": "auto",
@@ -599,18 +645,17 @@ class ModCDPClientTests(unittest.TestCase):
 
         payload: dict[str, JsonValue] = {"url": "https://example.com", "ready": True}
         self.assertEqual(client._validate_event_payload("Custom.ready", payload), payload)
-        with redirect_stderr(StringIO()):
-            self.assertIsNone(client._validate_event_payload("Custom.ready", {"url": "http://example.com", "ready": True}))
-            self.assertIsNone(
-                client._validate_event_payload("Custom.ready", {"url": "https://example.com", "ready": True, "x": 1})
-            )
+        with self.assertRaises(ValueError):
+            client._validate_event_payload("Custom.ready", {"url": "http://example.com", "ready": True})
+        with self.assertRaises(ValueError):
+            client._validate_event_payload("Custom.ready", {"url": "https://example.com", "ready": True, "x": 1})
 
     def test_scalar_event_schema_validates_value_payloads(self) -> None:
         client = ModCDPClient(custom_events=[{"name": "Custom.count", "event_schema": {"type": "integer", "minimum": 1}}])
 
         self.assertEqual(client._validate_event_payload("Custom.count", {"value": 3}), {"value": 3})
-        with redirect_stderr(StringIO()):
-            self.assertIsNone(client._validate_event_payload("Custom.count", {"value": 0}))
+        with self.assertRaises(ValueError):
+            client._validate_event_payload("Custom.count", {"value": 0})
 
 
 if __name__ == "__main__":

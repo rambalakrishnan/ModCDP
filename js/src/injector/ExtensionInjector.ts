@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { BrowserLaunchOptions } from "../launcher/BrowserLauncher.js";
 import type { UpstreamTransportConfig } from "../transport/UpstreamTransport.js";
 import type { ProtocolParams, ProtocolResult } from "../types/modcdp.js";
@@ -7,7 +10,6 @@ import { commands as TargetCommands } from "../types/generated/zod/Target.js";
 const EXT_ID_FROM_URL = /^chrome-extension:\/\/([a-z]+)\//;
 export const DEFAULT_MODCDP_EXTENSION_ID = "mdedooklbnfejodmnhmkdpkaedafkehf";
 export const DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES = ["/modcdp/service_worker.js"];
-export const DEFAULT_MODCDP_WAKE_PATH = "/modcdp/wake.html";
 const MODCDP_READY_EXPRESSION =
   "Boolean(globalThis.ModCDP?.__ModCDPServerVersion >= 1 && globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)";
 export const DEFAULT_CDP_SEND_TIMEOUT_MS = 10_000;
@@ -27,8 +29,6 @@ export type ExtensionInjectorConfig = {
   waitForExecutionContext?: ((session_id: string, timeout_ms: number) => Promise<number>) | null;
   injector_extension_path?: string | null;
   injector_extension_id?: string | null;
-  injector_wake_path?: string | null;
-  injector_wake_url?: string | null;
   injector_service_worker_url_includes?: string[];
   injector_service_worker_url_suffixes?: string[];
   injector_trust_service_worker_target?: boolean;
@@ -42,7 +42,6 @@ export type ExtensionInjectorConfig = {
   injector_target_session_poll_interval_ms?: number;
   injector_browserbase_api_key?: string | null;
   injector_browserbase_base_url?: string | null;
-  upstream_reversews_url?: string | null;
   upstream_nativemessaging_host_name?: string | null;
   upstream_nats_url?: string | null;
   upstream_nats_subject_prefix?: string | null;
@@ -56,6 +55,11 @@ export type ExtensionInjectionResult = {
   session_id: string;
   has_tabs?: boolean;
   has_debugger?: boolean;
+};
+
+export type PreparedExtension = {
+  unpacked_extension_path: string;
+  cleanup: () => Promise<void>;
 };
 
 function delay(ms: number) {
@@ -72,6 +76,69 @@ export function defaultModCDPExtensionPath() {
   return "../../../dist/extension.zip";
 }
 
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+export async function prepareUnpackedExtension(extension_path: string): Promise<PreparedExtension> {
+  const unpacked_path = fs.mkdtempSync(path.join(os.tmpdir(), "modcdp-extension-"));
+  const cleanup = async () => fs.rmSync(unpacked_path, { recursive: true, force: true });
+  try {
+    if (extension_path.endsWith(".zip")) {
+      await extractZip(extension_path, unpacked_path);
+    } else {
+      fs.cpSync(extension_path, unpacked_path, { recursive: true });
+    }
+    return { unpacked_extension_path: extensionRoot(unpacked_path), cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+export async function extensionIdFromManifestKey(extension_path: string) {
+  const [crypto, fs, path] = await Promise.all([import("node:crypto"), import("node:fs"), import("node:path")]);
+  const manifest_path = path.join(extension_path, "manifest.json");
+  if (!fs.existsSync(manifest_path)) return null;
+  const manifest = JSON.parse(fs.readFileSync(manifest_path, "utf8")) as Record<string, unknown>;
+  const key = firstString(manifest.key);
+  if (!key) return null;
+  const digest = crypto.createHash("sha256").update(Buffer.from(key, "base64")).digest().subarray(0, 16);
+  const alphabet = "abcdefghijklmnop";
+  return [...digest].map((byte) => alphabet[byte >> 4] + alphabet[byte & 0x0f]).join("");
+}
+
+function extensionRoot(unpacked_path: string) {
+  if (fs.existsSync(path.join(unpacked_path, "manifest.json"))) return unpacked_path;
+  const nested_path = path.join(unpacked_path, "extension");
+  if (fs.existsSync(path.join(nested_path, "manifest.json"))) return nested_path;
+  return unpacked_path;
+}
+
+async function extractZip(zip_path: string, destination: string) {
+  const { execFileSync } = await import("node:child_process");
+  const listing = execFileSync("unzip", ["-Z1", zip_path], {
+    encoding: "utf8",
+  });
+  for (const raw_name of listing.split(/\r?\n/)) {
+    if (!raw_name) continue;
+    const name = raw_name.replaceAll("\\", "/");
+    const normalized = path.posix.normalize(name);
+    if (
+      path.posix.isAbsolute(normalized) ||
+      normalized === "." ||
+      normalized === ".." ||
+      normalized.startsWith("../")
+    ) {
+      throw new Error(`zip entry ${JSON.stringify(raw_name)} escapes extension extraction directory`);
+    }
+  }
+  execFileSync("unzip", ["-q", zip_path, "-d", destination]);
+}
+
 export class ExtensionInjector {
   options: ExtensionInjectorConfig;
   protected unusable_target_ids = new Set<string>();
@@ -85,8 +152,6 @@ export class ExtensionInjector {
       waitForExecutionContext: null,
       injector_extension_path: null,
       injector_extension_id: null,
-      injector_wake_path: DEFAULT_MODCDP_WAKE_PATH,
-      injector_wake_url: null,
       injector_service_worker_url_includes: [],
       injector_service_worker_url_suffixes: [],
       injector_trust_service_worker_target: false,
@@ -100,7 +165,6 @@ export class ExtensionInjector {
       injector_target_session_poll_interval_ms: DEFAULT_TARGET_SESSION_POLL_INTERVAL_MS,
       injector_browserbase_api_key: null,
       injector_browserbase_base_url: null,
-      upstream_reversews_url: null,
       upstream_nativemessaging_host_name: null,
       upstream_nats_url: null,
       upstream_nats_subject_prefix: null,
@@ -194,30 +258,6 @@ export class ExtensionInjector {
     return TargetCommands["Target.getTargets"].result.parse(await this.send("Target.getTargets")).targetInfos;
   }
 
-  protected configuredWakeUrl() {
-    if (this.options.injector_wake_url) return this.options.injector_wake_url;
-    if (!this.options.injector_extension_id) return null;
-    const wake_path = this.options.injector_wake_path ?? DEFAULT_MODCDP_WAKE_PATH;
-    if (!wake_path) return null;
-    return `chrome-extension://${this.options.injector_extension_id}${wake_path.startsWith("/") ? wake_path : `/${wake_path}`}`;
-  }
-
-  protected async wakeConfiguredExtension() {
-    const wake_url = this.configuredWakeUrl();
-    if (!wake_url || typeof this.options.send !== "function") return false;
-    try {
-      await this.sendWithTimeout("Target.createTarget", {
-        url: wake_url,
-        background: true,
-        hidden: true,
-        focus: false,
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   protected async probeTarget(
     target: TargetInfo,
     session_timeout_ms = 0,
@@ -283,7 +323,9 @@ export class ExtensionInjector {
   ) {
     const deadline = Date.now() + timeout_ms;
     while (Date.now() < deadline) {
-      const discovered = await this.discoverReadyServiceWorker({ matched_only });
+      const discovered = await this.discoverReadyServiceWorker({
+        matched_only,
+      });
       if (discovered) return discovered;
       await delay(this.options.injector_service_worker_poll_interval_ms ?? DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS);
     }

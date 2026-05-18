@@ -27,7 +27,6 @@ describe("LocalBrowserLauncher", () => {
       const port = await LocalBrowserLauncher.freePort();
       const chrome = await new LocalBrowserLauncher({
         headless: true,
-        sandbox: process.platform !== "linux",
         chrome_ready_timeout_ms: 45_000,
         chrome_ready_poll_interval_ms: 50,
       }).launch({
@@ -61,9 +60,20 @@ describe("LocalBrowserLauncher", () => {
         );
         if (process.platform === "linux") {
           expect((chrome.proc as { spawnargs?: string[] }).spawnargs ?? []).toContain("--no-sandbox");
+        } else {
+          expect((chrome.proc as { spawnargs?: string[] }).spawnargs ?? []).not.toContain("--no-sandbox");
         }
         await expect(stat(userDataDir)).resolves.toBeTruthy();
         cdp = await CdpSocket.connect(chrome.cdp_url!);
+        const systemInfo = await cdp.send("SystemInfo.getInfo");
+        const commandLine = systemInfo.commandLine;
+        expect(commandLine).toEqual(expect.any(String));
+        expect(commandLine).toContain("--window-size=900,700");
+        if (process.platform === "linux") {
+          expect(commandLine).toContain("--no-sandbox");
+        } else {
+          expect(commandLine).not.toContain("--no-sandbox");
+        }
         await expectCdpBrowserSurface(cdp);
       } finally {
         await cdp?.close();
@@ -82,7 +92,6 @@ describe("LocalBrowserLauncher", () => {
     async () => {
       const chrome = await new LocalBrowserLauncher().launch({
         headless: true,
-        sandbox: process.platform !== "linux",
         remote_debugging: "pipe",
         chrome_ready_timeout_ms: 45_000,
       });
@@ -115,7 +124,6 @@ describe("LocalBrowserLauncher", () => {
     async () => {
       const chrome = await new LocalBrowserLauncher().launch({
         headless: true,
-        sandbox: process.platform !== "linux",
         remote_debugging: "pipe",
         loopback_cdp: true,
         chrome_ready_timeout_ms: 45_000,
@@ -142,7 +150,6 @@ describe("LocalBrowserLauncher", () => {
       const userDataDir = await mkdtemp(path.join(tmpdir(), "modcdp-local-profile-"));
       const chrome = await new LocalBrowserLauncher({
         headless: true,
-        sandbox: process.platform !== "linux",
         chrome_ready_timeout_ms: 45_000,
       }).launch({
         user_data_dir: userDataDir,

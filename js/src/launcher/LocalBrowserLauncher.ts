@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { homedir, platform, tmpdir } from "node:os";
@@ -121,7 +121,8 @@ function candidatePaths() {
             ),
           ]
         : ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/opt/google/chrome/chrome"];
-  return [process.env.CHROME_PATH, ...chromeForTestingCandidates(), ...canary, ...stock].filter(
+  const chromium = platform() === "linux" ? ["/usr/bin/chromium", "/usr/bin/chromium-browser"] : [];
+  return [process.env.CHROME_PATH, ...chromium, ...canary, ...chromeForTestingCandidates(), ...stock].filter(
     (candidate): candidate is string => Boolean(candidate),
   );
 }
@@ -222,14 +223,68 @@ async function waitForPipeReady(
 
 async function waitForCdpWebSocketUrl(cdp_url: string, timeout_ms: number, poll_interval_ms: number) {
   const deadline = Date.now() + timeout_ms;
+  let lastError: unknown = null;
   while (Date.now() < deadline) {
     try {
       return await resolveCdpWebSocketUrl(cdp_url);
-    } catch {
+    } catch (error) {
+      lastError = error;
       await delay(poll_interval_ms);
     }
   }
+  if (lastError instanceof Error) {
+    throw new Error(
+      `Chrome at ${cdp_url} did not expose a WebSocket CDP URL within ${timeout_ms}ms: ${lastError.message}`,
+    );
+  }
   throw new Error(`Chrome at ${cdp_url} did not expose a WebSocket CDP URL within ${timeout_ms}ms`);
+}
+
+async function readDevToolsActivePort(profile_dir: string) {
+  const activePortPath = path.join(profile_dir, "DevToolsActivePort");
+  let body: string;
+  try {
+    body = await readFile(activePortPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const [rawPort, websocketPath] = body.trim().split(/\r?\n/);
+  if (!rawPort || !websocketPath) return null;
+  const port = Number(rawPort);
+  if (!Number.isInteger(port) || port <= 0) throw new Error(`Invalid DevToolsActivePort port: ${rawPort}`);
+  return { port, cdp_url: `http://127.0.0.1:${port}`, websocketPath };
+}
+
+async function waitForBrowserSelectedCdpWebSocketUrl(
+  profile_dir: string,
+  timeout_ms: number,
+  poll_interval_ms: number,
+  assertChromeRunning: () => void,
+) {
+  const deadline = Date.now() + timeout_ms;
+  let lastError: unknown = null;
+  while (Date.now() < deadline) {
+    assertChromeRunning();
+    const activePort = await readDevToolsActivePort(profile_dir);
+    if (activePort) {
+      try {
+        return {
+          port: activePort.port,
+          cdp_url: await resolveCdpWebSocketUrl(activePort.cdp_url),
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    await delay(poll_interval_ms);
+  }
+  if (lastError instanceof Error) {
+    throw new Error(
+      `Chrome did not expose DevToolsActivePort from ${profile_dir} within ${timeout_ms}ms: ${lastError.message}`,
+    );
+  }
+  throw new Error(`Chrome did not expose DevToolsActivePort from ${profile_dir} within ${timeout_ms}ms`);
 }
 
 export class LocalBrowserLauncher extends BrowserLauncher {
@@ -260,7 +315,7 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       port,
       user_data_dir,
       headless = process.platform === "linux" && !process.env.DISPLAY,
-      sandbox = false,
+      sandbox = process.platform !== "linux",
       args = [],
       extra_args = [],
       remote_debugging = "port",
@@ -272,7 +327,7 @@ export class LocalBrowserLauncher extends BrowserLauncher {
     const exe = LocalBrowserLauncher.findChromeBinary(executable_path);
     const usePipe = remote_debugging === "pipe";
     const useLoopbackCdp = !usePipe || loopback_cdp || port != null;
-    const usePort = useLoopbackCdp ? port || (await LocalBrowserLauncher.freePort()) : null;
+    const usePort = useLoopbackCdp ? (port ?? 0) : null;
     const profile_dir = user_data_dir || (await mkdtemp(path.join(tmpdir(), "modcdp.")));
     const flags = [
       ...DEFAULT_FLAGS,
@@ -308,6 +363,12 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       await terminateProcess(proc);
       if (!user_data_dir || cleanup_user_data_dir) await removeProfileDir(profile_dir);
     };
+    const assertChromeRunning = () => {
+      if (spawnError) throw spawnError;
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        throw new Error(`Chrome exited before CDP became ready (exit=${proc.exitCode}, signal=${proc.signalCode}).`);
+      }
+    };
 
     if (usePipe) {
       const pipe_write = proc.stdio[3] as NodeJS.WritableStream | null;
@@ -316,24 +377,31 @@ export class LocalBrowserLauncher extends BrowserLauncher {
         await close();
         throw new Error("Chrome remote-debugging pipe stdio handles were not created.");
       }
-      if (spawnError) {
-        await close();
-        throw spawnError;
-      }
+      assertChromeRunning();
       await waitForPipeReady(pipe_read, pipe_write, chrome_ready_timeout_ms);
-      const loopback_cdp_url =
+      const loopback =
         usePort == null
           ? null
-          : await waitForCdpWebSocketUrl(
-              `http://127.0.0.1:${usePort}`,
-              chrome_ready_timeout_ms,
-              chrome_ready_poll_interval_ms,
-            );
+          : usePort === 0
+            ? await waitForBrowserSelectedCdpWebSocketUrl(
+                profile_dir,
+                chrome_ready_timeout_ms,
+                chrome_ready_poll_interval_ms,
+                assertChromeRunning,
+              )
+            : {
+                port: usePort,
+                cdp_url: await waitForCdpWebSocketUrl(
+                  `http://127.0.0.1:${usePort}`,
+                  chrome_ready_timeout_ms,
+                  chrome_ready_poll_interval_ms,
+                ),
+              };
       this.launched = {
         proc,
-        ...(usePort == null ? {} : { port: usePort }),
+        ...(loopback == null ? {} : { port: loopback.port }),
         cdp_url: `pipe://${proc.pid}`,
-        ...(loopback_cdp_url == null ? {} : { loopback_cdp_url }),
+        ...(loopback == null ? {} : { loopback_cdp_url: loopback.cdp_url }),
         pipe_read,
         pipe_write,
         profile_dir,
@@ -342,28 +410,32 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       return this.launched;
     }
 
-    const cdp_port = usePort as number;
-    const cdp_url = `http://127.0.0.1:${cdp_port}`;
     const deadline = Date.now() + chrome_ready_timeout_ms;
     while (Date.now() < deadline) {
-      if (spawnError) {
+      try {
+        assertChromeRunning();
+      } catch (error) {
         await close();
-        throw spawnError;
+        throw error;
       }
-      if (proc.exitCode !== null || proc.signalCode !== null) {
-        await close();
-        throw new Error(`Chrome exited before CDP became ready (exit=${proc.exitCode}, signal=${proc.signalCode}).`);
+      const activePort =
+        usePort === 0
+          ? await readDevToolsActivePort(profile_dir)
+          : { port: usePort as number, cdp_url: `http://127.0.0.1:${usePort}` };
+      if (!activePort) {
+        await delay(chrome_ready_poll_interval_ms);
+        continue;
       }
       try {
-        const response = await fetch(`${cdp_url}/json/version`);
+        const response = await fetch(`${activePort.cdp_url}/json/version`);
         if (response.ok) {
           const version = await response.json();
           // cdp_url is resolved from the HTTP discovery endpoint before returning.
           this.launched = {
             proc,
-            port: cdp_port,
-            cdp_url: version.webSocketDebuggerUrl ?? cdp_url,
-            loopback_cdp_url: version.webSocketDebuggerUrl ?? cdp_url,
+            port: activePort.port,
+            cdp_url: version.webSocketDebuggerUrl ?? activePort.cdp_url,
+            loopback_cdp_url: version.webSocketDebuggerUrl ?? activePort.cdp_url,
             profile_dir,
             close,
           };
@@ -373,6 +445,6 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       await new Promise((resolve) => setTimeout(resolve, chrome_ready_poll_interval_ms));
     }
     await close();
-    throw new Error(`Chrome at ${cdp_url} did not become ready within ${chrome_ready_timeout_ms}ms`);
+    throw new Error(`Chrome did not become ready within ${chrome_ready_timeout_ms}ms`);
   }
 }
