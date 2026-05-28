@@ -1,3 +1,7 @@
+// MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+// - ./js/src/launcher/BrowserLauncher.ts
+// - ./python/modcdp/launcher/BrowserLauncher.py
 package launcher
 
 import (
@@ -6,26 +10,19 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/browserbase/modcdp/go/modcdp/types"
 )
 
-type LaunchOptions = types.LaunchOptions
-type ExtensionInjectorConfig = types.ExtensionInjectorConfig
+type LauncherConfig = types.LauncherConfig
+type InjectorConfig = types.InjectorConfig
+type UpstreamTransportConfig = types.UpstreamTransportConfig
 
 const DefaultChromeReadyTimeoutMS = 45_000
 const DefaultChromeReadyPollIntervalMS = 100
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
-var writePipeMessage = WritePipeMessage
-var readPipeMessage = ReadPipeMessage
 var cdpHTTPClient = &http.Client{Timeout: 2 * time.Second}
 
 func freePort() (int, error) {
@@ -35,10 +32,6 @@ func freePort() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
-}
-
-func websocketURLFor(endpoint string) (string, error) {
-	return WebsocketURLFor(endpoint)
 }
 
 func WebsocketURLFor(endpoint string) (string, error) {
@@ -54,20 +47,8 @@ func WebsocketURLFor(endpoint string) (string, error) {
 		return "", fmt.Errorf("GET /json/version: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		parsed, parseErr := url.Parse(httpEndpoint)
-		if parseErr != nil {
-			return "", parseErr
-		}
-		if parsed.Scheme == "https" {
-			parsed.Scheme = "wss"
-		} else {
-			parsed.Scheme = "ws"
-		}
-		parsed.Path = "/devtools/browser"
-		parsed.RawQuery = ""
-		parsed.Fragment = ""
-		return parsed.String(), nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("GET %s/json/version -> %d", httpEndpoint, resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	var version map[string]any
@@ -76,139 +57,157 @@ func WebsocketURLFor(endpoint string) (string, error) {
 	}
 	wsURL, _ := version["webSocketDebuggerUrl"].(string)
 	if wsURL == "" {
-		return "", fmt.Errorf("HTTP discovery for %s returned no webSocketDebuggerUrl", endpoint)
+		return "", fmt.Errorf("cdp_url HTTP discovery returned no webSocketDebuggerUrl")
 	}
 	return wsURL, nil
 }
 
 type LaunchedBrowser struct {
-	// CDPURL is the effective CDP endpoint for the selected transport; launchers resolve HTTP discovery endpoints to ws:// before returning when they can.
-	CDPURL                string   `json:"cdp_url,omitempty"`
-	LoopbackCDPURL        string   `json:"loopback_cdp_url,omitempty"`
-	Close                 func()   `json:"-"`
-	ProfileDir            string   `json:"profile_dir,omitempty"`
-	PipeRead              *os.File `json:"-"`
-	PipeWrite             *os.File `json:"-"`
-	BrowserbaseSessionID  string   `json:"browserbase_session_id,omitempty"`
-	BrowserbaseSessionURL string   `json:"browserbase_session_url,omitempty"`
-	BrowserbaseDebugURL   string   `json:"browserbase_debug_url,omitempty"`
+	CDPURL                string `json:"cdp_url,omitempty"`
+	CDPListenPort         int    `json:"cdp_listen_port,omitempty"`
+	LoopbackCDPURL        string `json:"loopback_cdp_url,omitempty"`
+	Close                 func() `json:"-"`
+	ProfileDir            string `json:"profile_dir,omitempty"`
+	BrowserbaseSessionID  string `json:"browserbase_session_id,omitempty"`
+	BrowserbaseSessionURL string `json:"browserbase_session_url,omitempty"`
+	BrowserbaseDebugURL   string `json:"browserbase_debug_url,omitempty"`
 }
 
 type BrowserLauncher struct {
-	Options  LaunchOptions
+	Config   LauncherConfig
 	Launched *LaunchedBrowser
 }
 
-func NewBrowserLauncher(options LaunchOptions) BrowserLauncher {
-	return BrowserLauncher{Options: options}
+func NewBrowserLauncher(config LauncherConfig) BrowserLauncher {
+	if config.LauncherBBBaseURL == "" {
+		config.LauncherBBBaseURL = DefaultBrowserbaseLauncherBaseURL
+	}
+	return BrowserLauncher{Config: config}
 }
 
-func (l *BrowserLauncher) Update(config LaunchOptions) *BrowserLauncher {
-	l.Options = mergeLaunchOptions(l.Options, config)
+func (l *BrowserLauncher) Update(config LauncherConfig) *BrowserLauncher {
+	l.Config = mergeLaunchConfig(l.Config, config)
 	return l
 }
 
-func (l BrowserLauncher) GetTransportConfig() map[string]any {
-	return map[string]any{
-		"cdp_url":       firstString(launchedCDPURL(l.Launched), l.Options.CDPURL),
-		"user_data_dir": firstString(launchedProfileDir(l.Launched), l.Options.UserDataDir),
-		"pipe_read":     launchedPipeRead(l.Launched),
-		"pipe_write":    launchedPipeWrite(l.Launched),
+func (l BrowserLauncher) ConfigForUpstream() map[string]any {
+	config := map[string]any{}
+	upstreamWSCDPURL := firstString(launchedCDPURL(l.Launched), l.Config.LauncherRemoteCDPURL)
+	if upstreamWSCDPURL != "" {
+		config["upstream_ws_cdp_url"] = upstreamWSCDPURL
 	}
+	return config
 }
 
-func (l BrowserLauncher) GetServerConfig() map[string]any {
+func (l BrowserLauncher) ConfigForServer(upstreamConfig UpstreamTransportConfig) map[string]any {
+	launcherLocalLoopbackCDPURL := ""
 	if l.Launched != nil && l.Launched.LoopbackCDPURL != "" {
-		return map[string]any{"server_loopback_cdp_url": l.Launched.LoopbackCDPURL}
+		launcherLocalLoopbackCDPURL = l.Launched.LoopbackCDPURL
+	} else if upstreamConfig.UpstreamMode == "ws" && upstreamConfig.UpstreamWSCDPURL != "" {
+		launcherLocalLoopbackCDPURL = upstreamConfig.UpstreamWSCDPURL
+	}
+	if launcherLocalLoopbackCDPURL != "" {
+		return map[string]any{"upstream": map[string]any{"upstream_mode": "ws", "upstream_ws_cdp_url": launcherLocalLoopbackCDPURL}}
 	}
 	return map[string]any{}
 }
 
-func (l BrowserLauncher) GetInjectorConfig() ExtensionInjectorConfig {
-	return ExtensionInjectorConfig{
-		InjectorBrowserbaseAPIKey:  l.Options.BrowserbaseAPIKey,
-		InjectorBrowserbaseBaseURL: l.Options.BrowserbaseBaseURL,
-		InjectorExtensionID:        l.Options.InjectorExtensionID,
-	}
-}
-
-func (l BrowserLauncher) Launch(options LaunchOptions) (*LaunchedBrowser, error) {
+func (l BrowserLauncher) Launch(config LauncherConfig) (*LaunchedBrowser, error) {
 	return nil, fmt.Errorf("%T.Launch is not implemented", l)
 }
 
-func mergeLaunchOptions(existing LaunchOptions, incoming LaunchOptions) LaunchOptions {
+func (l *BrowserLauncher) Close() {
+	launched := l.Launched
+	l.Launched = nil
+	if launched != nil && launched.Close != nil {
+		launched.Close()
+	}
+}
+
+func (l BrowserLauncher) ToJSON() map[string]any {
+	state := map[string]any{"launched": l.Launched != nil}
+	if l.Launched != nil {
+		state["cdp_url"] = l.Launched.CDPURL
+		state["loopback_cdp_url"] = l.Launched.LoopbackCDPURL
+		state["cdp_listen_port"] = l.Launched.CDPListenPort
+		state["profile_dir"] = l.Launched.ProfileDir
+		state["browserbase_session_id"] = l.Launched.BrowserbaseSessionID
+		state["browserbase_session_url"] = l.Launched.BrowserbaseSessionURL
+		state["browserbase_debug_url"] = l.Launched.BrowserbaseDebugURL
+	}
+	return types.ModCDPToJSON(l, types.ModCDPJSONConfig{State: state})
+}
+
+func mergeLaunchConfig(existing LauncherConfig, incoming LauncherConfig) LauncherConfig {
 	merged := existing
-	if incoming.ExecutablePath != "" {
-		merged.ExecutablePath = incoming.ExecutablePath
+	if incoming.LauncherLocalExecutablePath != "" {
+		merged.LauncherLocalExecutablePath = incoming.LauncherLocalExecutablePath
 	}
-	if incoming.Port != 0 {
-		merged.Port = incoming.Port
+	if incoming.LauncherLocalCDPListenPort != 0 {
+		merged.LauncherLocalCDPListenPort = incoming.LauncherLocalCDPListenPort
 	}
-	if incoming.RemoteDebugging != "" {
-		merged.RemoteDebugging = incoming.RemoteDebugging
+	if incoming.LauncherLocalLoopbackCDP != nil {
+		merged.LauncherLocalLoopbackCDP = incoming.LauncherLocalLoopbackCDP
 	}
-	if incoming.LoopbackCDP != nil {
-		merged.LoopbackCDP = incoming.LoopbackCDP
+	if incoming.LauncherLocalUserDataDir != "" {
+		merged.LauncherLocalUserDataDir = incoming.LauncherLocalUserDataDir
 	}
-	if incoming.UserDataDir != "" {
-		merged.UserDataDir = incoming.UserDataDir
+	if incoming.LauncherLocalCleanupUserDataDir != nil {
+		merged.LauncherLocalCleanupUserDataDir = incoming.LauncherLocalCleanupUserDataDir
 	}
-	if incoming.CleanupUserDataDir != nil {
-		merged.CleanupUserDataDir = incoming.CleanupUserDataDir
+	if incoming.LauncherLocalChromeReadyTimeoutMS != 0 {
+		merged.LauncherLocalChromeReadyTimeoutMS = incoming.LauncherLocalChromeReadyTimeoutMS
 	}
-	if incoming.ChromeReadyTimeoutMS != 0 {
-		merged.ChromeReadyTimeoutMS = incoming.ChromeReadyTimeoutMS
+	if incoming.LauncherLocalChromeReadyPollIntervalMS != 0 {
+		merged.LauncherLocalChromeReadyPollIntervalMS = incoming.LauncherLocalChromeReadyPollIntervalMS
 	}
-	if incoming.ChromeReadyPollIntervalMS != 0 {
-		merged.ChromeReadyPollIntervalMS = incoming.ChromeReadyPollIntervalMS
+	if incoming.LauncherLocalHeadless != nil {
+		merged.LauncherLocalHeadless = incoming.LauncherLocalHeadless
 	}
-	if incoming.Headless != nil {
-		merged.Headless = incoming.Headless
+	if incoming.LauncherLocalSandbox != nil {
+		merged.LauncherLocalSandbox = incoming.LauncherLocalSandbox
 	}
-	if incoming.Sandbox != nil {
-		merged.Sandbox = incoming.Sandbox
+	if len(incoming.LauncherLocalArgs) > 0 {
+		merged.LauncherLocalArgs = mergeChromeArgs(existing.LauncherLocalArgs, incoming.LauncherLocalArgs)
 	}
-	if len(incoming.Args) > 0 {
-		merged.Args = mergeChromeArgs(existing.Args, incoming.Args)
+	if len(incoming.LauncherLocalExtraArgs) > 0 {
+		merged.LauncherLocalExtraArgs = mergeChromeArgs(existing.LauncherLocalExtraArgs, incoming.LauncherLocalExtraArgs)
 	}
-	if len(incoming.ExtraArgs) > 0 {
-		merged.ExtraArgs = mergeChromeArgs(existing.ExtraArgs, incoming.ExtraArgs)
+	if incoming.LauncherRemoteCDPURL != "" {
+		merged.LauncherRemoteCDPURL = incoming.LauncherRemoteCDPURL
 	}
-	if incoming.CDPURL != "" {
-		merged.CDPURL = incoming.CDPURL
+	if incoming.LauncherBBAPIKey != "" {
+		merged.LauncherBBAPIKey = incoming.LauncherBBAPIKey
 	}
-	if incoming.BrowserbaseAPIKey != "" {
-		merged.BrowserbaseAPIKey = incoming.BrowserbaseAPIKey
+	if incoming.LauncherBBBaseURL != "" {
+		merged.LauncherBBBaseURL = incoming.LauncherBBBaseURL
 	}
-	if incoming.BrowserbaseBaseURL != "" {
-		merged.BrowserbaseBaseURL = incoming.BrowserbaseBaseURL
+	if incoming.LauncherBBSessionID != "" {
+		merged.LauncherBBSessionID = incoming.LauncherBBSessionID
 	}
-	if incoming.BrowserbaseSessionID != "" {
-		merged.BrowserbaseSessionID = incoming.BrowserbaseSessionID
+	if incoming.LauncherBBKeepAlive != nil {
+		merged.LauncherBBKeepAlive = incoming.LauncherBBKeepAlive
 	}
-	if incoming.BrowserbaseKeepAlive != nil {
-		merged.BrowserbaseKeepAlive = incoming.BrowserbaseKeepAlive
+	if incoming.LauncherBBCloseSessionOnClose != nil {
+		merged.LauncherBBCloseSessionOnClose = incoming.LauncherBBCloseSessionOnClose
 	}
-	if incoming.BrowserbaseCloseSessionOnClose != nil {
-		merged.BrowserbaseCloseSessionOnClose = incoming.BrowserbaseCloseSessionOnClose
+	if incoming.LauncherBBRegion != "" {
+		merged.LauncherBBRegion = incoming.LauncherBBRegion
 	}
-	if incoming.Region != "" {
-		merged.Region = incoming.Region
+	if incoming.LauncherBBTimeout != 0 {
+		merged.LauncherBBTimeout = incoming.LauncherBBTimeout
 	}
-	if incoming.Timeout != 0 {
-		merged.Timeout = incoming.Timeout
+	if incoming.LauncherBBExtensionID != "" {
+		merged.LauncherBBExtensionID = incoming.LauncherBBExtensionID
 	}
-	if incoming.InjectorExtensionID != "" {
-		merged.InjectorExtensionID = incoming.InjectorExtensionID
+	if incoming.LauncherBBBrowserSettings != nil {
+		merged.LauncherBBBrowserSettings = incoming.LauncherBBBrowserSettings
 	}
-	if incoming.BrowserbaseBrowserSettings != nil {
-		merged.BrowserbaseBrowserSettings = incoming.BrowserbaseBrowserSettings
+	if incoming.LauncherBBUserMetadata != nil {
+		merged.LauncherBBUserMetadata = incoming.LauncherBBUserMetadata
 	}
-	if incoming.BrowserbaseUserMetadata != nil {
-		merged.BrowserbaseUserMetadata = incoming.BrowserbaseUserMetadata
-	}
-	if incoming.BrowserbaseSessionCreateParams != nil {
-		merged.BrowserbaseSessionCreateParams = incoming.BrowserbaseSessionCreateParams
+	if incoming.LauncherBBSessionCreateParams != nil {
+		merged.LauncherBBSessionCreateParams = incoming.LauncherBBSessionCreateParams
 	}
 	return merged
 }
@@ -276,18 +275,4 @@ func launchedProfileDir(launched *LaunchedBrowser) string {
 		return ""
 	}
 	return launched.ProfileDir
-}
-
-func launchedPipeRead(launched *LaunchedBrowser) *os.File {
-	if launched == nil {
-		return nil
-	}
-	return launched.PipeRead
-}
-
-func launchedPipeWrite(launched *LaunchedBrowser) *os.File {
-	if launched == nil {
-		return nil
-	}
-	return launched.PipeWrite
 }

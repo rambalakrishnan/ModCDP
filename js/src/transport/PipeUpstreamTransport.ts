@@ -1,67 +1,112 @@
-import type { CdpCommandMessage } from "../types/modcdp.js";
-import { UpstreamTransport, type UpstreamTransportConfig } from "./UpstreamTransport.js";
+// MODCDP_TS_ONLY: DO NOT TRANSLATE THIS FILE TO OTHER LANGUAGES.
+// Reason: not needed by Stagehand (exotic transport).
+import { z } from "zod";
+import type { LauncherConfig } from "../launcher/BrowserLauncher.js";
+import type { CdpCommandSchema } from "../types/generated/zod/helpers.js";
+import type { CdpCommandMessage, ProtocolPayload, ProtocolResult } from "../types/modcdp.js";
+import { DEFAULT_CLIENT_CDP_SEND_TIMEOUT_MS } from "../types/modcdp.js";
+import { UpstreamTransport, type TargetRoute } from "./UpstreamTransport.js";
 
-export class PipeUpstreamTransport extends UpstreamTransport {
-  readonly mode = "pipe" as const;
-  readonly endpoint_kind = "raw_cdp" as const;
-  declare url: string;
+const PipeUpstreamTransportConfigSchema = z.object({
+  upstream_mode: z.literal("pipe").default("pipe"),
+  upstream_pipe_read: z.custom<NodeJS.ReadableStream>().optional(),
+  upstream_pipe_write: z.custom<NodeJS.WritableStream>().optional(),
+  upstream_cdp_send_timeout_ms: z.number().positive().default(DEFAULT_CLIENT_CDP_SEND_TIMEOUT_MS),
+});
+type PipeUpstreamTransportConfig = z.infer<typeof PipeUpstreamTransportConfigSchema>;
+
+class PipeUpstreamTransport extends UpstreamTransport {
+  declare config: PipeUpstreamTransportConfig;
   private buffer = "";
-  private connected = false;
+  private pipe_cleanup: (() => void) | null = null;
 
-  private pipe_read: NodeJS.ReadableStream | null;
-  private pipe_write: NodeJS.WritableStream | null;
-
-  constructor({
-    pipe_read = null,
-    pipe_write = null,
-    cdp_url = "pipe://unknown",
-  }: {
-    pipe_read?: NodeJS.ReadableStream | null;
-    pipe_write?: NodeJS.WritableStream | null;
-    cdp_url?: string | null;
-  } = {}) {
+  constructor(config: z.input<typeof PipeUpstreamTransportConfigSchema> = {}) {
     super();
-    this.pipe_read = pipe_read;
-    this.pipe_write = pipe_write;
-    this.url = cdp_url ?? "pipe://unknown";
+    this.config = PipeUpstreamTransportConfigSchema.parse({ ...config, upstream_mode: "pipe" });
   }
 
-  update(config: UpstreamTransportConfig = {}) {
-    this.pipe_read = config.pipe_read ?? this.pipe_read;
-    this.pipe_write = config.pipe_write ?? this.pipe_write;
-    this.url = config.cdp_url ?? this.url;
+  override send(message: CdpCommandMessage): void;
+  override send(
+    method: string,
+    params?: ProtocolPayload,
+    sessionId?: string | null,
+    config?: { timeout_ms?: number | null },
+  ): Promise<ProtocolResult>;
+  override send<
+    Params extends z.ZodType<Record<string, unknown>>,
+    Result extends z.ZodType<Record<string, unknown>>,
+    Name extends string,
+  >(
+    command: CdpCommandSchema<Params, Result, Name>,
+    params?: z.input<Params>,
+    route?: TargetRoute | string | null,
+  ): Promise<z.output<Result>>;
+  override send<
+    Params extends z.ZodType<Record<string, unknown>>,
+    Result extends z.ZodType<Record<string, unknown>>,
+    Name extends string,
+  >(
+    command: CdpCommandMessage | string | CdpCommandSchema<Params, Result, Name>,
+    params: ProtocolPayload | z.input<Params> = {},
+    route_or_sessionId: TargetRoute | string | null = null,
+    config: { timeout_ms?: number | null } = {},
+  ): void | Promise<ProtocolResult> | Promise<z.output<Result>> {
+    if (typeof command !== "string" && "method" in command) {
+      if (!this.config.upstream_pipe_write || !this.pipe_cleanup) throw new Error("CDP pipe is not connected.");
+      this.config.upstream_pipe_write.write(`${JSON.stringify(command)}\0`);
+      return;
+    }
+    if (typeof command === "string") {
+      return super.send(
+        command,
+        params as ProtocolPayload,
+        typeof route_or_sessionId === "string" ? route_or_sessionId : null,
+        config,
+      );
+    }
+    return super.send(command, params as z.input<Params>, route_or_sessionId);
+  }
+
+  override update(config: Record<string, unknown> = {}) {
+    this.config = PipeUpstreamTransportConfigSchema.parse({ ...this.config, ...config, upstream_mode: "pipe" });
     return this;
   }
 
-  getLauncherConfig() {
-    return { remote_debugging: "pipe" as const };
+  override configForLauncher(): LauncherConfig {
+    return { launcher_local_cdp_transport: "pipe" } as unknown as LauncherConfig;
   }
 
   async connect() {
-    if (!this.pipe_read || !this.pipe_write) {
-      throw new Error("upstream.upstream_mode=pipe requires launcher-provided remote-debugging pipe handles.");
+    if (!this.config.upstream_pipe_read || !this.config.upstream_pipe_write) {
+      throw new Error("upstream_mode=pipe requires launcher-provided CDP pipe handles.");
     }
-    if (this.connected) return;
-    this.connected = true;
-    this.pipe_read.on("data", (chunk) => this.read(chunk));
-    this.pipe_read.on("end", () => this.handleClose(new Error("CDP pipe closed")));
-    this.pipe_read.on("error", () => this.handleClose(new Error("CDP pipe error")));
-    this.pipe_write.on("error", () => this.handleClose(new Error("CDP pipe write error")));
-  }
-
-  send(message: CdpCommandMessage) {
-    if (!this.pipe_write || !this.connected) throw new Error("CDP pipe is not connected.");
-    this.pipe_write.write(`${JSON.stringify(message)}\0`);
+    if (this.pipe_cleanup) return;
+    const on_data = (chunk: Buffer | string) => this.read(chunk);
+    const on_end = () => this.handleClose(new Error("CDP pipe closed"));
+    const on_read_error = () => this.handleClose(new Error("CDP pipe error"));
+    const on_write_error = () => this.handleClose(new Error("CDP pipe write error"));
+    this.config.upstream_pipe_read.on("data", on_data);
+    this.config.upstream_pipe_read.on("end", on_end);
+    this.config.upstream_pipe_read.on("error", on_read_error);
+    this.config.upstream_pipe_write.on("error", on_write_error);
+    this.pipe_cleanup = () => {
+      this.config.upstream_pipe_read?.off("data", on_data);
+      this.config.upstream_pipe_read?.off("end", on_end);
+      this.config.upstream_pipe_read?.off("error", on_read_error);
+      this.config.upstream_pipe_write?.off("error", on_write_error);
+    };
   }
 
   async close() {
+    const pipe_cleanup = this.pipe_cleanup;
+    this.pipe_cleanup = null;
+    pipe_cleanup?.();
     try {
-      this.pipe_write?.end();
+      this.config.upstream_pipe_write?.end();
     } catch {}
     try {
-      (this.pipe_read as { destroy?: () => void } | null)?.destroy?.();
+      (this.config.upstream_pipe_read as { destroy?: () => void } | undefined)?.destroy?.();
     } catch {}
-    this.connected = false;
   }
 
   private read(chunk: Buffer | string) {
@@ -76,7 +121,20 @@ export class PipeUpstreamTransport extends UpstreamTransport {
   }
 
   private handleClose(error: Error) {
-    this.connected = false;
+    const pipe_cleanup = this.pipe_cleanup;
+    this.pipe_cleanup = null;
+    pipe_cleanup?.();
     this.emitClose(error);
   }
+
+  override toJSON() {
+    const json = super.toJSON();
+    return {
+      ...json,
+      state: { ...json.state, connected: this.pipe_cleanup != null, buffered_bytes: this.buffer.length },
+    };
+  }
 }
+
+export { PipeUpstreamTransport, PipeUpstreamTransportConfigSchema };
+export type { PipeUpstreamTransportConfig };

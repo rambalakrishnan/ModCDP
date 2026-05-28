@@ -1,13 +1,17 @@
+# MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+# Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+# - ./js/src/client/ModCDPClient.ts
+# - ./go/modcdp/client/ModCDPClient.go
 """ModCDPClient (Python): importable, no CLI, no demo code.
 
-Constructor option groups mirror the JS / Go ports:
+Constructor config groups mirror the JS / Go ports:
     launcher          browser/session creation and cleanup
     upstream          message transport to raw CDP or a ModCDP server
-    injector          raw-CDP extension discovery/injection/borrowing
-    server            ModCDPServer.configure params
+    injector          raw-CDP extension discovery/injection
+    server_config    ModCDPServer.configure params
     client            client routing and client-owned send/event timings
 
-Public methods: connect(), send(method, params), on(event, handler), close(), _cdp.send(), _cdp.on().
+Public methods: connect(), send(method, params), on(event, handler), close().
 Synchronous (blocking) API; upstream transports own their read loops.
 """
 
@@ -15,75 +19,47 @@ import asyncio
 import inspect
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from queue import Queue, Empty
-from typing import Any, Literal, cast
+from typing import Any
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
-from pydantic_core import to_jsonable_python
-from ..router.AutoSessionRouter import AutoSessionRouter
-from ..types.jsonschema import type_adapter_from_json_schema
-from ..types.generated import cdp as generated_cdp
+from ..router.AutoSessionRouter import AutoSessionRouter, RouterConfig
 from ..types.generated.cdp import AwaitableDict, CDPEvent, CDPModel, CDPParams, CDPSurfaceMixin, cdp_event_name, install_cdp_surface
-from ..launcher.BrowserbaseBrowserLauncher import BrowserbaseBrowserLauncher
-from ..injector.BBBrowserExtensionInjector import BBBrowserExtensionInjector
-from ..injector.BorrowedExtensionInjector import BorrowedExtensionInjector
-from ..injector.DiscoveredExtensionInjector import DiscoveredExtensionInjector
-from ..injector.ExtensionInjector import (
-    DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES,
-    ExtensionInjector,
-    ExtensionInjectorConfig,
-)
-from ..injector.ExtensionsLoadUnpackedInjector import ExtensionsLoadUnpackedInjector
-from ..injector.LocalBrowserLaunchExtensionInjector import LocalBrowserLaunchExtensionInjector
+from ..types.CDPTypes import CDPTypes
+from ..launcher.BBBrowserLauncher import BBBrowserLauncher
+from ..injector.BBExtensionInjector import BBExtensionInjector
+from ..injector.DiscoverExtensionInjector import DiscoverExtensionInjector
+from ..injector.ExtensionInjector import ExtensionInjector, InjectorConfig
+from ..injector.CDPExtensionInjector import CDPExtensionInjector
+from ..injector.CLIExtensionInjector import CLIExtensionInjector
 from ..launcher.LocalBrowserLauncher import LocalBrowserLauncher
-from ..launcher.NoopBrowserLauncher import NoopBrowserLauncher
+from ..launcher.NoneBrowserLauncher import NoneBrowserLauncher
 from ..launcher.RemoteBrowserLauncher import RemoteBrowserLauncher
-from ..transport.NativeMessagingUpstreamTransport import DEFAULT_UPSTREAM_NATIVEMESSAGING_WAIT_TIMEOUT_MS, NativeMessagingUpstreamTransport
-from ..transport.NatsUpstreamTransport import DEFAULT_UPSTREAM_NATS_WAIT_TIMEOUT_MS, NatsUpstreamTransport
-from ..transport.PipeUpstreamTransport import PipeUpstreamTransport
-from ..transport.ReverseWebSocketUpstreamTransport import (
-    DEFAULT_UPSTREAM_REVERSEWS_BIND,
-    DEFAULT_UPSTREAM_REVERSEWS_WAIT_TIMEOUT_MS,
-    ReverseWebSocketUpstreamTransport,
-)
-from ..transport.UpstreamTransport import UpstreamTransport
-from ..transport.WebSocketUpstreamTransport import WebSocketUpstreamTransport
+from ..transport.UpstreamTransport import UpstreamMode, UpstreamTransport, UpstreamTransportConfig
+from ..transport.WSUpstreamTransport import WSUpstreamTransport
 from ..translate.translate import (
     CUSTOM_EVENT_BINDING_NAME,
-    DEFAULT_CLIENT_ROUTES,
     UPSTREAM_EVENT_BINDING_NAME,
     wrap_command_if_needed,
     unwrap_event_if_needed,
     unwrap_response_if_needed,
 )
-from ..launcher.BrowserLauncher import BrowserLaunchOptions
+from ..launcher.BrowserLauncher import LauncherConfig
 from ..types.modcdp import (
-    ModCDPAddCustomCommandParams,
-    ModCDPAddCustomEventObjectParams,
-    ModCDPAddCustomEventParams,
-    ModCDPAddMiddlewareParams,
     ModCDPCommandTiming,
+    ModCDPClientConfig,
     ModCDPConnectTiming,
     ModCDPPingLatency,
-    ModCDPRawTiming,
-    ModCDPRoutes,
     ModCDPServerConfig,
     CdpMessage,
     ExtensionInfo,
-    MessageParams,
     Handler,
     JsonValue,
-    PendingEntry,
     ProtocolParams,
     ProtocolPayload,
     ProtocolResult,
-    TranslatedCommand,
 )
-
-
-def _defaulted(value: Any, fallback: Any) -> Any:
-    return fallback if value is None else value
+from ..types.toJSON import modCDPToJSON
 
 
 class AwaitableValue:
@@ -121,27 +97,30 @@ class _ModDomain:
 
     def evaluate(
         self,
-        *,
-        expression: str,
         params: Mapping[str, Any] | None = None,
+        *,
+        expression: str | None = None,
+        evaluate_params: Mapping[str, Any] | None = None,
         cdpSessionId: str | None = None,
     ) -> AwaitableDict | AwaitableValue:
-        payload: dict[str, Any] = {"expression": expression}
-        if params is not None:
-            payload["params"] = dict(params)
+        payload: dict[str, Any] = dict(params or {})
+        if expression is not None:
+            payload["expression"] = expression
+        if evaluate_params is not None:
+            payload["params"] = dict(evaluate_params)
         if cdpSessionId is not None:
             payload["cdpSessionId"] = cdpSessionId
         return self._client._send_command("Mod.evaluate", payload)
 
     def addCustomCommand(
         self,
-        name: str,
+        name: str | Mapping[str, Any],
         *,
         params_schema: Any | None = None,
         result_schema: Any | None = None,
         expression: str | None = None,
     ) -> AwaitableDict | AwaitableValue:
-        payload: dict[str, Any] = {"name": name}
+        payload: dict[str, Any] = {str(key): value for key, value in name.items()} if isinstance(name, Mapping) else {"name": name}
         if params_schema is not None:
             payload["params_schema"] = params_schema
         if result_schema is not None:
@@ -150,20 +129,30 @@ class _ModDomain:
             payload["expression"] = expression
         return self._client._send_command("Mod.addCustomCommand", payload)
 
-    def addCustomEvent(self, name: str, *, event_schema: Any | None = None) -> AwaitableDict | AwaitableValue:
-        payload: dict[str, Any] = {"name": name}
+    def addCustomEvent(
+        self,
+        name: str | Mapping[str, Any],
+        *,
+        event_schema: Any | None = None,
+    ) -> AwaitableDict | AwaitableValue:
+        payload: dict[str, Any] = {str(key): value for key, value in name.items()} if isinstance(name, Mapping) else {"name": name}
         if event_schema is not None:
             payload["event_schema"] = event_schema
         return self._client._send_command("Mod.addCustomEvent", payload)
 
     def addMiddleware(
         self,
+        params: Mapping[str, Any] | None = None,
         *,
-        phase: Literal["request", "response", "event"],
-        expression: str,
-        name: str | None = None,
+        phase: str | None = None,
+        expression: str | None = None,
+        name: object | None = None,
     ) -> AwaitableDict | AwaitableValue:
-        payload: dict[str, Any] = {"phase": phase, "expression": expression}
+        payload: dict[str, Any] = dict(params or {})
+        if phase is not None:
+            payload["phase"] = phase
+        if expression is not None:
+            payload["expression"] = expression
         if name is not None:
             payload["name"] = name
         return self._client._send_command("Mod.addMiddleware", payload)
@@ -174,40 +163,22 @@ class _ModDomain:
     def ping(self, **params: Any) -> AwaitableDict | AwaitableValue:
         return self._client._send_command("Mod.ping", params)
 
+    def getTopology(self, **params: Any) -> AwaitableDict | AwaitableValue:
+        return self._client._send_command("Mod.getTopology", params)
+
 MODCDP_READY_EXPRESSION = (
-    "Boolean(globalThis.ModCDP?.__ModCDPServerVersion >= 1 && "
-    "globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)"
+    "Boolean(globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)"
 )
 DEFAULT_SERVER = object()
 DEFAULT_CDP_SEND_TIMEOUT_MS = 10_000
 DEFAULT_EVENT_WAIT_TIMEOUT_MS = 10_000
-DEFAULT_EXECUTION_CONTEXT_TIMEOUT_MS = 10_000
 DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS = 10_000
 DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS = 60_000
 DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS = 100
 DEFAULT_TARGET_SESSION_POLL_INTERVAL_MS = 20
 DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS = 250
 DEFAULT_CLIENT_HEARTBEAT_INTERVAL_MS = 250
-
-
-class _RawCDP:
-    def __init__(self, client: "ModCDPClient") -> None:
-        self._client = client
-
-    def send(
-        self,
-        method: str,
-        params: ProtocolParams | None = None,
-        session_id: str | None = None,
-    ) -> ProtocolResult:
-        return self._client._send_message(method, params or {}, session_id=session_id, record_raw_timing=True)
-
-    def on(self, event: str, handler: Handler) -> "ModCDPClient":
-        return self._client.on(event, handler)
-
-
-def _json_object(value: JsonValue | None) -> ProtocolResult:
-    return value if isinstance(value, dict) else {}
+ClientConfig = ModCDPClientConfig
 
 
 class ModCDPClient(CDPSurfaceMixin):
@@ -216,234 +187,160 @@ class ModCDPClient(CDPSurfaceMixin):
         launcher: Mapping[str, Any] | None = None,
         upstream: Mapping[str, Any] | None = None,
         injector: Mapping[str, Any] | None = None,
-        client: Mapping[str, Any] | None = None,
-        server: Mapping[str, JsonValue] | None | object = DEFAULT_SERVER,
-        custom_commands: Sequence[ModCDPAddCustomCommandParams] | None = None,
-        custom_events: Sequence[ModCDPAddCustomEventParams] | None = None,
-        custom_middlewares: Sequence[ModCDPAddMiddlewareParams] | None = None,
+        router: Mapping[str, Any] | None = None,
+        client_config: Mapping[str, Any] | None = None,
+        server_config: Mapping[str, object] | ModCDPServerConfig | None | object = DEFAULT_SERVER,
+        types: CDPTypes | Mapping[str, Any] | None = None,
     ) -> None:
         launcher_input = dict(launcher or {})
         upstream_input = dict(upstream or {})
         injector_input = dict(injector or {})
-        client_input = dict(client or {})
-        upstream_mode = str(upstream_input.get("upstream_mode") or "ws")
-        self.upstream: dict[str, Any] = {
-            "upstream_mode": upstream_mode,
-            "upstream_cdp_url": upstream_input.get("upstream_cdp_url"),
-            "upstream_nats_url": upstream_input.get("upstream_nats_url"),
-            "upstream_nats_subject_prefix": upstream_input.get("upstream_nats_subject_prefix"),
-            "upstream_nats_wait_timeout_ms": int(
-                _defaulted(upstream_input.get("upstream_nats_wait_timeout_ms"), DEFAULT_UPSTREAM_NATS_WAIT_TIMEOUT_MS)
-            ),
-            "upstream_reversews_bind": _defaulted(upstream_input.get("upstream_reversews_bind"), DEFAULT_UPSTREAM_REVERSEWS_BIND),
-            "upstream_reversews_wait_timeout_ms": int(
-                _defaulted(upstream_input.get("upstream_reversews_wait_timeout_ms"), DEFAULT_UPSTREAM_REVERSEWS_WAIT_TIMEOUT_MS)
-            ),
-            "upstream_nativemessaging_manifest": upstream_input.get("upstream_nativemessaging_manifest"),
-            "upstream_nativemessaging_manifests": list(
-                cast(Sequence[str], upstream_input.get("upstream_nativemessaging_manifests") or [])
-            )
-            if upstream_input.get("upstream_nativemessaging_manifests") is not None
-            else None,
-            "upstream_nativemessaging_host_name": upstream_input.get("upstream_nativemessaging_host_name"),
-            "upstream_nativemessaging_wait_timeout_ms": int(
-                _defaulted(
-                    upstream_input.get("upstream_nativemessaging_wait_timeout_ms"),
-                    DEFAULT_UPSTREAM_NATIVEMESSAGING_WAIT_TIMEOUT_MS,
-                )
-            ),
-            "upstream_ws_connect_error_settle_timeout_ms": int(
-                _defaulted(
-                    upstream_input.get("upstream_ws_connect_error_settle_timeout_ms"),
-                    DEFAULT_WS_CONNECT_ERROR_SETTLE_TIMEOUT_MS,
-                )
-            ),
-        }
-        self.upstream_endpoint_kind = "raw_cdp" if self.upstream["upstream_mode"] in ("ws", "pipe") else "modcdp_server"
-        launcher_mode = launcher_input.get("launcher_mode") or (
-            "none" if self.upstream_endpoint_kind == "modcdp_server" else "remote" if self.upstream.get("upstream_cdp_url") else "local"
-        )
-        self.launcher: dict[str, Any] = {
-            "launcher_mode": launcher_mode,
-            "launcher_executable_path": launcher_input.get("launcher_executable_path"),
-            "launcher_user_data_dir": launcher_input.get("launcher_user_data_dir"),
-            "launcher_options": dict(cast(Mapping[str, Any], launcher_input.get("launcher_options") or {})),
-        }
-        injector_mode = injector_input.get("injector_mode") or (
-            "auto" if self.upstream_endpoint_kind == "raw_cdp" or launcher_mode != "none" else "none"
-        )
-        raw_service_worker_url_suffixes = injector_input.get("injector_service_worker_url_suffixes")
-        self.injector: dict[str, Any] = {
-            "injector_mode": injector_mode,
-            "injector_extension_path": injector_input.get("injector_extension_path"),
-            "injector_extension_id": injector_input.get("injector_extension_id"),
-            "injector_service_worker_url_includes": list(cast(Sequence[str], injector_input.get("injector_service_worker_url_includes") or [])),
-            "injector_service_worker_url_suffixes": list(
-                cast(
-                    Sequence[str],
-                    DEFAULT_MODCDP_SERVICE_WORKER_URL_SUFFIXES
-                    if raw_service_worker_url_suffixes is None
-                    else raw_service_worker_url_suffixes,
-                )
-            ),
-            "injector_trust_service_worker_target": bool(injector_input.get("injector_trust_service_worker_target", False)),
-            "injector_require_service_worker_target": bool(injector_input.get("injector_require_service_worker_target", False)),
-            "injector_service_worker_ready_expression": injector_input.get("injector_service_worker_ready_expression"),
-            "injector_execution_context_timeout_ms": int(
-                _defaulted(injector_input.get("injector_execution_context_timeout_ms"), DEFAULT_EXECUTION_CONTEXT_TIMEOUT_MS)
-            ),
-            "injector_service_worker_probe_timeout_ms": int(
-                _defaulted(injector_input.get("injector_service_worker_probe_timeout_ms"), DEFAULT_SERVICE_WORKER_PROBE_TIMEOUT_MS)
-            ),
-            "injector_service_worker_ready_timeout_ms": int(
-                _defaulted(injector_input.get("injector_service_worker_ready_timeout_ms"), DEFAULT_SERVICE_WORKER_READY_TIMEOUT_MS)
-            ),
-            "injector_service_worker_poll_interval_ms": int(
-                _defaulted(injector_input.get("injector_service_worker_poll_interval_ms"), DEFAULT_SERVICE_WORKER_POLL_INTERVAL_MS)
-            ),
-            "injector_target_session_poll_interval_ms": int(
-                _defaulted(injector_input.get("injector_target_session_poll_interval_ms"), DEFAULT_TARGET_SESSION_POLL_INTERVAL_MS)
-            ),
-        }
-        self.client: dict[str, Any] = {
-            "client_routes": {
-                **DEFAULT_CLIENT_ROUTES,
-                **dict(cast(Mapping[str, str], client_input.get("client_routes") or {})),
-            },
-            "client_hydrate_aliases": bool(client_input.get("client_hydrate_aliases", True)),
-            "client_mirror_upstream_events": bool(client_input.get("client_mirror_upstream_events", True)),
-            "client_cdp_send_timeout_ms": int(_defaulted(client_input.get("client_cdp_send_timeout_ms"), DEFAULT_CDP_SEND_TIMEOUT_MS)),
-            "client_event_wait_timeout_ms": int(_defaulted(client_input.get("client_event_wait_timeout_ms"), DEFAULT_EVENT_WAIT_TIMEOUT_MS)),
-            "client_heartbeat_interval_ms": int(
-                _defaulted(client_input.get("client_heartbeat_interval_ms"), DEFAULT_CLIENT_HEARTBEAT_INTERVAL_MS)
-            ),
-        }
-        self.cdp_url: str | None = cast(str | None, self.upstream.get("upstream_cdp_url"))
-        if server is DEFAULT_SERVER:
-            self.server: ModCDPServerConfig | None = {"server_routes": {"*.*": "chrome_debugger"}} if self.upstream_endpoint_kind == "modcdp_server" else {}
-        elif server is None:
-            self.server = None
-        elif isinstance(server, Mapping):
-            self.server = cast(ModCDPServerConfig, {
-                **({"server_routes": {"*.*": "chrome_debugger"}} if self.upstream_endpoint_kind == "modcdp_server" else {}),
-                **dict(server),
-            })
+        router_input = dict(router or {})
+        client_config_input = dict(client_config or {})
+        upstream_mode_input = upstream_input.get("upstream_mode") or "ws"
+        if upstream_mode_input != "ws":
+            raise RuntimeError(f"unknown upstream_mode={upstream_mode_input}")
+        upstream_mode: UpstreamMode = upstream_mode_input
+        upstream_config = UpstreamTransportConfig.model_validate({**upstream_input, "upstream_mode": upstream_mode})
+        launcher_mode = launcher_input.get("launcher_mode") or "none"
+        launcher_config = LauncherConfig.model_validate({**launcher_input, "launcher_mode": launcher_mode})
+        injector_config = InjectorConfig.model_validate(injector_input)
+        parsed_router_config = RouterConfig.model_validate(router_input)
+        parsed_client_config = ClientConfig.model_validate(client_config_input)
+        if server_config is DEFAULT_SERVER:
+            parsed_server_config: ModCDPServerConfig | None = ModCDPServerConfig()
+        elif server_config is None:
+            parsed_server_config = None
+        elif isinstance(server_config, ModCDPServerConfig):
+            parsed_server_config = server_config
+        elif isinstance(server_config, Mapping):
+            parsed_server_config = ModCDPServerConfig.model_validate(dict(server_config))
         else:
-            raise TypeError("server must be a mapping, None, or omitted")
-        self.custom_commands: list[ModCDPAddCustomCommandParams] = list(custom_commands or [])
-        self.custom_events: list[ModCDPAddCustomEventParams] = list(custom_events or [])
-        self.custom_middlewares: list[ModCDPAddMiddlewareParams] = list(custom_middlewares or [])
+            raise TypeError("server_config must be a mapping, None, or omitted")
+        self.config = parsed_client_config
+        self.server_config = parsed_server_config
+        if launcher_config.launcher_mode == "local":
+            self.launcher = LocalBrowserLauncher(launcher_config)
+        elif launcher_config.launcher_mode == "remote":
+            self.launcher = RemoteBrowserLauncher(launcher_config)
+        elif launcher_config.launcher_mode == "bb":
+            self.launcher = BBBrowserLauncher(launcher_config)
+        elif launcher_config.launcher_mode == "none":
+            self.launcher = NoneBrowserLauncher(launcher_config)
+        else:
+            raise RuntimeError(f"unknown launcher_mode={launcher_config.launcher_mode}")
+        self.upstream = WSUpstreamTransport(upstream_config)
+        if injector_config.injector_mode == "none":
+            self.injector: ExtensionInjector | None = None
+        elif injector_config.injector_mode == "cli":
+            self.injector = CLIExtensionInjector(injector_config)
+        elif injector_config.injector_mode == "cdp":
+            self.injector = CDPExtensionInjector(injector_config)
+        elif injector_config.injector_mode == "bb":
+            self.injector = BBExtensionInjector(injector_config)
+        elif injector_config.injector_mode == "discover":
+            self.injector = DiscoverExtensionInjector(injector_config)
+        else:
+            raise RuntimeError(f"unknown injector.injector_mode={injector_config.injector_mode}")
+        self.cdp_url: str | None = self.upstream.config.upstream_ws_cdp_url
+        if isinstance(types, CDPTypes):
+            self.types = types
+        elif isinstance(types, Mapping):
+            self.types = CDPTypes(types)
+        else:
+            self.types = CDPTypes()
 
-        self.extension_id: str | None = None
-        self.ext_target_id: str | None = None
-        self.ext_session_id: str | None = None
-        self.ext_execution_context_id: int | None = None
         self.latency: ModCDPPingLatency | None = None
         self.connect_timing: ModCDPConnectTiming | None = None
         self.last_command_timing: ModCDPCommandTiming | None = None
-        self.last_raw_timing: ModCDPRawTiming | None = None
 
-        self.transport: UpstreamTransport | None = None
-        self._next_id = 0
-        self._pending: dict[int, PendingEntry] = {}
         self._handlers: dict[str, list[Handler]] = {}
         self._handler_wrappers: dict[tuple[str, Handler], Handler] = {}
-        self._lock = threading.Lock()
-        self.auto_sessions = AutoSessionRouter(
-            lambda method, params=None, session_id=None: self._send_message(method, params or {}, session_id),
-            lambda: self.injector["injector_execution_context_timeout_ms"],
-        )
-        self._schema_lock = threading.RLock()
-        self._command_params_schemas: dict[str, TypeAdapter[Any]] = {}
-        self._command_result_schemas: dict[str, TypeAdapter[Any]] = {}
-        self._event_schemas: dict[str, TypeAdapter[Any]] = {}
-        self._command_result_model_schemas: set[str] = set()
-        self._event_model_schemas: set[str] = set()
-        self._event_classes: dict[str, type[CDPEvent]] = {}
-        if self.client["client_hydrate_aliases"]:
+        self.router = AutoSessionRouter(self.upstream, self.types, parsed_router_config.model_dump())
+        if self.config.client_hydrate_aliases:
             install_cdp_surface(self)
         self.Mod = _ModDomain(self)
         self._closed = False
-        self._launched_browser: Any | None = None
-        self._extension_injectors: list[ExtensionInjector] = []
         self._heartbeat_stop: threading.Event | None = None
         self._heartbeat_thread: threading.Thread | None = None
-        self._cdp = _RawCDP(self)
-        self._hydrate_native_protocol_schemas()
-        self._hydrate_custom_surface()
+
+    def toJSON(self) -> dict[str, object]:
+        return modCDPToJSON(
+            self,
+            {
+                "config": {
+                    "client_config": self.config,
+                    "server_config": self.server_config,
+                },
+                "state": {
+                    "event_wait_cleanups": len(self._handlers),
+                    "heartbeat_timer": self._heartbeat_thread is not None,
+                    "latency": self.latency.get("round_trip_ms") if self.latency else None,
+                    "connected": self.connect_timing is not None,
+                },
+                "children": {
+                    "launcher": self.launcher,
+                    "upstream": self.upstream,
+                    "injector": self.injector,
+                    "router": self.router,
+                    "types": self.types,
+                },
+            },
+        )
 
     def connect(self) -> "ModCDPClient":
         connect_started_at = int(time.time() * 1000)
         transport_started_at = int(time.time() * 1000)
         self._connect_upstream_transport()
         transport_connected_at = int(time.time() * 1000)
-        if self.transport is None:
-            raise RuntimeError("upstream transport did not connect.")
-        self.transport.onRecv(lambda message: self._on_recv(cast(CdpMessage, message)))
-        self.transport.onClose(lambda error: self._handle_transport_close(error))
+        self.upstream.onRecv(lambda message: self._on_recv(message))
+        self.upstream.onClose(lambda error: self._handle_transport_close(error))
 
-        if self.upstream_endpoint_kind == "modcdp_server":
-            self.transport.waitForPeer()
-            if self.server is not None:
-                self._send_message("Mod.configure", cast(ProtocolParams, self._server_configure_params()))
-            threading.Thread(target=self._measure_ping_latency, daemon=True).start()
-            self._start_heartbeat()
+        if self.injector is None and self.server_config is None:
             connected_at = int(time.time() * 1000)
-            self.connect_timing = cast(ModCDPConnectTiming, {
-                "started_at": connect_started_at,
-                "upstream_mode": self.upstream.get("upstream_mode"),
-                "upstream_endpoint_kind": self.upstream_endpoint_kind,
-                "transport_started_at": transport_started_at,
-                "transport_connected_at": transport_connected_at,
-                "transport_duration_ms": transport_connected_at - transport_started_at,
-                "connected_at": connected_at,
-                "duration_ms": connected_at - connect_started_at,
-            })
+            self.connect_timing = ModCDPConnectTiming(
+                started_at=connect_started_at,
+                upstream_mode=self.upstream.config.upstream_mode,
+                transport_started_at=transport_started_at,
+                transport_connected_at=transport_connected_at,
+                transport_duration_ms=transport_connected_at - transport_started_at,
+                connected_at=connected_at,
+                duration_ms=connected_at - connect_started_at,
+            )
             return self
 
-        self._initialize_raw_cdp_transport()
+        self.router.start()
 
         injector_started_at = int(time.time() * 1000)
-        if self.injector.get("injector_mode") == "none":
-            raise RuntimeError("injector.injector_mode='none' cannot be used with a raw_cdp upstream.")
-        ext = self._inject_extension(self._extension_injectors)
+        if self.injector is None:
+            raise RuntimeError("injector.injector_mode=none cannot be used with an extension-routed browser upstream.")
+        ext = self._inject_extension()
         injector_completed_at = int(time.time() * 1000)
-        self.extension_id = ext["extension_id"]
-        self.ext_target_id = ext["target_id"]
-        self.ext_session_id = ext["session_id"]
-        self._send_message("Runtime.enable", {}, self.ext_session_id)
-        self.ext_execution_context_id = self.auto_sessions.waitForExecutionContext(
-            self.ext_session_id,
-            self.injector["injector_execution_context_timeout_ms"],
-        )
-        self._send_message("Runtime.addBinding", {"name": CUSTOM_EVENT_BINDING_NAME}, self.ext_session_id)
-        if self.client["client_mirror_upstream_events"]:
-            self._send_message("Runtime.addBinding", {"name": UPSTREAM_EVENT_BINDING_NAME}, self.ext_session_id)
+        if self.injector.target_id is None or self.injector.session_id is None:
+            raise RuntimeError(f"{type(self.injector).__name__} did not record a ModCDP extension target.")
+        self.router.send("Runtime.enable", {}, self.injector.session_id)
+        self.router.send("Runtime.addBinding", {"name": CUSTOM_EVENT_BINDING_NAME}, self.injector.session_id)
+        if self.config.client_mirror_upstream_events:
+            self.router.send("Runtime.addBinding", {"name": UPSTREAM_EVENT_BINDING_NAME}, self.injector.session_id)
 
-        if self.server is not None:
-            self._send_raw(wrap_command_if_needed(
-                "Mod.configure",
-                cast(ProtocolParams, self._server_configure_params()),
-                routes=cast(ModCDPRoutes, self.client["client_routes"]),
-                cdp_session_id=self.ext_session_id,
-            ))
+        if self.server_config is not None:
+            self.send("Mod.configure", self._server_configure_params())
         self._start_heartbeat()
         threading.Thread(target=self._measure_ping_latency, daemon=True).start()
         connected_at = int(time.time() * 1000)
-        self.connect_timing = cast(ModCDPConnectTiming, {
-            "started_at": connect_started_at,
-            "upstream_mode": self.upstream.get("upstream_mode"),
-            "upstream_endpoint_kind": self.upstream_endpoint_kind,
-            "transport_started_at": transport_started_at,
-            "transport_connected_at": transport_connected_at,
-            "transport_duration_ms": transport_connected_at - transport_started_at,
-            "injector_source": ext.get("source"),
-            "injector_started_at": injector_started_at,
-            "injector_completed_at": injector_completed_at,
-            "injector_duration_ms": injector_completed_at - injector_started_at,
-            "connected_at": connected_at,
-            "duration_ms": connected_at - connect_started_at,
-        })
+        self.connect_timing = ModCDPConnectTiming(
+            started_at=connect_started_at,
+            upstream_mode=self.upstream.config.upstream_mode,
+            transport_started_at=transport_started_at,
+            transport_connected_at=transport_connected_at,
+            transport_duration_ms=transport_connected_at - transport_started_at,
+            injector_source=ext.source,
+            injector_started_at=injector_started_at,
+            injector_completed_at=injector_completed_at,
+            injector_duration_ms=injector_completed_at - injector_started_at,
+            connected_at=connected_at,
+            duration_ms=connected_at - connect_started_at,
+        )
         return self
 
     def _send_command(
@@ -454,83 +351,70 @@ class ModCDPClient(CDPSurfaceMixin):
         validate_custom_schema: bool = True,
     ) -> Any:
         started_at = int(time.time() * 1000)
-        command_params = cast(ProtocolParams, dict(params or {}))
-        if method == "Mod.addCustomCommand":
-            self._register_custom_command(command_params)
-            expression = command_params.get("expression")
-            if not isinstance(expression, str) or not expression:
-                completed_at = int(time.time() * 1000)
-                self.last_command_timing = {
-                    "method": method,
-                    "target": "client",
-                    "started_at": started_at,
-                    "completed_at": completed_at,
-                    "duration_ms": completed_at - started_at,
-                }
-                return AwaitableDict({"name": cast(str, command_params.get("name")), "registered": True})
-            command_params = self._custom_command_wire_params(command_params)
-        elif method == "Mod.addCustomEvent":
-            self._register_custom_event(command_params)
-            if self.ext_session_id is None and self.upstream_endpoint_kind != "modcdp_server":
-                completed_at = int(time.time() * 1000)
-                self.last_command_timing = {
-                    "method": method,
-                    "target": "client",
-                    "started_at": started_at,
-                    "completed_at": completed_at,
-                    "duration_ms": completed_at - started_at,
-                }
-                return AwaitableDict({"name": cast(str, command_params.get("name")), "registered": True})
-            command_params = self._custom_event_wire_params(command_params)
-        should_validate_params = validate_custom_schema or method in self._command_params_schemas
-        should_validate_result = validate_custom_schema or method in self._command_result_schemas
-        if method not in {"Mod.addCustomCommand", "Mod.addCustomEvent"} and should_validate_params:
-            command_params = self._validate_command_params(method, command_params)
-
-        if self.upstream_endpoint_kind == "modcdp_server":
-            result = self._send_message(method, command_params)
-            if should_validate_result and method != "Mod.addCustomCommand":
-                result = self._validate_command_result(method, result)
+        preparation = self.types.prepareCommand(
+            method,
+            dict(params or {}),
+            can_register_locally=method == "Mod.addCustomCommand"
+            or (
+                method in ("Mod.addCustomEvent", "Mod.addMiddleware")
+                and (self.injector is None or self.injector.session_id is None)
+            ),
+        )
+        if preparation.local_result is not None:
             completed_at = int(time.time() * 1000)
-            self.last_command_timing = {
-                "method": method,
-                "target": "modcdp_server",
-                "started_at": started_at,
-                "completed_at": completed_at,
-                "duration_ms": completed_at - started_at,
-            }
-            return AwaitableDict(result) if isinstance(result, dict) else AwaitableValue(result)
+            self.last_command_timing = ModCDPCommandTiming(
+                method=method,
+                target="client",
+                started_at=started_at,
+                completed_at=completed_at,
+                duration_ms=completed_at - started_at,
+            )
+            result = self.types.parseCommandResult(method, preparation.local_result) if validate_custom_schema else preparation.local_result
+            return AwaitableDict(dict(result)) if isinstance(result, Mapping) else AwaitableValue(result)
+        command_params = preparation.params
+        if self.injector is None and self.server_config is None:
+            result = self.router.send(method, command_params, session_id)
+            result = self.types.parseCommandResult(method, result) if validate_custom_schema else result
+            completed_at = int(time.time() * 1000)
+            self.last_command_timing = ModCDPCommandTiming(
+                method=method,
+                target="browser_targets",
+                started_at=started_at,
+                completed_at=completed_at,
+                duration_ms=completed_at - started_at,
+            )
+            return AwaitableDict(dict(result)) if isinstance(result, Mapping) else AwaitableValue(result)
 
         command = wrap_command_if_needed(
             method,
             command_params,
-            routes=cast(ModCDPRoutes, self.client["client_routes"]),
-            cdp_session_id=self.ext_session_id,
-            target_cdp_session_id=session_id,
+            routes=self.router.config.router_routes,
+            cdp_session_id=session_id,
         )
-        result = self._send_raw(command)
-        if should_validate_result and method != "Mod.addCustomCommand":
-            result = self._validate_command_result(method, result)
+        if command.target == "direct_cdp":
+            step = command.steps[0]
+            step_params = step.params
+            result = self.router.send(step.method, step_params if isinstance(step_params, Mapping) else {}, step.sessionId)
+        elif command.target == "service_worker":
+            if self.injector is None or self.injector.session_id is None:
+                raise RuntimeError("service_worker commands require an injected ModCDP extension target.")
+            step = self.types.serviceWorkerCommandStep(method, command_params, session_id)
+            result = self.router.send(step.method, step.params or {}, self.injector.session_id)
+            unwrap = step.unwrap
+            result = unwrap_response_if_needed(result, unwrap)
+        else:
+            raise RuntimeError(f"Unsupported command target {command.target!r}")
+        if validate_custom_schema:
+            result = self.types.parseCommandResult(method, result)
         completed_at = int(time.time() * 1000)
-        self.last_command_timing = {
-            "method": method,
-            "target": command["target"],
-            "started_at": started_at,
-            "completed_at": completed_at,
-            "duration_ms": completed_at - started_at,
-        }
-        return AwaitableDict(result) if isinstance(result, dict) else AwaitableValue(result)
-
-    def sendRaw(
-        self,
-        method: str,
-        params: Mapping[str, Any] | None = None,
-        session_id: str | None = None,
-    ) -> ProtocolResult:
-        result = self._send_message(method, cast(ProtocolParams, dict(params or {})), session_id, record_raw_timing=True)
-        if not isinstance(result, dict):
-            raise RuntimeError(f"{method} returned non-object value: {result!r}")
-        return result
+        self.last_command_timing = ModCDPCommandTiming(
+            method=method,
+            target=command.target,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_ms=completed_at - started_at,
+        )
+        return AwaitableDict(dict(result)) if isinstance(result, Mapping) else AwaitableValue(result)
 
     def send(
         self,
@@ -538,26 +422,18 @@ class ModCDPClient(CDPSurfaceMixin):
         params: Mapping[str, Any] | None = None,
         session_id: str | None = None,
     ) -> AwaitableDict | AwaitableValue:
-        result = self._send_command(method, params, session_id=session_id, validate_custom_schema=False)
+        result = self._send_command(method, params, session_id=session_id)
         if isinstance(result, AwaitableDict):
             return result
         if isinstance(result, AwaitableValue):
             return result
-        return AwaitableDict(result) if isinstance(result, dict) else AwaitableValue(result)
+        return AwaitableDict(dict(result)) if isinstance(result, Mapping) else AwaitableValue(result)
 
     def on(self, event: str | type[CDPEvent], handler: Handler) -> "ModCDPClient":
         event_name = cdp_event_name(event) if not isinstance(event, str) else event
         if event_name is None:
             raise TypeError("event must be a CDP event class or event name string")
-        wrapped_handler = handler
-        if not isinstance(event, str):
-            event_class = event
-
-            def typed_handler(payload):
-                typed_payload = event_class.model_validate(payload) if isinstance(payload, Mapping) else payload
-                return handler(typed_payload)
-
-            wrapped_handler = typed_handler
+        wrapped_handler: Handler = handler if isinstance(event, str) else _typed_event_handler(event, handler)
         self._handler_wrappers[(event_name, handler)] = wrapped_handler
         handlers = self._handlers.setdefault(event_name, [])
         if wrapped_handler not in handlers:
@@ -565,9 +441,9 @@ class ModCDPClient(CDPSurfaceMixin):
         return self
 
     def once(self, event: str | type[CDPEvent], handler: Handler) -> "ModCDPClient":
-        def wrapped_handler(payload: Any) -> Any:
+        def wrapped_handler(payload: object, session_id: str | None = None) -> object:
             self.off(event, wrapped_handler)
-            return handler(payload)
+            return _call_handler(handler, payload, session_id)
 
         return self.on(event, wrapped_handler)
 
@@ -589,9 +465,41 @@ class ModCDPClient(CDPSurfaceMixin):
 
         return _value().__await__()
 
-    def _run_handler(self, handler: Handler, payload: Any, event_name: str) -> None:
+    def configure(
+        self,
+        *,
+        upstream: Mapping[str, Any] | None = None,
+        router: Mapping[str, Any] | None = None,
+        client_config: Mapping[str, Any] | None = None,
+        server_config: Mapping[str, object] | ModCDPServerConfig | None | object = DEFAULT_SERVER,
+    ) -> "ModCDPClient":
+        if client_config is not None:
+            self.config = ClientConfig.model_validate({**self.config.model_dump(), **dict(client_config)})
+            self.upstream.update({"upstream_cdp_send_timeout_ms": self.config.client_cdp_send_timeout_ms})
+        if upstream is not None:
+            self.upstream.update(dict(upstream))
+        if router is not None:
+            current_routes = dict(self.router.config.router_routes)
+            raw_incoming_routes = router.get("router_routes") or {}
+            incoming_routes = {str(key): str(value) for key, value in raw_incoming_routes.items()} if isinstance(raw_incoming_routes, Mapping) else {}
+            self.router.config = RouterConfig.model_validate(
+                {
+                    **self.router.config.model_dump(),
+                    **dict(router),
+                    "router_routes": {
+                        **current_routes,
+                        **incoming_routes,
+                    },
+                }
+            )
+        if server_config is not DEFAULT_SERVER:
+            self.server_config = None if server_config is None else ModCDPServerConfig.model_validate(server_config)
+        return self
+
+    def _run_handler(self, handler: Handler, *args: object) -> None:
+        event_name = str(args[0]) if args else ""
         try:
-            result = handler(payload)
+            result = _call_handler(handler, *args)
             if inspect.iscoroutine(result):
                 asyncio.run(result)
         except Exception as e:
@@ -600,7 +508,7 @@ class ModCDPClient(CDPSurfaceMixin):
     def __getattr__(self, domain: str):
         if domain.startswith("_"):
             raise AttributeError(domain)
-        if not self.client["client_hydrate_aliases"]:
+        if not self.config.client_hydrate_aliases:
             raise AttributeError(domain)
         from ..types.generated.cdp import DynamicDomain
 
@@ -608,107 +516,102 @@ class ModCDPClient(CDPSurfaceMixin):
         setattr(self, domain, dynamic)
         return dynamic
 
-    def _server_configure_params(self) -> ModCDPServerConfig:
-        server = dict(self.server or {})
-        server_routes = server.pop("server_routes", None)
-        server_loopback_cdp_url = server.pop("server_loopback_cdp_url", None)
-        server_browser_token = server.pop("server_browser_token", None)
-        server_cdp_send_timeout_ms = server.pop(
-            "server_cdp_send_timeout_ms",
-            self.client["client_cdp_send_timeout_ms"],
-        )
-        server_loopback_execution_context_timeout_ms = server.pop(
-            "server_loopback_execution_context_timeout_ms",
-            self.injector["injector_execution_context_timeout_ms"],
-        )
-        server_ws_connect_error_settle_timeout_ms = server.pop(
-            "server_ws_connect_error_settle_timeout_ms",
-            self.upstream["upstream_ws_connect_error_settle_timeout_ms"],
-        )
-        server_downstream_client_timeout_ms = server.pop(
-            "server_downstream_client_timeout_ms",
-            max(int(self.client["client_heartbeat_interval_ms"]) * 4, 1_000),
-        )
-        custom_events: list[ModCDPAddCustomEventObjectParams] = []
-        for event in self.custom_events:
-            custom_events.append(
-                {"name": event}
-                if isinstance(event, str)
-                else cast(ModCDPAddCustomEventObjectParams, self._custom_event_wire_params(cast(ProtocolParams, event)))
-            )
-        custom_commands: list[ModCDPAddCustomCommandParams] = [
-            cast(ModCDPAddCustomCommandParams, self._custom_command_wire_params(cast(ProtocolParams, command)))
-            for command in self.custom_commands
-            if isinstance(command.get("expression"), str) and command.get("expression")
-        ]
-        custom_middlewares: list[ModCDPAddMiddlewareParams] = list(self.custom_middlewares)
-        return cast(ModCDPServerConfig, {
-            "upstream": {
-                "upstream_mode": self.upstream.get("upstream_mode"),
-                **({"upstream_nats_url": self.upstream.get("upstream_nats_url")} if self.upstream.get("upstream_nats_url") else {}),
-                **(
-                    {"upstream_nats_subject_prefix": self.upstream.get("upstream_nats_subject_prefix")}
-                    if self.upstream.get("upstream_nats_subject_prefix")
-                    else {}
-                ),
+    def _server_configure_params(self) -> dict[str, object]:
+        server_model = self.server_config or ModCDPServerConfig()
+        configured_server_config = server_model.model_dump(exclude_none=True, exclude_unset=True)
+        launcher_server_config = self.launcher.configForServer(self.upstream)
+        has_upstream_config = "upstream" in launcher_server_config or "upstream" in configured_server_config
+        upstream = {
+            **_mapping_dict(launcher_server_config.get("upstream")),
+            **_mapping_dict(configured_server_config.get("upstream")),
+        }
+        router = {
+            **_mapping_dict(launcher_server_config.get("router")),
+            **_mapping_dict(configured_server_config.get("router")),
+        }
+        server_client_config = {
+            **_mapping_dict(launcher_server_config.get("client_config")),
+            **_mapping_dict(configured_server_config.get("client_config")),
+        }
+        downstream = {
+            **_mapping_dict(launcher_server_config.get("downstream")),
+            **_mapping_dict(configured_server_config.get("downstream")),
+        }
+        custom_events = self.types.customEventWireRegistrations()
+        custom_commands = self.types.customCommandWireRegistrations(expression_required=True)
+        custom_middlewares = self.types.customMiddlewareWireRegistrations()
+        params: dict[str, object] = {
+            **(
+                {
+                    "upstream": {
+                        "upstream_ws_connect_error_settle_timeout_ms": self.upstream.config.upstream_ws_connect_error_settle_timeout_ms,
+                        **upstream,
+                    },
+                }
+                if has_upstream_config
+                else {}
+            ),
+            "router": {
+                "loopback_execution_context_timeout_ms": self.injector.config.injector_execution_context_timeout_ms
+                if self.injector is not None
+                else self.router.config.loopback_execution_context_timeout_ms,
+                **router,
             },
-            "client": {"client_routes": self.client["client_routes"]},
-            "server": {
-                "server_cdp_send_timeout_ms": server_cdp_send_timeout_ms,
-                "server_loopback_execution_context_timeout_ms": server_loopback_execution_context_timeout_ms,
-                "server_ws_connect_error_settle_timeout_ms": server_ws_connect_error_settle_timeout_ms,
-                "server_downstream_client_timeout_ms": server_downstream_client_timeout_ms,
-                **({"server_routes": server_routes} if server_routes is not None else {}),
-                **({"server_loopback_cdp_url": server_loopback_cdp_url} if server_loopback_cdp_url is not None else {}),
-                **({"server_browser_token": server_browser_token} if server_browser_token is not None else {}),
-                **server,
+            "client_config": {
+                "client_cdp_send_timeout_ms": self.config.client_cdp_send_timeout_ms,
+                **server_client_config,
+            },
+            "downstream": {
+                "downstream_client_timeout_ms": max(self.config.client_heartbeat_interval_ms * 4, 1_000),
+                **downstream,
             },
             "custom_events": custom_events,
             "custom_commands": custom_commands,
             "custom_middlewares": custom_middlewares,
-        })
+        }
+        server_browser_token = configured_server_config.get("server_browser_token")
+        if server_browser_token is not None:
+            params["server_browser_token"] = server_browser_token
+        return params
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
         self._stop_heartbeat()
-        if self._launched_browser is not None:
-            self._launched_browser["close"]()
-            self._launched_browser = None
+        self.router.stop()
+        self.launcher.close()
         try:
-            if self.transport:
-                self.transport.close()
+            self.upstream.close()
         except Exception:
             pass
-        self.transport = None
-        for injector in self._extension_injectors:
+        if self.injector is not None:
             try:
-                injector.close()
+                self.injector.close()
             except Exception:
                 pass
-        self._extension_injectors = []
 
     def _handle_transport_close(self, error: Exception) -> None:
         self._stop_heartbeat()
-        self._reject_all(error)
+        self._emit_event("error", error, None)
 
     def _start_heartbeat(self) -> None:
         self._stop_heartbeat()
-        if not self.server or self.server.get("server_close_browser_on_downstream_disconnect") is not True:
+        if self.server_config is None or self.server_config.downstream is None:
             return
-        interval_ms = int(self.client["client_heartbeat_interval_ms"])
+        if self.server_config.downstream.downstream_close_browser_on_disconnect is not True:
+            return
         stop = threading.Event()
-        self._heartbeat_stop = stop
 
-        def run() -> None:
-            while not stop.wait(interval_ms / 1000):
+        def heartbeat() -> None:
+            while not stop.wait(self.config.client_heartbeat_interval_ms / 1000):
                 try:
                     self.send("Mod.ping", {"sent_at": int(time.time() * 1000)})
                 except Exception:
-                    return
+                    pass
 
-        self._heartbeat_thread = threading.Thread(target=run, daemon=True)
+        self._heartbeat_stop = stop
+        self._heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
         self._heartbeat_thread.start()
 
     def _stop_heartbeat(self) -> None:
@@ -718,423 +621,55 @@ class ModCDPClient(CDPSurfaceMixin):
             stop.set()
         self._heartbeat_thread = None
 
-    def _session_id_for_target(self, target_id: str, timeout: float = 0) -> str | None:
-        if timeout <= 0:
-            return self.auto_sessions.sessionIdForTarget(target_id)
-        deadline = time.time() + timeout
-        while time.time() <= deadline:
-            session_id = self.auto_sessions.sessionIdForTarget(target_id)
-            if session_id:
-                return session_id
-            time.sleep(self.injector["injector_target_session_poll_interval_ms"] / 1000)
-        return None
-
-    def _ensure_session_id_for_target(self, target_id: str, timeout: float = 0, allow_attach: bool = False) -> str | None:
-        session_id = self.auto_sessions.sessionIdForTarget(target_id)
-        if session_id:
-            return session_id
-        if allow_attach:
-            attached_session_id = self.auto_sessions.attachToTarget(target_id)
-            if attached_session_id:
-                return attached_session_id
-        return self._session_id_for_target(target_id, timeout=timeout)
-
-    def _browser_launcher(self):
-        if self.launcher.get("launcher_mode") == "local":
-            return LocalBrowserLauncher(self._launch_options())
-        if self.launcher.get("launcher_mode") == "remote":
-            return RemoteBrowserLauncher(self._launch_options(), self.cdp_url)
-        if self.launcher.get("launcher_mode") == "bb":
-            return BrowserbaseBrowserLauncher(self._launch_options())
-        if self.launcher.get("launcher_mode") == "none":
-            return NoopBrowserLauncher(self._launch_options())
-        raise RuntimeError(f"unknown launcher.launcher_mode={self.launcher.get('launcher_mode')}")
-
-    def _launch_options(self) -> BrowserLaunchOptions:
-        launch_options = cast(BrowserLaunchOptions, dict(cast(Mapping[str, Any], self.launcher.get("launcher_options") or {})))
-        if self.launcher.get("launcher_executable_path"):
-            launch_options["executable_path"] = cast(str, self.launcher["launcher_executable_path"])
-        if self.launcher.get("launcher_user_data_dir"):
-            launch_options["user_data_dir"] = cast(str, self.launcher["launcher_user_data_dir"])
-        return launch_options
-
     def _connect_upstream_transport(self) -> None:
-        if self.transport is not None:
-            return
-        launcher = self._browser_launcher()
-        transport = self._upstream_transport()
-        injectors = self._extension_injectors_for_config()
-        self._extension_injectors = injectors
-        initial_transport_config = self._upstream_transport_config()
+        launcher = self.launcher
+        transport = self.upstream
 
-        transport.update(initial_transport_config)
-        launcher.update(self._launch_options())
-        for injector in injectors:
-            injector.update(self._base_extension_injector_config(None))
-        for injector in injectors:
-            injector.update(cast(ExtensionInjectorConfig, launcher.getInjectorConfig()))
-        for injector in injectors:
-            injector.update(cast(ExtensionInjectorConfig, transport.getInjectorConfig()))
-        for injector in injectors:
-            injector.prepare()
-        for injector in injectors:
-            launcher.update(injector.getLauncherConfig())
-        for injector in injectors:
-            transport.update(injector.getTransportConfig())
-        launcher.update(cast(BrowserLaunchOptions, transport.getLauncherConfig()))
-        launcher.update({"loopback_cdp": self._server_needs_loopback_cdp()})
-        transport.update(launcher.getTransportConfig())
+        if self.injector is not None:
+            self.injector.update({"injector_cdp_send_timeout_ms": self.config.client_cdp_send_timeout_ms})
+            self.injector.prepare()
+            launcher.update(self.injector.configForLauncher())
+            transport.update(self.injector.configForUpstream())
+        launcher.update(transport.configForLauncher())
+        server_upstream_ws_cdp_url = (
+            self.server_config.upstream.upstream_ws_cdp_url
+            if self.server_config is not None and self.server_config.upstream is not None
+            else None
+        )
+        needs_loopback_cdp = (
+            self.server_config is not None
+            and not server_upstream_ws_cdp_url
+            and (self.server_config.router.router_routes if self.server_config.router is not None else {}).get("*.*") == "loopback_cdp"
+        )
+        launcher.update({"launcher_local_loopback_cdp": needs_loopback_cdp})
+        transport.update(launcher.configForUpstream())
 
-        if transport.endpoint_kind == "modcdp_server":
-            transport.connect()
-        if self.launcher.get("launcher_mode") != "none":
+        if self.launcher.config.launcher_mode != "none":
             launched = launcher.launch()
-            self._launched_browser = launched
-            transport.update(launcher.getTransportConfig())
-            for injector in injectors:
-                injector.update(cast(ExtensionInjectorConfig, launcher.getInjectorConfig()))
-            for injector in injectors:
-                transport.update(injector.getTransportConfig())
-        launched_cdp_url = cast(str | None, self._launched_browser.get("cdp_url")) if self._launched_browser else None
-        if transport.endpoint_kind == "raw_cdp":
-            transport.connect()
+            transport.update(launcher.configForUpstream())
+            if self.injector is not None:
+                transport.update(self.injector.configForUpstream())
+        launched_cdp_url = launcher.launched.cdp_url if launcher.launched else None
+        transport.connect()
 
-        self.transport = transport
-        self.cdp_url = cast(
-            str | None,
-            (transport.url or launched_cdp_url) if transport.endpoint_kind == "raw_cdp" else launched_cdp_url,
-        )
-        if transport.mode == "ws" and transport.url:
+        self.cdp_url = transport.url or launched_cdp_url
+        if transport.upstream_mode == "ws" and transport.url:
             # For ws mode, cdp_url has been resolved to the concrete WebSocket CDP endpoint after connect().
-            self.upstream["upstream_cdp_url"] = transport.url
-        server_config = (
-            {"server_loopback_cdp_url": launched_cdp_url}
-            if transport.endpoint_kind == "modcdp_server" and launched_cdp_url and not launched_cdp_url.startswith("pipe://")
-            else {}
-        )
-        transport_server_config = transport.getServerConfig()
-        server_config.update(launcher.getServerConfig())
-        server_config.update(transport_server_config)
-        if self.server is not None and server_config.get("server_loopback_cdp_url"):
-            configured_loopback = self.server.get("server_loopback_cdp_url")
-            if "server_loopback_cdp_url" not in self.server or configured_loopback in (
-                initial_transport_config.get("cdp_url"),
-                launched_cdp_url,
-            ):
-                self.server = cast(ModCDPServerConfig, {**self.server, **server_config})
+            self.upstream.config = UpstreamTransportConfig.model_validate({**self.upstream.config.model_dump(), "upstream_ws_cdp_url": transport.url})
 
-    def _server_needs_loopback_cdp(self) -> bool:
-        if self.server is None or self.server.get("server_loopback_cdp_url"):
-            return False
-        return "loopback_cdp" in set((self.server.get("server_routes") or {}).values())
-
-    def _upstream_transport_config(self) -> dict[str, Any]:
-        return {
-            "cdp_url": self.upstream.get("upstream_cdp_url"),
-            "upstream_nats_url": self.upstream.get("upstream_nats_url"),
-            "upstream_nats_subject_prefix": self.upstream.get("upstream_nats_subject_prefix"),
-            "upstream_nats_wait_timeout_ms": self.upstream.get("upstream_nats_wait_timeout_ms"),
-            "upstream_reversews_bind": self.upstream.get("upstream_reversews_bind"),
-            "upstream_reversews_wait_timeout_ms": self.upstream.get("upstream_reversews_wait_timeout_ms"),
-            "upstream_nativemessaging_manifest": self.upstream.get("upstream_nativemessaging_manifest"),
-            "upstream_nativemessaging_manifests": self.upstream.get("upstream_nativemessaging_manifests"),
-            "upstream_nativemessaging_host_name": self.upstream.get("upstream_nativemessaging_host_name"),
-            "upstream_nativemessaging_wait_timeout_ms": self.upstream.get("upstream_nativemessaging_wait_timeout_ms"),
-            "injector_extension_id": self.injector.get("injector_extension_id"),
-        }
-
-    def _initialize_raw_cdp_transport(self) -> None:
-        self._send_message("Target.setAutoAttach", {
-            "autoAttach": True,
-            "waitForDebuggerOnStart": False,
-            "flatten": True,
+    def _inject_extension(self) -> ExtensionInfo:
+        if self.injector is None:
+            raise RuntimeError("injector.injector_mode=none cannot inject an extension.")
+        self.injector.update({
+            "send": self.upstream.send,
+            "injector_cdp_send_timeout_ms": self.config.client_cdp_send_timeout_ms,
         })
-        self._send_message("Target.setDiscoverTargets", {"discover": True})
-
-    def _upstream_transport(self):
-        mode = self.upstream.get("upstream_mode")
-        if mode == "ws":
-            return WebSocketUpstreamTransport()
-        if mode == "pipe":
-            return PipeUpstreamTransport()
-        if mode == "reversews":
-            return ReverseWebSocketUpstreamTransport()
-        if mode == "nativemessaging":
-            return NativeMessagingUpstreamTransport()
-        if mode == "nats":
-            return NatsUpstreamTransport()
-        raise RuntimeError(f"unknown upstream.upstream_mode={mode}")
-
-    def _extension_injectors_for_config(self) -> list[ExtensionInjector]:
-        mode = self.injector.get("injector_mode")
-        if mode == "none":
-            return []
-        injectors: list[ExtensionInjector] = []
-        prefer_launch_injection = mode == "auto" and self.launcher.get("launcher_mode") == "local"
-        if mode in ("auto", "discover") and not prefer_launch_injection:
-            injectors.append(DiscoveredExtensionInjector())
-        if mode in ("auto", "inject"):
-            if self.launcher.get("launcher_mode") == "bb":
-                injectors.append(BBBrowserExtensionInjector())
-            if self.launcher.get("launcher_mode") == "local":
-                injectors.append(LocalBrowserLaunchExtensionInjector())
-            injectors.append(ExtensionsLoadUnpackedInjector())
-        if prefer_launch_injection:
-            injectors.append(DiscoveredExtensionInjector())
-        if mode in ("auto", "borrow"):
-            injectors.append(BorrowedExtensionInjector())
-        if not injectors:
-            raise RuntimeError(f"unknown injector.injector_mode={mode}")
-        return injectors
-
-    def _base_extension_injector_config(self, send: Any | None) -> ExtensionInjectorConfig:
-        trust_service_worker_target = (
-            self.injector["injector_trust_service_worker_target"]
-            or len(self.injector["injector_service_worker_url_includes"]) > 0
-            or any(
-                len([part for part in suffix.split("/") if part]) > 1
-                for suffix in self.injector["injector_service_worker_url_suffixes"]
-            )
-        )
-
-        def send_cdp(method: str, params: ProtocolParams | None = None, session_id: str | None = None) -> ProtocolResult:
-            if send is None:
-                raise RuntimeError("Extension injector CDP send is not connected.")
-            return self._send_message(
-                method,
-                params or {},
-                session_id,
-                timeout=self.client["client_cdp_send_timeout_ms"] / 1000,
-            )
-
-        def attach_to_target(target_id: str) -> str | None:
-            return self._ensure_session_id_for_target(
-                target_id,
-                timeout=self.injector["injector_service_worker_probe_timeout_ms"] / 1000,
-                allow_attach=True,
-            )
-
-        return {
-            "send": send_cdp if send is not None else None,
-            "sessionIdForTarget": self.auto_sessions.sessionIdForTarget,
-            "attachToTarget": attach_to_target if send is not None else None,
-            "waitForExecutionContext": self.auto_sessions.waitForExecutionContext,
-            "injector_extension_path": cast(str | None, self.injector.get("injector_extension_path")),
-            "injector_extension_id": cast(str | None, self.injector.get("injector_extension_id")),
-            "injector_service_worker_url_includes": cast(list[str], self.injector["injector_service_worker_url_includes"]),
-            "injector_service_worker_url_suffixes": cast(list[str], self.injector["injector_service_worker_url_suffixes"]),
-            "injector_trust_service_worker_target": trust_service_worker_target,
-            "injector_require_service_worker_target": self.injector["injector_require_service_worker_target"] or self.injector.get("injector_mode") == "discover",
-            "injector_service_worker_ready_expression": cast(str | None, self.injector.get("injector_service_worker_ready_expression")),
-            "injector_cdp_send_timeout_ms": self.client["client_cdp_send_timeout_ms"],
-            "injector_execution_context_timeout_ms": self.injector["injector_execution_context_timeout_ms"],
-            "injector_service_worker_probe_timeout_ms": self.injector["injector_service_worker_probe_timeout_ms"],
-            "injector_service_worker_ready_timeout_ms": self.injector["injector_service_worker_ready_timeout_ms"],
-            "injector_service_worker_poll_interval_ms": self.injector["injector_service_worker_poll_interval_ms"],
-            "injector_target_session_poll_interval_ms": self.injector["injector_target_session_poll_interval_ms"],
-        }
-
-    def _inject_extension(self, injectors: list[ExtensionInjector] | None = None) -> ExtensionInfo:
-        injectors = injectors or self._extension_injectors_for_config()
-        errors: list[str] = []
-        for injector in injectors:
-            injector.update(self._base_extension_injector_config(self._send_message))
-            try:
-                injector.prepare()
-                result = injector.inject()
-                if result:
-                    return cast(ExtensionInfo, result)
-            except Exception as error:
-                injector.last_error = error
-                errors.append(f"{type(injector).__name__}: {error}")
-        detail = f"\n\n{chr(10).join(errors)}" if errors else ""
-        raise RuntimeError(f"Cannot install, discover, or borrow the ModCDP extension in the running browser.{detail}")
-
-    # --- internals ---------------------------------------------------------
-
-    def _send_raw(self, wrapped: TranslatedCommand) -> Any:
-        if wrapped["target"] == "direct_cdp":
-            step = wrapped["steps"][0]
-            return self._send_message(step["method"], step.get("params") or {}, step.get("sessionId"))
-        if wrapped["target"] != "service_worker":
-            raise RuntimeError(f"Unsupported command target {wrapped['target']!r}")
-
-        result: ProtocolResult = {}
-        unwrap: str | None = None
-        for step in wrapped["steps"]:
-            params = dict(step.get("params") or {})
-            if step["method"] == "Runtime.callFunctionOn" and "executionContextId" not in params:
-                if self.ext_execution_context_id is None:
-                    self.ext_execution_context_id = self.auto_sessions.waitForExecutionContext(
-                        self.ext_session_id,
-                        self.injector["injector_execution_context_timeout_ms"],
-                    )
-                params["executionContextId"] = self.ext_execution_context_id
-            result = self._send_message(step["method"], params, self.ext_session_id)
-            unwrap = step.get("unwrap")
-        return unwrap_response_if_needed(result, unwrap)
-
-    def _hydrate_custom_surface(self) -> None:
-        for command in self.custom_commands:
-            self._register_custom_command(cast(ProtocolParams, command))
-        for event in self.custom_events:
-            if isinstance(event, str):
-                continue
-            self._register_custom_event(cast(ProtocolParams, event))
-
-    def _hydrate_native_protocol_schemas(self) -> None:
-        with self._schema_lock:
-            for domain_name, domain_class in vars(generated_cdp).items():
-                if not domain_name.endswith("Domain") or not isinstance(domain_class, type):
-                    continue
-                domain = domain_name.removesuffix("Domain")
-                nested_classes = {
-                    name: value
-                    for name, value in vars(domain_class).items()
-                    if isinstance(value, type) and issubclass(value, CDPModel)
-                }
-                for class_name, params_class in nested_classes.items():
-                    if issubclass(params_class, CDPEvent):
-                        event_name = getattr(params_class, "cdp_event_name", None)
-                        if isinstance(event_name, str):
-                            self._event_schemas[event_name] = TypeAdapter(params_class)
-                        continue
-                    if not class_name.startswith("_") or not class_name.endswith("Params"):
-                        continue
-                    command_base = class_name[1:-6]
-                    result_class = nested_classes.get(f"_{command_base}Result")
-                    if result_class is None:
-                        continue
-                    method = f"{domain}.{command_base[:1].lower()}{command_base[1:]}"
-                    if issubclass(params_class, CDPParams):
-                        self._command_params_schemas[method] = TypeAdapter(params_class)
-                    self._command_result_schemas[method] = TypeAdapter(result_class)
-                    self._command_result_model_schemas.add(method)
-
-    def _register_custom_command(self, params: ProtocolParams) -> None:
-        name = params.get("name")
-        if not isinstance(name, str) or not name:
-            raise TypeError("name must be a non-empty string")
-        params_schema, _, _ = self._adapter_from_optional_schema(params.get("params_schema"), "params_schema")
-        result_schema, _, result_is_model = self._adapter_from_optional_schema(params.get("result_schema"), "result_schema")
-        with self._schema_lock:
-            if params_schema is not None:
-                self._command_params_schemas[name] = params_schema
-            if result_schema is not None:
-                self._command_result_schemas[name] = result_schema
-            if result_is_model:
-                self._command_result_model_schemas.add(name)
-            else:
-                self._command_result_model_schemas.discard(name)
-
-    def _custom_command_wire_params(self, params: ProtocolParams) -> ProtocolParams:
-        wire = dict(params)
-        _, params_schema, _ = self._adapter_from_optional_schema(wire.get("params_schema"), "params_schema")
-        _, result_schema, _ = self._adapter_from_optional_schema(wire.get("result_schema"), "result_schema")
-        if "params_schema" in wire:
-            wire["params_schema"] = cast(JsonValue, params_schema)
-        if "result_schema" in wire:
-            wire["result_schema"] = cast(JsonValue, result_schema)
-        return cast(ProtocolParams, wire)
-
-    def _custom_event_wire_params(self, params: ProtocolParams) -> ProtocolParams:
-        wire = dict(params)
-        _, event_schema, _ = self._adapter_from_optional_schema(wire.get("event_schema"), "event_schema")
-        if "event_schema" in wire:
-            wire["event_schema"] = cast(JsonValue, event_schema)
-        return cast(ProtocolParams, wire)
-
-    def _register_custom_event(self, params: ProtocolParams) -> None:
-        name = params.get("name")
-        if not isinstance(name, str) or not name:
-            raise TypeError("name must be a non-empty string")
-        event_schema, _, event_is_model = self._adapter_from_optional_schema(params.get("event_schema"), "event_schema")
-        if event_schema is not None:
-            with self._schema_lock:
-                self._event_schemas[name] = event_schema
-                if event_is_model:
-                    self._event_model_schemas.add(name)
-                else:
-                    self._event_model_schemas.discard(name)
-
-    def _adapter_from_optional_schema(self, schema: Any | None, field_name: str) -> tuple[TypeAdapter[Any] | None, dict[str, Any] | None, bool]:
-        if schema is None:
-            return None, None, False
-        if isinstance(schema, type) and issubclass(schema, BaseModel):
-            return TypeAdapter(schema), schema.model_json_schema(), True
-        if not isinstance(schema, Mapping):
-            raise TypeError(f"{field_name} must be a JSON Schema object")
-        schema_dict = dict(cast(Mapping[str, Any], schema))
-        return type_adapter_from_json_schema(schema_dict), schema_dict, False
-
-    def _validate_command_params(self, method: str, params: ProtocolParams) -> ProtocolParams:
-        with self._schema_lock:
-            adapter = self._command_params_schemas.get(method)
-        if adapter is None:
-            return params
-        try:
-            validated = adapter.validate_python(dict(params), strict=True)
-        except ValidationError as e:
-            raise ValueError(f"{method} params did not match params_schema: {e}") from e
-        jsonable = (
-            validated.model_dump(mode="json", exclude_none=True, by_alias=True)
-            if isinstance(validated, BaseModel)
-            else to_jsonable_python(validated)
-        )
-        if not isinstance(jsonable, Mapping):
-            raise ValueError(f"{method} params_schema must validate to a JSON object")
-        return cast(ProtocolParams, dict(jsonable))
-
-    def _validate_command_result(self, method: str, result: Any) -> Any:
-        with self._schema_lock:
-            adapter = self._command_result_schemas.get(method)
-        if adapter is None:
-            return result
-        try:
-            validated = adapter.validate_python(result, strict=True)
-        except ValidationError as e:
-            raise ValueError(f"{method} result did not match result_schema: {e}") from e
-        if isinstance(validated, CDPModel):
-            return cast(JsonValue, validated.model_dump(mode="json", exclude_none=True, by_alias=True))
-        if method in self._command_result_model_schemas and isinstance(validated, BaseModel):
-            fields = list(type(validated).model_fields)
-            if len(fields) == 1:
-                return cast(JsonValue, getattr(validated, fields[0]))
-            return cast(JsonValue, validated)
-        return cast(JsonValue, to_jsonable_python(validated))
-
-    def _validate_event_payload(self, event: str, payload: ProtocolPayload) -> Any | None:
-        with self._schema_lock:
-            adapter = self._event_schemas.get(event)
-            event_class = self._event_classes.get(event)
-        if adapter is None and event_class is None:
-            return dict(payload)
-        if adapter is None and event_class is not None:
-            try:
-                return cast(ProtocolPayload, event_class.model_validate(dict(payload)).model_dump(mode="json", exclude_none=True, by_alias=True))
-            except ValidationError as e:
-                raise ValueError(f"{event} event did not match native event schema: {e}") from e
-        assert adapter is not None
-        try:
-            validated = adapter.validate_python(dict(payload), strict=True)
-        except ValidationError as direct_error:
-            if set(payload.keys()) != {"value"}:
-                raise ValueError(f"{event} event did not match event_schema: {direct_error}") from direct_error
-            try:
-                validated = adapter.validate_python(payload["value"], strict=True)
-            except ValidationError as value_error:
-                raise ValueError(f"{event} event did not match event_schema: {value_error}") from value_error
-            if event in self._event_model_schemas:
-                return cast(ProtocolPayload, validated)
-            return {"value": cast(JsonValue, to_jsonable_python(validated))}
-        if isinstance(validated, CDPModel):
-            return cast(ProtocolPayload, validated.model_dump(mode="json", exclude_none=True, by_alias=True))
-        if event in self._event_model_schemas:
-            return cast(ProtocolPayload, validated)
-        jsonable = to_jsonable_python(validated)
-        if isinstance(jsonable, Mapping):
-            return cast(ProtocolPayload, dict(jsonable))
-        return {"value": cast(JsonValue, jsonable)}
+        self.injector.prepare()
+        result = self.injector.inject()
+        if not result:
+            raise RuntimeError(f"{type(self.injector).__name__} did not return a ModCDP extension target.")
+        self.injector.recordInjectionResult(result)
+        return result
 
     def _measure_ping_latency(self) -> ModCDPPingLatency | None:
         sent_at = int(time.time() * 1000)
@@ -1159,105 +694,80 @@ class ModCDPClient(CDPSurfaceMixin):
         returned_at = int(time.time() * 1000)
         raw_received_at = payload.get("received_at")
         received_at = raw_received_at if isinstance(raw_received_at, (int, float)) else None
-        latency: ModCDPPingLatency = {
-            "sent_at": sent_at,
-            "received_at": received_at,
-            "returned_at": returned_at,
-            "round_trip_ms": returned_at - sent_at,
-            "service_worker_ms": received_at - sent_at if received_at is not None else None,
-            "return_path_ms": returned_at - received_at if received_at is not None else None,
-        }
+        latency = ModCDPPingLatency(
+            sent_at=sent_at,
+            received_at=received_at,
+            returned_at=returned_at,
+            round_trip_ms=returned_at - sent_at,
+            service_worker_ms=received_at - sent_at if received_at is not None else None,
+            return_path_ms=returned_at - received_at if received_at is not None else None,
+        )
         self.latency = latency
         return latency
 
-    def _send_message(
-        self,
-        method: str,
-        params: MessageParams | None = None,
-        session_id: str | None = None,
-        timeout: float | None = None,
-        record_raw_timing: bool = False,
-    ) -> ProtocolResult:
-        effective_timeout = self.client["client_cdp_send_timeout_ms"] / 1000 if timeout is None else timeout
-        with self._lock:
-            self._next_id += 1
-            msg_id = self._next_id
-            done: Queue[CdpMessage] = Queue()
-            self._pending[msg_id] = (method, done)
-        started_at = int(time.time() * 1000)
-        msg: CdpMessage = {"id": msg_id, "method": method, "params": params or {}}
-        if session_id:
-            msg["sessionId"] = session_id
-        try:
-            if self.transport is not None:
-                self.transport.send(cast(dict[str, Any], msg))
-            else:
-                raise RuntimeError("ModCDP upstream is not connected")
-        except Exception:
-            with self._lock:
-                self._pending.pop(msg_id, None)
-            raise
-        try:
-            response = done.get(timeout=effective_timeout)
-        except Empty:
-            with self._lock:
-                self._pending.pop(msg_id, None)
-            raise RuntimeError(f"{method} timed out after {int(effective_timeout * 1000)}ms")
-        err = response.get("error")
-        if err:
-            raise RuntimeError(f"{method} failed: {err.get('message', err)}")
-        if record_raw_timing:
-            completed_at = int(time.time() * 1000)
-            self.last_raw_timing = {
-                "method": method,
-                "started_at": started_at,
-                "completed_at": completed_at,
-                "duration_ms": completed_at - started_at,
-            }
-        return _json_object(response.get("result"))
-
-    def _reject_all(self, error: Exception) -> None:
-        with self._lock:
-            pending = list(self._pending.values())
-            self._pending.clear()
-        for _, done in pending:
-            done.put({"error": {"message": str(error)}})
-
     def _on_recv(self, msg: CdpMessage) -> None:
         if "id" in msg and msg["id"] is not None:
-            with self._lock:
-                entry = self._pending.pop(msg["id"], None)
-            if entry:
-                entry[1].put(msg)
             return
         method = msg.get("method")
         raw_params = msg.get("params")
-        params = cast(ProtocolParams, raw_params) if isinstance(raw_params, Mapping) else {}
-        if isinstance(method, str):
-            session_id = msg.get("sessionId")
-            self.auto_sessions.recordProtocolEvent(method, params, session_id if isinstance(session_id, str) else None)
-        if method and self.ext_session_id is not None and msg.get("sessionId") == self.ext_session_id:
+        params = _protocol_params(raw_params)
+        extension_session_id = self.injector.session_id if self.injector is not None else None
+        if isinstance(method, str) and extension_session_id is not None and msg.get("sessionId") == extension_session_id:
             session_id = msg.get("sessionId")
             u = unwrap_event_if_needed(
                 method,
                 params,
                 session_id if isinstance(session_id, str) else None,
-                self.ext_session_id,
+                extension_session_id,
             )
             if u:
-                validated_payload = self._validate_event_payload(u["event"], u["data"])
-                if validated_payload is None:
-                    return
-                for handler in list(self._handlers.get(u["event"], [])):
-                    def run_wrapped_event(handler=handler, payload=validated_payload, event_name=u["event"]):
-                        self._run_handler(handler, payload, event_name)
-                    threading.Thread(target=run_wrapped_event, daemon=True).start()
+                validated_payload = self.types.parseEventPayload(u.event, u.data)
+                self._emit_event(u.event, validated_payload, u.sessionId)
             return
-        if method:
-            validated_payload = self._validate_event_payload(method, dict(params))
-            if validated_payload is None:
-                return
-            for handler in list(self._handlers.get(method, [])):
-                def run_method_event(handler=handler, payload=validated_payload, event_name=method):
-                    self._run_handler(handler, payload, event_name)
-                threading.Thread(target=run_method_event, daemon=True).start()
+        if isinstance(method, str):
+            validated_payload = self.types.parseEventPayload(method, dict(params))
+            session_id = msg.get("sessionId")
+            self._emit_event(method, validated_payload, session_id if isinstance(session_id, str) else None)
+
+    def _emit_event(self, event_name: str, payload: object, session_id: str | None) -> None:
+        for handler in list(self._handlers.get(event_name, [])):
+            def run_method_event(handler=handler, payload=payload, session_id=session_id):
+                self._run_handler(handler, payload, session_id)
+            threading.Thread(target=run_method_event, daemon=True).start()
+        for handler in list(self._handlers.get("*", [])):
+            def run_wildcard_event(handler=handler, event_name=event_name, payload=payload, session_id=session_id):
+                self._run_handler(handler, event_name, payload, session_id)
+            threading.Thread(target=run_wildcard_event, daemon=True).start()
+
+
+def _call_handler(handler: Handler, *args: object) -> object:
+    signature = inspect.signature(handler)
+    parameters = list(signature.parameters.values())
+    if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+        return handler(*args)
+    positional_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return handler(*args[: len(positional_parameters)])
+
+
+def _typed_event_handler(event_class: type[CDPEvent], handler: Handler) -> Handler:
+    def typed_handler(payload: object, session_id: str | None = None) -> object:
+        typed_payload = event_class.model_validate(payload) if isinstance(payload, Mapping) else payload
+        return _call_handler(handler, typed_payload, session_id)
+
+    return typed_handler
+
+
+def _protocol_params(value: object) -> ProtocolParams:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): raw_value for key, raw_value in value.items()}
+
+
+def _mapping_dict(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): raw_value for key, raw_value in value.items()}

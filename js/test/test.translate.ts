@@ -1,3 +1,9 @@
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./python/tests/test_translate.py
+// - ./go/modcdp/translate/translate_test.go
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
 import assert from "node:assert/strict";
 import { test } from "vitest";
 
@@ -11,8 +17,20 @@ import {
 } from "../src/translate/translate.js";
 
 test("translate routes, wraps, and unwraps ModCDP protocol messages deterministically", () => {
-  assert.equal(routeFor("Browser.getVersion", { "Browser.*": "direct_cdp", "*.*": "service_worker" }), "direct_cdp");
-  assert.equal(routeFor("Target.getTargets", { "Browser.*": "direct_cdp", "*.*": "service_worker" }), "service_worker");
+  assert.equal(
+    routeFor("Browser.getVersion", {
+      "Browser.*": "direct_cdp",
+      "*.*": "service_worker",
+    }),
+    "direct_cdp",
+  );
+  assert.equal(
+    routeFor("Target.getTargets", {
+      "Browser.*": "direct_cdp",
+      "*.*": "service_worker",
+    }),
+    "service_worker",
+  );
 
   const direct = wrapCommandIfNeeded("Browser.getVersion", {}, { routes: { "*.*": "direct_cdp" } });
   assert.equal(direct.target, "direct_cdp");
@@ -25,12 +43,25 @@ test("translate routes, wraps, and unwraps ModCDP protocol messages deterministi
   );
   assert.equal(wrapped.target, "service_worker");
   assert.equal(wrapped.steps[0]?.method, "Runtime.callFunctionOn");
-  const wrapped_step_params = wrapped.steps[0]?.params as { functionDeclaration?: unknown } | undefined;
-  assert.match(String(wrapped_step_params?.functionDeclaration), /attachToSession\("session-1"\)/);
-  assert.equal(wrapped.steps[0]?.unwrap, "runtime");
+  const wrapped_step_params = wrapped.steps[0]?.params as
+    | { arguments?: Array<{ value?: unknown }>; functionDeclaration?: unknown }
+    | undefined;
+  assert.match(String(wrapped_step_params?.functionDeclaration), /globalThis\.ModCDP\.handleCommand/);
+  assert.deepEqual(JSON.parse(String(wrapped_step_params?.arguments?.[1]?.value)), {
+    expression: "({ ok: true })",
+    params: { value: 1 },
+  });
+  assert.equal(wrapped_step_params?.arguments?.[2]?.value, "session-1");
+  assert.equal(wrapped.steps[0]?.unwrap, "runtime_json");
 
-  const configured = wrapCommandIfNeeded("Mod.configure", { server: { server_routes: { "*.*": "loopback_cdp" } } });
+  const configured = wrapCommandIfNeeded("Mod.configure", {
+    router: { router_routes: { "*.*": "loopback_cdp" } },
+  });
   assert.equal(configured.steps[0]?.unwrap, "runtime_json");
+
+  const ping = wrapCommandIfNeeded("Mod.ping", {});
+  const ping_step_params = ping.steps[0]?.params as { arguments?: Array<{ value?: unknown }> } | undefined;
+  assert.deepEqual(JSON.parse(String(ping_step_params?.arguments?.[1]?.value)), {});
 
   const custom = wrapCommandIfNeeded(
     "Custom.echo",
@@ -49,10 +80,22 @@ test("translate routes, wraps, and unwraps ModCDP protocol messages deterministi
   });
   assert.equal(custom_step_params?.arguments?.[2]?.value, "session-1");
 
+  const customWithSession = wrapCommandIfNeeded(
+    "Custom.echo",
+    { secret: "targeted" },
+    { cdpSessionId: "target-session-1" },
+  );
+  const custom_with_session_params = customWithSession.steps[0]?.params as
+    | { arguments?: Array<{ value?: unknown }> }
+    | undefined;
+  assert.equal(custom_with_session_params?.arguments?.[2]?.value, "target-session-1");
+
   assert.deepEqual(unwrapResponseIfNeeded({ result: { type: "object", value: { ok: true } } }, "runtime"), {
     ok: true,
   });
-  assert.deepEqual(unwrapResponseIfNeeded({ product: "Chrome/1" }, null), { product: "Chrome/1" });
+  assert.deepEqual(unwrapResponseIfNeeded({ product: "Chrome/1" }, null), {
+    product: "Chrome/1",
+  });
 
   const payload = encodeBindingPayload({
     event: "Custom.ready",
@@ -68,5 +111,11 @@ test("translate routes, wraps, and unwraps ModCDP protocol messages deterministi
     ),
     { event: "Custom.ready", data: { ready: true }, sessionId: "session-2" },
   );
-  assert.equal(unwrapEventIfNeeded("Runtime.consoleAPICalled", { name: CUSTOM_EVENT_BINDING_NAME, payload }), null);
+  assert.equal(
+    unwrapEventIfNeeded("Runtime.consoleAPICalled", {
+      name: CUSTOM_EVENT_BINDING_NAME,
+      payload,
+    }),
+    null,
+  );
 });

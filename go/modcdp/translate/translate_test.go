@@ -1,20 +1,31 @@
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./js/test/test.translate.ts
+// - ./python/tests/test_translate.py
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
 package translate
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/browserbase/modcdp/go/modcdp/types"
 )
 
 func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t *testing.T) {
-	if routeFor("Browser.getVersion", map[string]string{"Browser.*": "direct_cdp", "*.*": "service_worker"}) != "direct_cdp" {
+	if RouteFor("Browser.getVersion", map[string]string{"Browser.*": "direct_cdp", "*.*": "service_worker"}) != "direct_cdp" {
 		t.Fatal("Browser.getVersion route mismatch")
 	}
-	if routeFor("Target.getTargets", map[string]string{"Browser.*": "direct_cdp", "*.*": "service_worker"}) != "service_worker" {
+	if RouteFor("Target.getTargets", map[string]string{"Browser.*": "direct_cdp", "*.*": "service_worker"}) != "service_worker" {
 		t.Fatal("Target.getTargets route mismatch")
 	}
+	if RouteFor("Browser.getVersion", nil) != "direct_cdp" {
+		t.Fatal("Browser.getVersion default route mismatch")
+	}
 
-	direct, err := wrapCommandIfNeeded("Browser.getVersion", map[string]any{}, map[string]string{"*.*": "direct_cdp"}, "")
+	direct, err := WrapCommandIfNeeded("Browser.getVersion", map[string]any{}, map[string]string{"*.*": "direct_cdp"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +33,7 @@ func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t
 		t.Fatalf("direct = %#v", direct)
 	}
 
-	wrapped, err := wrapCommandIfNeeded(
+	wrapped, err := WrapCommandIfNeeded(
 		"Mod.evaluate",
 		map[string]any{"expression": "({ ok: true })", "params": map[string]any{"value": 1}},
 		DefaultClientRoutes(),
@@ -37,14 +48,25 @@ func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t
 	if wrapped.Steps[0].Method != "Runtime.callFunctionOn" {
 		t.Fatalf("wrapped step = %#v", wrapped.Steps[0])
 	}
-	if !strings.Contains(stringValue(wrapped.Steps[0].Params["functionDeclaration"]), `attachToSession("session-1")`) {
+	if !strings.Contains(stringValue(wrapped.Steps[0].Params["functionDeclaration"]), "globalThis.ModCDP.handleCommand") {
 		t.Fatalf("functionDeclaration = %s", wrapped.Steps[0].Params["functionDeclaration"])
 	}
-	if wrapped.Steps[0].Unwrap != "runtime" {
+	wrappedArguments := wrapped.Steps[0].Params["arguments"].([]map[string]any)
+	var wrappedPayload map[string]any
+	if err := json.Unmarshal([]byte(wrappedArguments[1]["value"].(string)), &wrappedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if wrappedPayload["expression"] != "({ ok: true })" || wrappedPayload["params"].(map[string]any)["value"].(float64) != 1 {
+		t.Fatalf("wrapped payload = %#v", wrappedPayload)
+	}
+	if wrappedArguments[2]["value"] != "session-1" {
+		t.Fatalf("session argument = %#v", wrappedArguments[2])
+	}
+	if wrapped.Steps[0].Unwrap != "runtime_json" {
 		t.Fatalf("unwrap = %q", wrapped.Steps[0].Unwrap)
 	}
 
-	configured, err := wrapCommandIfNeeded("Mod.configure", map[string]any{"server": map[string]any{"server_routes": map[string]any{"*.*": "loopback_cdp"}}}, DefaultClientRoutes(), "session-1")
+	configured, err := WrapCommandIfNeeded("Mod.configure", map[string]any{"router": map[string]any{"router_routes": map[string]any{"*.*": "loopback_cdp"}}}, DefaultClientRoutes(), "session-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +74,20 @@ func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t
 		t.Fatalf("configure unwrap = %q", configured.Steps[0].Unwrap)
 	}
 
-	custom, err := wrapCommandIfNeeded(
+	ping, err := WrapCommandIfNeeded("Mod.ping", map[string]any{}, DefaultClientRoutes(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pingArguments := ping.Steps[0].Params["arguments"].([]map[string]any)
+	var pingPayload map[string]any
+	if err := json.Unmarshal([]byte(pingArguments[1]["value"].(string)), &pingPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(pingPayload) != 0 {
+		t.Fatalf("ping params = %#v", pingPayload)
+	}
+
+	custom, err := WrapCommandIfNeeded(
 		"Custom.echo",
 		map[string]any{"secret": strings.Repeat("x", 100), "nested": map[string]any{"ok": true}},
 		DefaultClientRoutes(),
@@ -83,14 +118,28 @@ func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t
 		t.Fatalf("session argument = %#v", customArguments[2])
 	}
 
-	unwrapped, err := unwrapResponseIfNeeded(map[string]any{"result": map[string]any{"type": "object", "value": map[string]any{"ok": true}}}, "runtime")
+	customWithSession, err := WrapCommandIfNeeded(
+		"Custom.echo",
+		map[string]any{"secret": "targeted"},
+		DefaultClientRoutes(),
+		"target-session-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customWithSessionArguments := customWithSession.Steps[0].Params["arguments"].([]map[string]any)
+	if customWithSessionArguments[2]["value"] != "target-session-1" {
+		t.Fatalf("target session argument = %#v", customWithSessionArguments[2])
+	}
+
+	unwrapped, err := UnwrapResponseIfNeeded(map[string]any{"result": map[string]any{"type": "object", "value": map[string]any{"ok": true}}}, "runtime")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unwrapped.(map[string]any)["ok"] != true {
 		t.Fatalf("unwrapped = %#v", unwrapped)
 	}
-	raw, err := unwrapResponseIfNeeded(map[string]any{"product": "Chrome/1"}, "")
+	raw, err := UnwrapResponseIfNeeded(map[string]any{"product": "Chrome/1"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,21 +147,25 @@ func TestTranslateRoutesWrapsAndUnwrapsModCDPProtocolMessagesDeterministically(t
 		t.Fatalf("raw = %#v", raw)
 	}
 
-	payload, _ := json.Marshal(map[string]any{
-		"event":        "Custom.ready",
-		"data":         map[string]any{"ready": true},
-		"cdpSessionId": "session-2",
+	payloadSessionID := "session-2"
+	payload, err := EncodeBindingPayload(types.ModCDPBindingPayload{
+		Event:        "Custom.ready",
+		Data:         map[string]any{"ready": true},
+		CDPSessionID: &payloadSessionID,
 	})
-	event, data, ok := unwrapEventIfNeeded(
+	if err != nil {
+		t.Fatal(err)
+	}
+	unwrappedEvent, ok := UnwrapEventIfNeeded(
 		"Runtime.bindingCalled",
-		map[string]any{"name": customEventBindingName, "payload": string(payload)},
+		map[string]any{"name": CustomEventBindingName, "payload": payload},
 		"session-1",
 		"session-1",
 	)
-	if !ok || event != "Custom.ready" || data.(map[string]any)["ready"] != true {
-		t.Fatalf("event=%q data=%#v ok=%v", event, data, ok)
+	if !ok || unwrappedEvent.Event != "Custom.ready" || unwrappedEvent.Data.(map[string]any)["ready"] != true || unwrappedEvent.SessionID == nil || *unwrappedEvent.SessionID != "session-2" {
+		t.Fatalf("unwrappedEvent=%#v ok=%v", unwrappedEvent, ok)
 	}
-	if _, _, ok := unwrapEventIfNeeded("Runtime.consoleAPICalled", map[string]any{"name": customEventBindingName, "payload": string(payload)}, "", ""); ok {
+	if _, ok := UnwrapEventIfNeeded("Runtime.consoleAPICalled", map[string]any{"name": CustomEventBindingName, "payload": payload}, "", ""); ok {
 		t.Fatal("expected console event to ignore binding payload")
 	}
 }

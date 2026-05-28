@@ -1,3 +1,7 @@
+// MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+// - ./python/modcdp/launcher/LocalBrowserLauncher.py
+// - ./go/modcdp/launcher/LocalBrowserLauncher.go
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readdirSync, statSync } from "node:fs";
@@ -6,14 +10,20 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { homedir, platform, tmpdir } from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import {
   BrowserLauncher,
-  DEFAULT_CHROME_READY_POLL_INTERVAL_MS,
-  DEFAULT_CHROME_READY_TIMEOUT_MS,
   resolveCdpWebSocketUrl,
-  type BrowserLaunchOptions,
+  type LauncherConfig,
   type LaunchedBrowser,
 } from "./BrowserLauncher.js";
+import { ModCDPLauncherConfigSchema } from "../types/modcdp.js";
+
+const LocalBrowserLauncherConfigSchema = ModCDPLauncherConfigSchema.extend({
+  launcher_local_cdp_transport: z.enum(["ws", "pipe"]).default("ws"),
+});
+type LocalBrowserLauncherConfig = z.infer<typeof LocalBrowserLauncherConfigSchema>;
+type LocalBrowserLauncherInput = z.input<typeof LocalBrowserLauncherConfigSchema>;
 
 function wildcardToRegExp(value: string) {
   return new RegExp(`^${value.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
@@ -148,6 +158,28 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function mergeLocalChromeArgs(existing: string[] = [], incoming: string[] = []) {
+  const args = [...existing, ...incoming];
+  const load_extension_paths: string[] = [];
+  const merged: string[] = [];
+  for (const arg of args) {
+    if (!arg.startsWith("--load-extension=")) {
+      merged.push(arg);
+      continue;
+    }
+    for (const extension_path of arg.slice("--load-extension=".length).split(",")) {
+      if (extension_path && !load_extension_paths.includes(extension_path)) load_extension_paths.push(extension_path);
+    }
+  }
+  if (load_extension_paths.length > 0) {
+    const first_url_index = merged.findIndex((arg) => !arg.startsWith("-"));
+    const load_extension_arg = `--load-extension=${load_extension_paths.join(",")}`;
+    if (first_url_index === -1) merged.push(load_extension_arg);
+    else merged.splice(first_url_index, 0, load_extension_arg);
+  }
+  return merged;
+}
+
 async function terminateProcess(proc: ChildProcess, timeoutMs = 2_000) {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
   const signalProcess = (signal: NodeJS.Signals) => {
@@ -240,22 +272,6 @@ async function waitForCdpWebSocketUrl(cdp_url: string, timeout_ms: number, poll_
   throw new Error(`Chrome at ${cdp_url} did not expose a WebSocket CDP URL within ${timeout_ms}ms`);
 }
 
-async function readDevToolsActivePort(profile_dir: string) {
-  const activePortPath = path.join(profile_dir, "DevToolsActivePort");
-  let body: string;
-  try {
-    body = await readFile(activePortPath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-  const [rawPort, websocketPath] = body.trim().split(/\r?\n/);
-  if (!rawPort || !websocketPath) return null;
-  const port = Number(rawPort);
-  if (!Number.isInteger(port) || port <= 0) throw new Error(`Invalid DevToolsActivePort port: ${rawPort}`);
-  return { port, cdp_url: `http://127.0.0.1:${port}`, websocketPath };
-}
-
 async function waitForBrowserSelectedCdpWebSocketUrl(
   profile_dir: string,
   timeout_ms: number,
@@ -270,7 +286,7 @@ async function waitForBrowserSelectedCdpWebSocketUrl(
     if (activePort) {
       try {
         return {
-          port: activePort.port,
+          cdp_listen_port: activePort.cdp_listen_port,
           cdp_url: await resolveCdpWebSocketUrl(activePort.cdp_url),
         };
       } catch (error) {
@@ -287,14 +303,56 @@ async function waitForBrowserSelectedCdpWebSocketUrl(
   throw new Error(`Chrome did not expose DevToolsActivePort from ${profile_dir} within ${timeout_ms}ms`);
 }
 
-export class LocalBrowserLauncher extends BrowserLauncher {
+async function readDevToolsActivePort(profile_dir: string) {
+  const activePortPath = path.join(profile_dir, "DevToolsActivePort");
+  let body: string;
+  try {
+    body = await readFile(activePortPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const [rawPort, websocketPath] = body.trim().split(/\r?\n/);
+  if (!rawPort || !websocketPath) return null;
+  const port = Number(rawPort);
+  if (!Number.isInteger(port) || port <= 0) throw new Error(`Invalid DevToolsActivePort port: ${rawPort}`);
+  return { cdp_listen_port: port, cdp_url: `http://127.0.0.1:${port}`, websocketPath };
+}
+
+class LocalBrowserLauncher extends BrowserLauncher {
+  declare config: LocalBrowserLauncherConfig;
+
+  constructor(config: LocalBrowserLauncherInput = {}) {
+    const { launcher_local_cdp_transport: _launcher_local_cdp_transport, ...base_config } = config;
+    super({ ...base_config, launcher_mode: "local" } as LauncherConfig);
+    this.config = LocalBrowserLauncherConfigSchema.parse({ ...config, launcher_mode: "local" });
+  }
+
+  override update(config: LocalBrowserLauncherInput = {}) {
+    const next_config = LocalBrowserLauncherConfigSchema.parse({ ...this.config, ...config, launcher_mode: "local" });
+    if (config.launcher_local_args) {
+      next_config.launcher_local_args = mergeLocalChromeArgs(
+        this.config.launcher_local_args,
+        config.launcher_local_args,
+      );
+    }
+    if (config.launcher_local_extra_args) {
+      next_config.launcher_local_extra_args = mergeLocalChromeArgs(
+        this.config.launcher_local_extra_args,
+        config.launcher_local_extra_args,
+      );
+    }
+    this.config = next_config;
+    return this;
+  }
+
   static findChromeBinary(explicit?: string | null) {
     const candidates = [explicit, ...candidatePaths()].filter((candidate): candidate is string => Boolean(candidate));
     for (const candidate of candidates) {
       if (candidate && existsSync(candidate)) return candidate;
     }
     throw new Error(
-      `No Chrome/Chromium binary found. Tried: ${candidates.join(", ")}. Set CHROME_PATH or pass executable_path.`,
+      `No Chrome/Chromium binary found. Tried: ${candidates.join(", ")}. Set CHROME_PATH or pass launcher_local_executable_path.`,
     );
   }
 
@@ -309,26 +367,17 @@ export class LocalBrowserLauncher extends BrowserLauncher {
     return port;
   }
 
-  async launch(options: BrowserLaunchOptions = {}): Promise<LaunchedBrowser> {
-    const {
-      executable_path,
-      port,
-      user_data_dir,
-      headless = process.platform === "linux" && !process.env.DISPLAY,
-      sandbox = process.platform !== "linux",
-      args = [],
-      extra_args = [],
-      remote_debugging = "port",
-      loopback_cdp = false,
-      cleanup_user_data_dir = false,
-      chrome_ready_timeout_ms = DEFAULT_CHROME_READY_TIMEOUT_MS,
-      chrome_ready_poll_interval_ms = DEFAULT_CHROME_READY_POLL_INTERVAL_MS,
-    } = { ...this.options, ...options };
-    const exe = LocalBrowserLauncher.findChromeBinary(executable_path);
-    const usePipe = remote_debugging === "pipe";
-    const useLoopbackCdp = !usePipe || loopback_cdp || port != null;
-    const usePort = useLoopbackCdp ? (port ?? 0) : null;
-    const profile_dir = user_data_dir || (await mkdtemp(path.join(tmpdir(), "modcdp.")));
+  async launch(config: LauncherConfig = {}): Promise<LaunchedBrowser> {
+    const launch_config = LocalBrowserLauncherConfigSchema.parse({ ...this.config, ...config, launcher_mode: "local" });
+    const exe = LocalBrowserLauncher.findChromeBinary(launch_config.launcher_local_executable_path);
+    const usePipe = launch_config.launcher_local_cdp_transport === "pipe";
+    const useLoopbackCdp =
+      !usePipe || launch_config.launcher_local_loopback_cdp || launch_config.launcher_local_cdp_listen_port != null;
+    const usePort = useLoopbackCdp ? (launch_config.launcher_local_cdp_listen_port ?? 0) : null;
+    const profile_dir = launch_config.launcher_local_user_data_dir || (await mkdtemp(path.join(tmpdir(), "modcdp.")));
+    const default_headless = process.platform === "linux" && !process.env.DISPLAY;
+    const headless = launch_config.launcher_local_headless ?? default_headless;
+    const sandbox = launch_config.launcher_local_sandbox ?? !default_headless;
     const flags = [
       ...DEFAULT_FLAGS,
       headless ? "--headless=new" : null,
@@ -338,18 +387,18 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       useLoopbackCdp ? "--remote-debugging-address=127.0.0.1" : null,
       useLoopbackCdp ? `--remote-debugging-port=${usePort}` : null,
       usePipe ? "--remote-debugging-pipe" : null,
-      ...args,
-      ...extra_args,
+      ...launch_config.launcher_local_args,
+      ...launch_config.launcher_local_extra_args,
       "about:blank",
     ].filter(Boolean);
 
-    const useStdio = (usePipe ? ["ignore", "ignore", "ignore", "pipe", "pipe"] : "ignore") as
+    const stdio = (usePipe ? ["ignore", "ignore", "ignore", "pipe", "pipe"] : "ignore") as
       | "ignore"
       | "inherit"
       | "pipe"
       | import("node:child_process").StdioOptions;
     const proc = spawn(exe, flags, {
-      stdio: useStdio,
+      stdio,
       detached: process.platform !== "win32",
     });
     let spawnError: Error | null = null;
@@ -361,7 +410,8 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       if (closed) return;
       closed = true;
       await terminateProcess(proc);
-      if (!user_data_dir || cleanup_user_data_dir) await removeProfileDir(profile_dir);
+      if (!launch_config.launcher_local_user_data_dir || launch_config.launcher_local_cleanup_user_data_dir)
+        await removeProfileDir(profile_dir);
     };
     const assertChromeRunning = () => {
       if (spawnError) throw spawnError;
@@ -378,29 +428,29 @@ export class LocalBrowserLauncher extends BrowserLauncher {
         throw new Error("Chrome remote-debugging pipe stdio handles were not created.");
       }
       assertChromeRunning();
-      await waitForPipeReady(pipe_read, pipe_write, chrome_ready_timeout_ms);
+      await waitForPipeReady(pipe_read, pipe_write, launch_config.launcher_local_chrome_ready_timeout_ms);
       const loopback =
         usePort == null
           ? null
           : usePort === 0
             ? await waitForBrowserSelectedCdpWebSocketUrl(
                 profile_dir,
-                chrome_ready_timeout_ms,
-                chrome_ready_poll_interval_ms,
+                launch_config.launcher_local_chrome_ready_timeout_ms,
+                launch_config.launcher_local_chrome_ready_poll_interval_ms,
                 assertChromeRunning,
               )
             : {
-                port: usePort,
+                cdp_listen_port: usePort,
                 cdp_url: await waitForCdpWebSocketUrl(
                   `http://127.0.0.1:${usePort}`,
-                  chrome_ready_timeout_ms,
-                  chrome_ready_poll_interval_ms,
+                  launch_config.launcher_local_chrome_ready_timeout_ms,
+                  launch_config.launcher_local_chrome_ready_poll_interval_ms,
                 ),
               };
       this.launched = {
         proc,
-        ...(loopback == null ? {} : { port: loopback.port }),
-        cdp_url: `pipe://${proc.pid}`,
+        ...(loopback == null ? {} : { cdp_listen_port: loopback.cdp_listen_port }),
+        cdp_url: null,
         ...(loopback == null ? {} : { loopback_cdp_url: loopback.cdp_url }),
         pipe_read,
         pipe_write,
@@ -410,7 +460,7 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       return this.launched;
     }
 
-    const deadline = Date.now() + chrome_ready_timeout_ms;
+    const deadline = Date.now() + launch_config.launcher_local_chrome_ready_timeout_ms;
     while (Date.now() < deadline) {
       try {
         assertChromeRunning();
@@ -421,9 +471,9 @@ export class LocalBrowserLauncher extends BrowserLauncher {
       const activePort =
         usePort === 0
           ? await readDevToolsActivePort(profile_dir)
-          : { port: usePort as number, cdp_url: `http://127.0.0.1:${usePort}` };
+          : { cdp_listen_port: usePort as number, cdp_url: `http://127.0.0.1:${usePort}` };
       if (!activePort) {
-        await delay(chrome_ready_poll_interval_ms);
+        await delay(launch_config.launcher_local_chrome_ready_poll_interval_ms);
         continue;
       }
       try {
@@ -433,7 +483,7 @@ export class LocalBrowserLauncher extends BrowserLauncher {
           // cdp_url is resolved from the HTTP discovery endpoint before returning.
           this.launched = {
             proc,
-            port: activePort.port,
+            cdp_listen_port: activePort.cdp_listen_port,
             cdp_url: version.webSocketDebuggerUrl ?? activePort.cdp_url,
             loopback_cdp_url: version.webSocketDebuggerUrl ?? activePort.cdp_url,
             profile_dir,
@@ -442,9 +492,11 @@ export class LocalBrowserLauncher extends BrowserLauncher {
           return this.launched;
         }
       } catch {}
-      await new Promise((resolve) => setTimeout(resolve, chrome_ready_poll_interval_ms));
+      await new Promise((resolve) => setTimeout(resolve, launch_config.launcher_local_chrome_ready_poll_interval_ms));
     }
     await close();
-    throw new Error(`Chrome did not become ready within ${chrome_ready_timeout_ms}ms`);
+    throw new Error(`Chrome did not become ready within ${launch_config.launcher_local_chrome_ready_timeout_ms}ms`);
   }
 }
+
+export { LocalBrowserLauncher };

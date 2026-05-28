@@ -1,3 +1,7 @@
+# MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+# Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+# - ./js/src/types/modcdp.ts
+# - ./go/modcdp/client/ModCDPClient.go
 """Pydantic v2 runtime adapters for JSON Schema.
 
 This intentionally follows abxbus' dynamic JSON Schema loading pattern: raw
@@ -7,13 +11,15 @@ then validated with ``TypeAdapter`` at the client boundary.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, Literal, TypeAlias, Union, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, create_model
 
 JsonSchema: TypeAlias = Mapping[str, Any]
 FieldDefinition: TypeAlias = Any | tuple[Any, Any]
+CreateModel: TypeAlias = Callable[..., type[BaseModel]]
+_create_model: CreateModel = create_model
 
 _TYPE_MAPPING: dict[str, Any] = {
     "string": str,
@@ -42,12 +48,12 @@ _CONSTRAINT_MAPPING: dict[str, str] = {
 def _as_string_key_dict(value: object) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
-    return {key: raw_value for key, raw_value in cast(Mapping[object, Any], value).items() if isinstance(key, str)}
+    return {key: raw_value for key, raw_value in value.items() if isinstance(key, str)}
 
 
 def _as_sequence(value: object) -> Sequence[Any] | None:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return cast(Sequence[Any], value)
+        return value
     return None
 
 
@@ -66,11 +72,15 @@ def _iter_schema_objects(value: object) -> list[dict[str, Any]]:
 def _combine_union(types: list[Any]) -> Any:
     if not types:
         return Any
-    return cast(Any, Union).__getitem__(tuple(types))
+    combined = types[0]
+    for item in types[1:]:
+        combined = combined | item
+    return combined
 
 
 def _literal_type(values: Sequence[Any]) -> Any:
-    return cast(Any, Literal).__getitem__(tuple(values))
+    literal_getitem = getattr(Literal, "__getitem__")
+    return literal_getitem(tuple(values))
 
 
 def _create_dynamic_model(
@@ -78,8 +88,8 @@ def _create_dynamic_model(
     model_schema: Mapping[str, Any],
     fields: Mapping[str, FieldDefinition] | None = None,
 ) -> type[BaseModel]:
-    field_definitions = cast(Any, dict(fields or {}))
-    return create_model(
+    field_definitions: dict[str, Any | tuple[Any, Any]] = dict(fields or {})
+    return _create_model(
         model_name,
         __config__=ConfigDict(extra="forbid" if model_schema.get("additionalProperties") is False else "allow"),
         __doc__=str(model_schema.get("description", "")),

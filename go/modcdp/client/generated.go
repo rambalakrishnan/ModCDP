@@ -106,7 +106,7 @@ func cdpParamsMap(params any) (map[string]any, error) {
 func sendCDPCommand[T any](client *ModCDPClient, method string, params any) (T, error) {
 	var typed T
 	if client == nil {
-		return typed, fmt.Errorf("client_hydrate_aliases is false; use Send or SendRaw for %s", method)
+		return typed, fmt.Errorf("client_hydrate_aliases is false; use Send for %s", method)
 	}
 	rawParams, err := cdpParamsMap(params)
 	if err != nil {
@@ -5665,7 +5665,7 @@ type ExtensionsTriggerActionParams struct {
 type ExtensionsTriggerActionResult struct {
 }
 
-type ExtensionsLoadUnpackedParams struct {
+type CDPParams struct {
 	SessionID string `json:"-"`
 	// Absolute file path.
 	Path string `json:"path"`
@@ -5673,7 +5673,7 @@ type ExtensionsLoadUnpackedParams struct {
 	EnableInIncognito *bool `json:"enableInIncognito,omitempty"`
 }
 
-type ExtensionsLoadUnpackedResult struct {
+type CDPResult struct {
 	// Extension id.
 	ID string `json:"id"`
 }

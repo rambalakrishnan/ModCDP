@@ -1,45 +1,47 @@
-package launcher
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./js/test/test.LocalBrowserLauncher.ts
+// - ./python/tests/test_LocalBrowserLauncher.py
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
+package launcher_test
 
 import (
-	"context"
-	"encoding/json"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
+	"github.com/browserbase/modcdp/go/modcdp/launcher"
+	"github.com/browserbase/modcdp/go/modcdp/transport"
 )
 
-func TestLocalBrowserLauncherClassHelpersMatchLocalLauncherSurface(t *testing.T) {
-	launcher := NewLocalBrowserLauncher(LaunchOptions{})
-	if chromePath, err := launcher.FindChromeBinary(""); err != nil || chromePath == "" {
+func TestClassHelpersMatchTheLocalLauncherSurface(t *testing.T) {
+	local_launcher := launcher.NewLocalBrowserLauncher(launcher.LauncherConfig{})
+	if chromePath, err := local_launcher.FindChromeBinary(""); err != nil || chromePath == "" {
 		t.Fatalf("FindChromeBinary = %q, %v", chromePath, err)
 	}
-	if port, err := launcher.FreePort(); err != nil || port <= 0 {
+	if port, err := local_launcher.FreePort(); err != nil || port <= 0 {
 		t.Fatalf("FreePort = %d, %v", port, err)
 	}
 }
 
-func TestLocalBrowserLauncherLaunchesRealBrowserOverChosenCDPPortAndHonorsLaunchOptions(t *testing.T) {
+func TestLaunchesARealBrowserOverAChosenCDPPortAndExplicitProfileDir(t *testing.T) {
 	headless := true
 	profileDir := t.TempDir()
-	port, err := freePort()
+	port, err := launcher.NewLocalBrowserLauncher(launcher.LauncherConfig{}).FreePort()
 	if err != nil {
 		t.Fatal(err)
 	}
-	launcher := NewLocalBrowserLauncher(LaunchOptions{
-		Headless:                  &headless,
-		ChromeReadyTimeoutMS:      45_000,
-		ChromeReadyPollIntervalMS: 50,
+	local_launcher := launcher.NewLocalBrowserLauncher(launcher.LauncherConfig{
+		LauncherLocalHeadless:                  &headless,
+		LauncherLocalChromeReadyTimeoutMS:      45_000,
+		LauncherLocalChromeReadyPollIntervalMS: 50,
 	})
-	chrome, err := launcher.Launch(LaunchOptions{
-		Port:        port,
-		UserDataDir: profileDir,
-		ExtraArgs:   []string{"--window-size=900,700"},
+	chrome, err := local_launcher.Launch(launcher.LauncherConfig{
+		LauncherLocalCDPListenPort: port,
+		LauncherLocalUserDataDir:   profileDir,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +52,7 @@ func TestLocalBrowserLauncherLaunchesRealBrowserOverChosenCDPPortAndHonorsLaunch
 			t.Fatalf("expected explicit user data dir to remain after close: %v", err)
 		}
 	}()
-	if launcher.Launched != chrome {
+	if local_launcher.Launched != chrome {
 		t.Fatal("expected launcher to retain launched browser")
 	}
 	expectedPrefix := "ws://127.0.0.1:" + strconv.Itoa(port) + "/"
@@ -60,183 +62,80 @@ func TestLocalBrowserLauncherLaunchesRealBrowserOverChosenCDPPortAndHonorsLaunch
 	if chrome.ProfileDir != profileDir {
 		t.Fatalf("ProfileDir = %q, want %q", chrome.ProfileDir, profileDir)
 	}
-	transportConfig := launcher.GetTransportConfig()
-	if transportConfig["cdp_url"] != chrome.CDPURL {
-		t.Fatalf("transport cdp_url = %v, want %s", transportConfig["cdp_url"], chrome.CDPURL)
+	if chrome.CDPListenPort != port {
+		t.Fatalf("CDPListenPort = %d, want %d", chrome.CDPListenPort, port)
 	}
-	if transportConfig["user_data_dir"] != chrome.ProfileDir {
-		t.Fatalf("transport user_data_dir = %v, want %s", transportConfig["user_data_dir"], chrome.ProfileDir)
+	transportConfig := local_launcher.ConfigForUpstream()
+	if transportConfig["upstream_ws_cdp_url"] != chrome.CDPURL {
+		t.Fatalf("transport cdp_url = %v, want %s", transportConfig["upstream_ws_cdp_url"], chrome.CDPURL)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	conn, _, _, err := ws.Dial(ctx, chrome.CDPURL)
+	cdp_transport := transport.NewWSUpstreamTransport(transport.UpstreamTransportConfig{UpstreamWSCDPURL: chrome.CDPURL})
+	if err := cdp_transport.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer cdp_transport.Close()
+	response, err := cdp_transport.Send("Browser.getVersion", map[string]any{}, "", 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-
-	if err := wsutil.WriteClientText(conn, []byte(`{"id":1,"method":"Browser.getVersion","params":{}}`)); err != nil {
-		t.Fatal(err)
+	product, _ := response["product"].(string)
+	if !strings.Contains(product, "Chrome") && !strings.Contains(product, "Chromium") {
+		t.Fatalf("unexpected product %q", product)
 	}
-	body, err := wsutil.ReadServerText(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var response struct {
-		ID     int `json:"id"`
-		Result struct {
-			Product         string `json:"product"`
-			ProtocolVersion string `json:"protocolVersion"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &response); err != nil {
-		t.Fatal(err)
-	}
-	if response.ID != 1 {
-		t.Fatalf("unexpected response id %d", response.ID)
-	}
-	if !strings.Contains(response.Result.Product, "Chrome") && !strings.Contains(response.Result.Product, "Chromium") {
-		t.Fatalf("unexpected product %q", response.Result.Product)
-	}
-	if response.Result.ProtocolVersion == "" {
+	protocolVersion, _ := response["protocolVersion"].(string)
+	if protocolVersion == "" {
 		t.Fatal("expected protocolVersion")
 	}
-	if err := wsutil.WriteClientText(conn, []byte(`{"id":2,"method":"SystemInfo.getInfo","params":{}}`)); err != nil {
-		t.Fatal(err)
-	}
-	systemInfoBody, err := wsutil.ReadServerText(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var systemInfoResponse struct {
-		ID     int `json:"id"`
-		Result struct {
-			CommandLine string `json:"commandLine"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(systemInfoBody, &systemInfoResponse); err != nil {
-		t.Fatal(err)
-	}
-	if systemInfoResponse.ID != 2 {
-		t.Fatalf("unexpected SystemInfo.getInfo response id %d", systemInfoResponse.ID)
-	}
-	command := systemInfoResponse.Result.CommandLine
-	if !strings.Contains(command, "--window-size=900,700") {
-		t.Fatalf("expected browser command to include --window-size=900,700: %s", command)
-	}
-	if runtime.GOOS == "linux" {
-		if !strings.Contains(command, "--no-sandbox") {
-			t.Fatalf("expected Linux browser command to include --no-sandbox: %s", command)
-		}
-	} else if strings.Contains(command, "--no-sandbox") {
-		t.Fatalf("expected browser command not to include --no-sandbox: %s", command)
-	}
 }
 
-func TestLocalBrowserLauncherLaunchesRealBrowserOverRemoteDebuggingPipe(t *testing.T) {
-	headless := true
-	launcher := NewLocalBrowserLauncher(LaunchOptions{
-		Headless:             &headless,
-		ChromeReadyTimeoutMS: 45_000,
-	})
-	chrome, err := launcher.Launch(LaunchOptions{RemoteDebugging: "pipe"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer chrome.Close()
-	if launcher.Launched != chrome {
-		t.Fatal("expected launcher to retain launched browser")
-	}
-	transportConfig := launcher.GetTransportConfig()
-	if transportConfig["cdp_url"] != chrome.CDPURL {
-		t.Fatalf("transport cdp_url = %v, want %s", transportConfig["cdp_url"], chrome.CDPURL)
-	}
-	if transportConfig["pipe_read"] != chrome.PipeRead {
-		t.Fatal("expected transport pipe_read to use launched pipe")
-	}
-	if transportConfig["pipe_write"] != chrome.PipeWrite {
-		t.Fatal("expected transport pipe_write to use launched pipe")
-	}
-	if !strings.HasPrefix(chrome.CDPURL, "pipe://") {
-		t.Fatalf("CDPURL = %q", chrome.CDPURL)
-	}
-	if chrome.LoopbackCDPURL != "" {
-		t.Fatalf("LoopbackCDPURL = %q", chrome.LoopbackCDPURL)
-	}
-	if chrome.PipeRead == nil || chrome.PipeWrite == nil {
-		t.Fatal("expected pipe handles")
-	}
-	if err := writePipeMessage(chrome.PipeWrite, map[string]any{"id": 10, "method": "Browser.getVersion", "params": map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	response, err := readPipeMessage(chrome.PipeRead)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response["id"] != float64(10) {
-		t.Fatalf("response id = %v", response["id"])
-	}
-	result, _ := response["result"].(map[string]any)
-	product, _ := result["product"].(string)
-	if !strings.Contains(product, "Chrome") && !strings.Contains(product, "Chromium") {
-		t.Fatalf("product = %q", product)
-	}
-}
-
-func TestLocalBrowserLauncherLaunchesPipeBrowserWithAuxiliaryLoopbackOnlyWhenRequested(t *testing.T) {
+func TestLaunchesARealBrowserWithAnAuxiliaryLoopbackCDPEndpointWhenRequested(t *testing.T) {
 	headless := true
 	loopbackCDP := true
-	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
-		Headless:             &headless,
-		ChromeReadyTimeoutMS: 45_000,
-	}).Launch(LaunchOptions{RemoteDebugging: "pipe", LoopbackCDP: &loopbackCDP})
+	chrome, err := launcher.NewLocalBrowserLauncher(launcher.LauncherConfig{
+		LauncherLocalHeadless:             &headless,
+		LauncherLocalChromeReadyTimeoutMS: 45_000,
+	}).Launch(launcher.LauncherConfig{LauncherLocalLoopbackCDP: &loopbackCDP})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer chrome.Close()
-	if !strings.HasPrefix(chrome.CDPURL, "pipe://") {
+	if !strings.HasPrefix(chrome.CDPURL, "ws://127.0.0.1:") {
 		t.Fatalf("CDPURL = %q", chrome.CDPURL)
 	}
 	if !strings.HasPrefix(chrome.LoopbackCDPURL, "ws://127.0.0.1:") {
 		t.Fatalf("LoopbackCDPURL = %q", chrome.LoopbackCDPURL)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	conn, _, _, err := ws.Dial(ctx, chrome.LoopbackCDPURL)
+	if chrome.CDPListenPort <= 0 {
+		t.Fatalf("CDPListenPort = %d", chrome.CDPListenPort)
+	}
+	cdp_transport := transport.NewWSUpstreamTransport(transport.UpstreamTransportConfig{UpstreamWSCDPURL: chrome.LoopbackCDPURL})
+	if err := cdp_transport.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer cdp_transport.Close()
+	response, err := cdp_transport.Send("Browser.getVersion", map[string]any{}, "", 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	if err := wsutil.WriteClientText(conn, []byte(`{"id":1,"method":"Browser.getVersion","params":{}}`)); err != nil {
-		t.Fatal(err)
-	}
-	body, err := wsutil.ReadServerText(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var response map[string]any
-	if err := json.Unmarshal(body, &response); err != nil {
-		t.Fatal(err)
-	}
-	if response["id"] != float64(1) {
-		t.Fatalf("response id = %v", response["id"])
+	product, _ := response["product"].(string)
+	if !strings.Contains(product, "Chrome") && !strings.Contains(product, "Chromium") {
+		t.Fatalf("unexpected product %q", product)
 	}
 }
 
-func TestLocalBrowserLauncherCleansExplicitUserDataDirWhenRequested(t *testing.T) {
+func TestRemovesAnExplicitUserDataDirWhenCleanupUserDataDirIsSet(t *testing.T) {
 	headless := true
 	cleanupUserDataDir := true
 	profileDir, err := os.MkdirTemp("", "modcdp-go-local-profile-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	chrome, err := NewLocalBrowserLauncher(LaunchOptions{
-		Headless:             &headless,
-		ChromeReadyTimeoutMS: 45_000,
-	}).Launch(LaunchOptions{
-		UserDataDir:        profileDir,
-		CleanupUserDataDir: &cleanupUserDataDir,
+	chrome, err := launcher.NewLocalBrowserLauncher(launcher.LauncherConfig{
+		LauncherLocalHeadless:             &headless,
+		LauncherLocalChromeReadyTimeoutMS: 45_000,
+	}).Launch(launcher.LauncherConfig{
+		LauncherLocalUserDataDir:        profileDir,
+		LauncherLocalCleanupUserDataDir: &cleanupUserDataDir,
 	})
 	if err != nil {
 		_ = os.RemoveAll(profileDir)

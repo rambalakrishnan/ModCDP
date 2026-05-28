@@ -1,3 +1,9 @@
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./js/test/test.BrowserLauncher.ts
+// - ./python/tests/test_BrowserLauncher.py
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
 package launcher
 
 import (
@@ -5,53 +11,36 @@ import (
 	"testing"
 )
 
-func TestBrowserLauncherMergesLaunchConfigAndExposesTransportAndInjectorConfig(t *testing.T) {
-	launcher := NewBrowserLauncher(LaunchOptions{
-		CDPURL:              "ws://127.0.0.1:9222/devtools/browser/initial",
-		UserDataDir:         "/tmp/modcdp-browser-launcher",
-		BrowserbaseAPIKey:   "test-key",
-		InjectorExtensionID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Args:                []string{"--load-extension=/tmp/args-one"},
-		ExtraArgs:           []string{"--load-extension=/tmp/one"},
+func TestMergesConfigAndExposesUpstreamConfig(t *testing.T) {
+	launcher := NewBrowserLauncher(LauncherConfig{
+		LauncherRemoteCDPURL:     "ws://127.0.0.1:9222/devtools/browser/initial",
+		LauncherLocalUserDataDir: "/tmp/modcdp-browser-launcher",
 	})
-	launcher.Update(LaunchOptions{
-		CDPURL:    "ws://127.0.0.1:9222/devtools/browser/updated",
-		Args:      []string{"--load-extension=/tmp/args-two", "--lang=en-US"},
-		ExtraArgs: []string{"--load-extension=/tmp/two", "--window-size=900,700"},
+	launcher.Update(LauncherConfig{
+		LauncherRemoteCDPURL: "ws://127.0.0.1:9222/devtools/browser/updated",
 	})
 
-	assertStringsEqual(t, launcher.Options.Args, []string{"--lang=en-US", "--load-extension=/tmp/args-one,/tmp/args-two"})
-	assertStringsEqual(t, launcher.Options.ExtraArgs, []string{"--window-size=900,700", "--load-extension=/tmp/one,/tmp/two"})
-
-	transportConfig := launcher.GetTransportConfig()
-	if transportConfig["cdp_url"] != "ws://127.0.0.1:9222/devtools/browser/updated" {
-		t.Fatalf("cdp_url = %v", transportConfig["cdp_url"])
+	transportConfig := launcher.ConfigForUpstream()
+	if transportConfig["upstream_ws_cdp_url"] != "ws://127.0.0.1:9222/devtools/browser/updated" {
+		t.Fatalf("cdp_url = %v", transportConfig["upstream_ws_cdp_url"])
 	}
-	if transportConfig["user_data_dir"] != "/tmp/modcdp-browser-launcher" {
-		t.Fatalf("user_data_dir = %v", transportConfig["user_data_dir"])
+	if launcher.Config.LauncherLocalUserDataDir != "/tmp/modcdp-browser-launcher" {
+		t.Fatalf("LauncherLocalUserDataDir = %q", launcher.Config.LauncherLocalUserDataDir)
 	}
-
-	injectorConfig := launcher.GetInjectorConfig()
-	if injectorConfig.InjectorBrowserbaseAPIKey != "test-key" {
-		t.Fatalf("InjectorBrowserbaseAPIKey = %v", injectorConfig.InjectorBrowserbaseAPIKey)
-	}
-	if injectorConfig.InjectorExtensionID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("InjectorExtensionID = %v", injectorConfig.InjectorExtensionID)
-	}
-
-	if _, err := launcher.Launch(LaunchOptions{}); err == nil || !strings.Contains(err.Error(), "BrowserLauncher.Launch is not implemented") {
+	if _, err := launcher.Launch(LauncherConfig{}); err == nil || !strings.Contains(err.Error(), "BrowserLauncher.Launch is not implemented") {
 		t.Fatalf("Launch error = %v", err)
 	}
 }
 
-func assertStringsEqual(t *testing.T, actual []string, expected []string) {
-	t.Helper()
-	if len(actual) != len(expected) {
-		t.Fatalf("len(%v) != len(%v)", actual, expected)
-	}
-	for index := range actual {
-		if actual[index] != expected[index] {
-			t.Fatalf("index %d: %q != %q in %v", index, actual[index], expected[index], actual)
-		}
+func TestCarriesRemoteCDPConfigSeparatelyFromLaunchArgs(t *testing.T) {
+	launcher := NewBrowserLauncher(LauncherConfig{
+		LauncherRemoteCDPURL: "ws://127.0.0.1:9222/devtools/browser/initial",
+	})
+	launcher.Update(LauncherConfig{
+		LauncherRemoteCDPURL: "ws://127.0.0.1:9222/devtools/browser/updated",
+	})
+
+	if launcher.Config.LauncherRemoteCDPURL != "ws://127.0.0.1:9222/devtools/browser/updated" {
+		t.Fatalf("LauncherRemoteCDPURL = %q", launcher.Config.LauncherRemoteCDPURL)
 	}
 }

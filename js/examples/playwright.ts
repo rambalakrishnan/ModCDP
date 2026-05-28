@@ -12,6 +12,7 @@ import { chromium } from "playwright";
 
 import { LocalBrowserLauncher } from "../src/launcher/LocalBrowserLauncher.js";
 import { startProxy } from "../src/proxy/proxy.js";
+import { loadExtensionBrowserPath } from "./browserPaths.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extension_path =
@@ -26,15 +27,21 @@ let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | null = null;
 
 try {
   chrome = await new LocalBrowserLauncher().launch({
-    chrome_ready_timeout_ms: 60_000,
-    headless: process.platform === "linux" && !process.env.DISPLAY,
-    sandbox: process.platform !== "linux",
-    extra_args: [`--load-extension=${extension_path}`],
+    launcher_local_chrome_ready_timeout_ms: 60_000,
+    launcher_local_headless: process.platform === "linux" && !process.env.DISPLAY,
+    launcher_local_sandbox: process.platform !== "linux",
+    launcher_local_executable_path: loadExtensionBrowserPath(),
+    launcher_local_extra_args: [`--load-extension=${extension_path}`],
   });
   proxy = await startProxy({
-    port: await LocalBrowserLauncher.freePort(),
-    upstream: { upstream_mode: "ws", upstream_cdp_url: chrome.cdp_url },
-    injector: { injector_mode: "auto", injector_extension_path: extension_path },
+    proxy_listen_port: await LocalBrowserLauncher.freePort(),
+    launcher: { launcher_mode: "remote", launcher_remote_cdp_url: chrome.cdp_url },
+    upstream: { upstream_mode: "ws" },
+    injector: {
+      injector_mode: "discover",
+      injector_service_worker_url_suffixes: ["/modcdp/service_worker.js"],
+      injector_trust_service_worker_target: true,
+    },
   });
 
   browser = await chromium.connectOverCDP(proxy.url);
@@ -66,7 +73,9 @@ try {
   await cdp.send("Mod.addCustomCommand", {
     name: "Custom.proxyEcho",
     expression: `async (params) => {
-      await cdp.emit("Custom.proxyEvent", { source: "playwright", value: params.value });
+      const event = { method: "Custom.proxyEvent", params: { source: "playwright", value: params.value } };
+      if (cdpSessionId) event.sessionId = cdpSessionId;
+      downstream.sendEvent(event);
       return { source: "playwright", value: params.value };
     }`,
   });

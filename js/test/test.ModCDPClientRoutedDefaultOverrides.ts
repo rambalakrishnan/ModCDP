@@ -1,25 +1,27 @@
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./python/tests/test_ModCDPClientRoutedDefaultOverrides.py
+// - ./go/modcdp/client/ModCDPClientRoutedDefaultOverrides_test.go
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ModCDPClient } from "../src/client/ModCDPClient.js";
-import { events } from "../src/types/generated/zod.js";
+import { ModCDPClient } from "../src/index.js";
+import type { cdp } from "../src/types/generated/cdp.js";
+import { loadExtensionTestBrowserPath } from "./browserPaths.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_PATH = path.resolve(HERE, "..", "..", "dist", "extension");
 const DEFAULT_ROUTED_OVERRIDES_TEST_TIMEOUT_MS = 45_000;
-
-function hasTargetInfo(value: unknown): value is { targetInfo: Record<string, unknown> } {
-  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
-  const targetInfo = (value as Record<string, unknown>).targetInfo;
-  return targetInfo != null && typeof targetInfo === "object" && !Array.isArray(targetInfo);
-}
+const LOAD_EXTENSION_TEST_BROWSER_PATH = loadExtensionTestBrowserPath();
 
 const getTargetsOverride = String.raw`
 async (params) => {
   const [upstream, tabs] = await Promise.all([
-    ModCDP.sendLoopback("Target.getTargets", params),
+    cdp.upstream.send("Target.getTargets", params),
     chrome.tabs.query({}),
   ]);
 
@@ -57,7 +59,7 @@ async (payload, next) => {
   const visit = async value => {
     if (!value || typeof value !== "object" || seen.has(value)) return;
     seen.add(value);
-    if (!Array.isArray(value) && typeof value.targetId === "string" && value.tabId == null) {
+    if (!Array.isArray(value) && typeof value.targetId === "string" && typeof value.type === "string" && value.tabId == null) {
       const { tabId } = await cdp.send("Custom.tabIdFromTargetId", { targetId: value.targetId });
       if (tabId != null) value.tabId = tabId;
     }
@@ -75,49 +77,48 @@ test(
     const owner = new ModCDPClient({
       launcher: {
         launcher_mode: "local",
-        launcher_options: {
-          headless: true,
-        },
+        launcher_local_headless: true,
+        launcher_local_executable_path: LOAD_EXTENSION_TEST_BROWSER_PATH,
       },
       upstream: { upstream_mode: "ws" },
       injector: {
-        injector_mode: "auto",
-        injector_extension_path: EXTENSION_PATH,
+        injector_mode: "cli",
+        injector_cli_extension_path: EXTENSION_PATH,
         injector_service_worker_url_suffixes: ["/modcdp/service_worker.js"],
         injector_trust_service_worker_target: true,
       },
     });
     await owner.connect();
     const cdp = new ModCDPClient({
-      launcher: { launcher_mode: "remote" },
-      upstream: { upstream_mode: "ws", upstream_cdp_url: owner.cdp_url },
+      launcher: { launcher_mode: "remote", launcher_remote_cdp_url: owner.upstream.config.upstream_ws_cdp_url },
+      upstream: { upstream_mode: "ws", upstream_ws_cdp_url: owner.upstream.config.upstream_ws_cdp_url },
       injector: {
         injector_mode: "discover",
         injector_service_worker_url_suffixes: ["/modcdp/service_worker.js"],
         injector_trust_service_worker_target: true,
       },
-      client: {
-        client_routes: {
+      router: {
+        router_routes: {
           "Target.getTargets": "service_worker",
           "Target.createTarget": "service_worker",
           "Target.setDiscoverTargets": "service_worker",
         },
       },
-      server: {
-        server_loopback_cdp_url: owner.cdp_url,
-        server_routes: { "*.*": "loopback_cdp" },
+      server_config: {
+        upstream: { upstream_ws_cdp_url: owner.upstream.config.upstream_ws_cdp_url },
+        router: { router_routes: { "*.*": "loopback_cdp" } },
       },
     });
 
     try {
       await cdp.connect();
-      assert.equal(cdp.cdp_url, owner.cdp_url);
-      assert.equal(cdp.server.server_loopback_cdp_url, owner.cdp_url);
+      assert.equal(cdp.upstream.config.upstream_ws_cdp_url, owner.upstream.config.upstream_ws_cdp_url);
+      assert.equal(cdp.server_config?.upstream?.upstream_ws_cdp_url, owner.upstream.config.upstream_ws_cdp_url);
 
-      const rawTargets = await cdp.send("Target.getTargets");
+      const rawTargets = (await cdp.send("Target.getTargets")) as { targetInfos: { type?: string; tabId?: number }[] };
       assert.ok(rawTargets.targetInfos?.length > 0, "expected raw Target.getTargets targetInfos");
       assert.equal(
-        rawTargets.targetInfos.some((targetInfo) => Object.hasOwn(targetInfo, "tabId")),
+        rawTargets.targetInfos.some((targetInfo) => targetInfo.tabId != null),
         false,
         "raw CDP TargetInfo should not already contain tabId",
       );
@@ -131,7 +132,9 @@ test(
         phase: cdp.RESPONSE,
         expression: addTabIdMiddleware,
       });
-      const middlewareTargets = await cdp.send("Target.getTargets");
+      const middlewareTargets = (await cdp.send("Target.getTargets")) as {
+        targetInfos: { type?: string; tabId?: number }[];
+      };
       assert.ok(
         middlewareTargets.targetInfos.some(
           (targetInfo) => targetInfo.type === "page" && Number.isInteger(targetInfo.tabId),
@@ -150,12 +153,14 @@ test(
         expression: getTargetsOverride,
       });
 
-      const enrichedTargets = await cdp.send("Target.getTargets");
+      const enrichedTargets = (await cdp.send("Target.getTargets")) as {
+        targetInfos: { type?: string; tabId?: number }[];
+      };
       assert.ok(enrichedTargets.targetInfos?.length > 0, "expected enriched Target.getTargets targetInfos");
       assert.equal(
-        enrichedTargets.targetInfos.every((targetInfo) => Object.hasOwn(targetInfo, "tabId")),
+        enrichedTargets.targetInfos.every((targetInfo) => "tabId" in targetInfo),
         true,
-        "every routed TargetInfo should include a tabId property",
+        "the custom Target.getTargets override should add a tabId property",
       );
       assert.ok(
         enrichedTargets.targetInfos.some(
@@ -164,12 +169,23 @@ test(
         "expected at least one page target to be matched to a chrome.tabs tab id",
       );
 
+      const topology = await cdp.Mod.getTopology();
+      assert.equal(typeof topology.rootFrameId, "string");
+      assert.ok(topology.frames[topology.rootFrameId], "Mod.getTopology should include its root frame");
+      assert.ok(
+        Object.values(topology.roots).some((root) => root.kind === "document"),
+        "Mod.getTopology should include at least one document root",
+      );
+      assert.ok(
+        Object.values(topology.contexts).some((context) => context.world === "piercer"),
+        "Mod.getTopology should include a piercer execution context",
+      );
+
       await cdp.Mod.addCustomEvent({ name: cdp.Target.targetCreated });
 
-      const transformedEvents: unknown[] = [];
-      cdp.on("Target.targetCreated", (params) => {
-        if (!hasTargetInfo(params)) return;
-        if (!Object.hasOwn(params.targetInfo || {}, "tabId")) return;
+      const transformedEvents: cdp.types.ts.Target.TargetCreatedEvent[] = [];
+      cdp.on(cdp.Target.targetCreated, (params) => {
+        if (params.targetInfo.tabId == null) return;
         transformedEvents.push(params);
       });
 
@@ -181,16 +197,15 @@ test(
         const createdTarget = await cdp.Target.createTarget({ url: "about:blank#modcdp-target-created" });
         await cdp.Target.getTargets();
         assert.ok(
-          transformedEvents.some((params) => {
-            if (!hasTargetInfo(params)) return;
-            return params.targetInfo.targetId === createdTarget.targetId;
-          }),
+          transformedEvents.some((event) => event.targetInfo.targetId === createdTarget.targetId),
           `expected transformed Target.targetCreated for ${createdTarget.targetId}`,
         );
       }
 
-      const event = events["Target.targetCreated"].parse(transformedEvents[0]);
-      assert.ok(Object.hasOwn(event.targetInfo, "tabId"), "transformed event targetInfo should include tabId");
+      assert.ok(
+        transformedEvents.some((event) => event.targetInfo.tabId != null),
+        "transformed event targetInfo should include tabId",
+      );
     } finally {
       try {
         await cdp.Target.setDiscoverTargets({ discover: false });

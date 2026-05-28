@@ -1,3 +1,9 @@
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./js/test/test.ModCDPClientRoutedDefaultOverrides.ts
+// - ./python/tests/test_ModCDPClientRoutedDefaultOverrides.py
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
 package client
 
 import (
@@ -9,7 +15,7 @@ import (
 const getTargetsOverride = `
 async (params) => {
   const [upstream, tabs] = await Promise.all([
-    ModCDP.sendLoopback("Target.getTargets", params),
+    cdp.upstream.send("Target.getTargets", params),
     chrome.tabs.query({}),
   ]);
 
@@ -47,7 +53,7 @@ async (payload, next) => {
   const visit = async value => {
     if (!value || typeof value !== "object" || seen.has(value)) return;
     seen.add(value);
-    if (!Array.isArray(value) && typeof value.targetId === "string" && value.tabId == null) {
+    if (!Array.isArray(value) && typeof value.targetId === "string" && typeof value.type === "string" && value.tabId == null) {
       const { tabId } = await cdp.send("Custom.tabIdFromTargetId", { targetId: value.targetId });
       if (tabId != null) value.tabId = tabId;
     }
@@ -58,21 +64,22 @@ async (payload, next) => {
 }
 `
 
-func TestModCDPClientRoutedDefaultOverrides(t *testing.T) {
+func TestServiceWorkerRoutedStandardCDPCommandsAndEventsCanBeTransformed(t *testing.T) {
 	headless := true
 	extensionPath, err := filepath.Abs("../../../dist/extension")
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := New(Options{
+	owner := New(Config{
 		Launcher: LauncherConfig{
-			LauncherMode:    "local",
-			LauncherOptions: LaunchOptions{Headless: &headless},
+			LauncherMode:                "local",
+			LauncherLocalHeadless:       &headless,
+			LauncherLocalExecutablePath: reverseWSTestBrowserPath(t),
 		},
-		Upstream: UpstreamConfig{UpstreamMode: "ws"},
+		Upstream: UpstreamTransportConfig{UpstreamMode: "ws"},
 		Injector: InjectorConfig{
-			InjectorMode:                     "auto",
-			InjectorExtensionPath:            extensionPath,
+			InjectorMode:                     "cli",
+			InjectorCLIExtensionPath:         extensionPath,
 			InjectorServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
 			InjectorTrustServiceWorkerTarget: true,
 		},
@@ -80,24 +87,22 @@ func TestModCDPClientRoutedDefaultOverrides(t *testing.T) {
 	if err := owner.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	cdp := New(Options{
-		Launcher: LauncherConfig{LauncherMode: "remote"},
-		Upstream: UpstreamConfig{UpstreamMode: "ws", UpstreamCDPURL: owner.CDPURL},
+	cdp := New(Config{
+		Launcher: LauncherConfig{LauncherMode: "remote", LauncherRemoteCDPURL: owner.CDPURL},
+		Upstream: UpstreamTransportConfig{UpstreamMode: "ws", UpstreamWSCDPURL: owner.CDPURL},
 		Injector: InjectorConfig{
 			InjectorMode:                     "discover",
 			InjectorServiceWorkerURLSuffixes: []string{"/modcdp/service_worker.js"},
 			InjectorTrustServiceWorkerTarget: true,
 		},
-		Client: ClientConfig{
-			ClientRoutes: map[string]string{
-				"Target.getTargets":         "service_worker",
-				"Target.createTarget":       "service_worker",
-				"Target.setDiscoverTargets": "service_worker",
-			},
-		},
-		Server: &ServerConfig{
-			ServerLoopbackCDPURL: owner.CDPURL,
-			ServerRoutes:         map[string]string{"*.*": "loopback_cdp"},
+		Router: RouterConfig{RouterRoutes: map[string]string{
+			"Target.getTargets":         "service_worker",
+			"Target.createTarget":       "service_worker",
+			"Target.setDiscoverTargets": "service_worker",
+		}},
+		ServerConfig: &ServerConfig{
+			Upstream: UpstreamTransportConfig{UpstreamWSCDPURL: owner.CDPURL},
+			Router:   RouterConfig{RouterRoutes: map[string]string{"*.*": "loopback_cdp"}},
 		},
 	})
 	defer owner.Close()
@@ -109,8 +114,8 @@ func TestModCDPClientRoutedDefaultOverrides(t *testing.T) {
 	if cdp.CDPURL != owner.CDPURL {
 		t.Fatalf("CDPURL = %q, expected %q", cdp.CDPURL, owner.CDPURL)
 	}
-	if cdp.Server.ServerLoopbackCDPURL != owner.CDPURL {
-		t.Fatalf("ServerLoopbackCDPURL = %q, expected %q", cdp.Server.ServerLoopbackCDPURL, owner.CDPURL)
+	if cdp.Config.ServerConfig.Upstream.UpstreamWSCDPURL != owner.CDPURL {
+		t.Fatalf("server_config upstream cdp url = %q, expected %q", cdp.Config.ServerConfig.Upstream.UpstreamWSCDPURL, owner.CDPURL)
 	}
 
 	rawTargets, err := cdp.Send("Target.getTargets", nil)
@@ -177,6 +182,52 @@ func TestModCDPClientRoutedDefaultOverrides(t *testing.T) {
 	}
 	if !hasPageTargetWithTabID(enrichedTargetInfos) {
 		t.Fatal("expected at least one page target to be matched to a chrome.tabs tab id")
+	}
+
+	topologyRaw, err := cdp.Mod.GetTopology(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topology, ok := topologyRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("Mod.getTopology returned %T: %#v", topologyRaw, topologyRaw)
+	}
+	rootFrameID, ok := topology["rootFrameId"].(string)
+	if !ok || rootFrameID == "" {
+		t.Fatalf("Mod.getTopology rootFrameId = %#v", topology["rootFrameId"])
+	}
+	frames, ok := topology["frames"].(map[string]any)
+	if !ok {
+		t.Fatalf("Mod.getTopology frames = %T: %#v", topology["frames"], topology["frames"])
+	}
+	if _, ok := frames[rootFrameID]; !ok {
+		t.Fatalf("Mod.getTopology frames missing rootFrameId %q: %#v", rootFrameID, frames)
+	}
+	roots, ok := topology["roots"].(map[string]any)
+	if !ok {
+		t.Fatalf("Mod.getTopology roots = %T: %#v", topology["roots"], topology["roots"])
+	}
+	hasDocumentRoot := false
+	for _, root := range roots {
+		if rootMap, ok := root.(map[string]any); ok && rootMap["kind"] == "document" {
+			hasDocumentRoot = true
+		}
+	}
+	if !hasDocumentRoot {
+		t.Fatalf("Mod.getTopology should include at least one document root: %#v", roots)
+	}
+	contexts, ok := topology["contexts"].(map[string]any)
+	if !ok {
+		t.Fatalf("Mod.getTopology contexts = %T: %#v", topology["contexts"], topology["contexts"])
+	}
+	hasPiercerContext := false
+	for _, context := range contexts {
+		if contextMap, ok := context.(map[string]any); ok && contextMap["world"] == "piercer" {
+			hasPiercerContext = true
+		}
+	}
+	if !hasPiercerContext {
+		t.Fatalf("Mod.getTopology should include a piercer execution context: %#v", contexts)
 	}
 
 	if _, err := cdp.Mod.AddCustomEvent(CustomEvent{Name: "Target.targetCreated"}); err != nil {

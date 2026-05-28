@@ -5,11 +5,9 @@ Modes (mirror the JS / Go demos):
     --direct      *.* -> direct_cdp on the client.
     --loopback    *.* -> service_worker on the client; *.* -> loopback_cdp on
                   the server. Default.
-    --debugger    *.* -> service_worker on the client; *.* -> chrome_debugger
+    --debugger    *.* -> service_worker on the client; *.* -> chromedebugger
                   on the server.
-    --upstream    ws|pipe|reversews|nativemessaging|nats. Defaults to ws.
-                  reversews and nativemessaging use the fixed extension
-                  defaults: ws://127.0.0.1:29292 and com.modcdp.bridge.
+    --upstream    ws. Defaults to ws.
 """
 
 import json
@@ -18,17 +16,17 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
-from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from modcdp import ModCDPClient
-from modcdp.types import JsonValue, ProtocolPayload
+from modcdp.types import ProtocolPayload
+from modcdp.types.modcdp import _isObjectMap
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 EXTENSION_PATH = ROOT / "dist" / "extension"
-REVERSE_TRANSPORT_WAIT_TIMEOUT_MS = 60_000
+DEMO_CDP_SEND_TIMEOUT_MS = 60_000
+DEMO_EXECUTION_CONTEXT_TIMEOUT_MS = 60_000
 LIVE_DEVTOOLS_ACTIVE_PORTS = [
     Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort",
     Path.home() / "Library" / "Application Support" / "Google" / "Chrome Beta" / "DevToolsActivePort",
@@ -39,23 +37,19 @@ LIVE_DEVTOOLS_ACTIVE_PORTS = [
 
 
 def expect_object(value: object, label: str) -> ProtocolPayload:
-    if not isinstance(value, dict):
+    if not _isObjectMap(value):
         raise RuntimeError(f"{label} returned non-object value: {value!r}")
-    return cast(ProtocolPayload, value)
+    return value
 
 
-def server_routes_for(mode: str, upstream_mode: str) -> ProtocolPayload:
-    route = "loopback_cdp" if mode == "loopback" else "chrome_debugger" if mode == "debugger" else "auto"
-    routes: ProtocolPayload = {
+def server_router_routes_for(mode: str, upstream_mode: str) -> ProtocolPayload:
+    del upstream_mode
+    route = "loopback_cdp" if mode == "loopback" else "chromedebugger" if mode == "debugger" else "auto"
+    return {
         "Mod.*": "service_worker",
         "Custom.*": "service_worker",
         "*.*": route,
     }
-    if mode == "loopback" or upstream_mode in {"reversews", "nativemessaging", "nats"}:
-        routes["Target.setDiscoverTargets"] = "loopback_cdp"
-        routes["Target.createTarget"] = "loopback_cdp"
-        routes["Target.activateTarget"] = "loopback_cdp"
-    return routes
 
 
 def client_routes_for(mode: str) -> ProtocolPayload:
@@ -63,14 +57,12 @@ def client_routes_for(mode: str) -> ProtocolPayload:
         "Mod.*": "service_worker",
         "Custom.*": "service_worker",
         "*.*": "direct_cdp" if mode == "direct" else "service_worker",
-        "Target.setDiscoverTargets": "direct_cdp",
-        "Target.createTarget": "direct_cdp",
-        "Target.activateTarget": "direct_cdp",
     }
+    routes["Runtime.*"] = "service_worker"
     return routes
 
 
-UPSTREAM_MODES = {"ws", "pipe", "reversews", "nativemessaging", "nats"}
+UPSTREAM_MODES = {"ws"}
 
 
 def parse_args(argv):
@@ -92,37 +84,37 @@ def parse_args(argv):
         raise RuntimeError(f"unknown --upstream={upstream_mode}; expected {'|'.join(sorted(UPSTREAM_MODES))}")
     live = "live" in flags
     mode = "debugger" if "debugger" in flags else "direct" if "direct" in flags else "loopback" if "loopback" in flags else "direct" if live else "loopback"
-    if live and upstream_mode == "pipe":
-        raise RuntimeError("--live cannot be combined with --upstream=pipe because pipe handles only exist for launched browsers.")
-    if mode == "direct" and upstream_mode in {"reversews", "nativemessaging", "nats"}:
-        raise RuntimeError(f"--direct cannot be combined with --upstream={upstream_mode}; reverse transports terminate at ModCDPServer.")
     return mode, live, upstream_mode
 
 
-def client_options_for(mode, upstream_mode, cdp_url, launch_options=None):
-    upstream: ProtocolPayload = {"upstream_mode": upstream_mode, "upstream_cdp_url": cdp_url}
-    if upstream_mode == "reversews":
-        upstream["upstream_reversews_wait_timeout_ms"] = REVERSE_TRANSPORT_WAIT_TIMEOUT_MS
-    if upstream_mode == "nativemessaging":
-        upstream["upstream_nativemessaging_wait_timeout_ms"] = REVERSE_TRANSPORT_WAIT_TIMEOUT_MS
-    if upstream_mode == "nats":
-        upstream["upstream_nats_wait_timeout_ms"] = REVERSE_TRANSPORT_WAIT_TIMEOUT_MS
+def client_config_for(mode, upstream_mode, cdp_url, launcher_config=None):
+    upstream: ProtocolPayload = {"upstream_mode": upstream_mode, "upstream_ws_cdp_url": cdp_url}
+    injector: ProtocolPayload = {
+        "injector_mode": "discover" if cdp_url else "cli",
+        "injector_execution_context_timeout_ms": DEMO_EXECUTION_CONTEXT_TIMEOUT_MS,
+    }
+    if cdp_url:
+        injector["injector_discover_extension_path"] = str(EXTENSION_PATH)
+    else:
+        injector["injector_cli_extension_path"] = str(EXTENSION_PATH)
     if mode == "direct":
         return {
-            "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
+            "launcher": {"launcher_mode": "remote" if cdp_url else "local", **(launcher_config or {}), **({"launcher_remote_cdp_url": cdp_url} if cdp_url else {})},
             "upstream": upstream,
-            "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
-            "client": {"client_routes": client_routes_for(mode)},
+            "injector": injector,
+            "router": {"router_routes": client_routes_for(mode)},
+            "client_config": {"client_cdp_send_timeout_ms": DEMO_CDP_SEND_TIMEOUT_MS},
         }
-    server = {
-        "server_routes": server_routes_for(mode, upstream_mode),
+    server_config = {
+        "router": {"router_routes": server_router_routes_for(mode, upstream_mode), "loopback_execution_context_timeout_ms": DEMO_EXECUTION_CONTEXT_TIMEOUT_MS},
     }
     return {
-        "launcher": {"launcher_mode": "remote" if cdp_url else "local", "launcher_options": launch_options or {}},
+        "launcher": {"launcher_mode": "remote" if cdp_url else "local", **(launcher_config or {}), **({"launcher_remote_cdp_url": cdp_url} if cdp_url else {})},
         "upstream": upstream,
-        "injector": {"injector_mode": "auto", "injector_extension_path": str(EXTENSION_PATH)},
-        "client": {"client_routes": client_routes_for(mode)},
-        "server": server,
+        "injector": injector,
+        "router": {"router_routes": client_routes_for(mode)},
+        "client_config": {"client_cdp_send_timeout_ms": DEMO_CDP_SEND_TIMEOUT_MS},
+        "server_config": server_config,
     }
 
 
@@ -153,49 +145,37 @@ def main():
     try:
         if live:
             cdp_url = wait_for_live_cdp_url()
-            launch_options: dict[str, object] = {}
+            launcher_config: dict[str, object] = {}
         else:
             cdp_url = None
-            launch_options: dict[str, object] = {
-                "chrome_ready_timeout_ms": 60_000,
-                "headless": sys.platform.startswith("linux") and not os.environ.get("DISPLAY"),
-                "sandbox": not sys.platform.startswith("linux"),
+            launcher_config: dict[str, object] = {
+                "launcher_local_chrome_ready_timeout_ms": 60_000,
+                "launcher_local_headless": sys.platform.startswith("linux") and not os.environ.get("DISPLAY"),
+                "launcher_local_sandbox": not sys.platform.startswith("linux"),
             }
             if os.environ.get("CHROME_PATH"):
-                launch_options["executable_path"] = os.environ["CHROME_PATH"]
+                launcher_config["launcher_local_executable_path"] = os.environ["CHROME_PATH"]
 
-        cdp = ModCDPClient(**client_options_for(mode, upstream_mode, cdp_url, launch_options))
-        page_target_events = []
-        target_created_events = []
-        events_lock = threading.Lock()
-
-        def on_target_created(payload, *_):
-            print(f"Target.targetCreated -> {payload.get('targetInfo', {}).get('targetId')}")
-            with events_lock:
-                target_created_events.append(payload)
-
-        def on_page_target_updated(payload, *_):
-            print(f"Custom.pageTargetUpdated -> {payload}")
-            with events_lock:
-                page_target_events.append(payload)
-
-        cdp.on("Target.targetCreated", on_target_created)
+        cdp = ModCDPClient(**client_config_for(mode, upstream_mode, cdp_url, launcher_config))
 
         cdp.connect()
         print(f"upstream cdp: {cdp.cdp_url}")
-        print(f"connected; ext {cdp.extension_id} session {cdp.ext_session_id}")
+        print(
+            f"connected; ext {cdp.injector.extension_id if cdp.injector else None} "
+            f"session {cdp.injector.session_id if cdp.injector else None}"
+        )
         print(f"connect timing    -> {cdp.connect_timing}")
 
-        server_config: ProtocolPayload = {"server_routes": server_routes_for(mode, upstream_mode)}
         configure_params: ProtocolPayload = {
-            "upstream": {"upstream_mode": upstream_mode},
-            "client": {"client_routes": client_routes_for(mode)},
-            "server": server_config,
+            "router": {
+                "router_routes": server_router_routes_for(mode, upstream_mode),
+                "loopback_execution_context_timeout_ms": DEMO_EXECUTION_CONTEXT_TIMEOUT_MS,
+            },
         }
         configure_result = expect_object(cdp.send("Mod.configure", configure_params), "Mod.configure")
-        if expect_object(configure_result.get("routes"), "Mod.configure.routes").get("*.*") != server_routes_for(mode, upstream_mode)["*.*"]:
+        if expect_object(expect_object(configure_result.get("router"), "Mod.configure.router").get("router_routes"), "Mod.configure.router.router_routes").get("*.*") != server_router_routes_for(mode, upstream_mode)["*.*"]:
             raise RuntimeError(f"unexpected Mod.configure result {configure_result}")
-        print(f"Mod.configure    -> {configure_result.get('routes')}")
+        print(f"Mod.configure    -> {expect_object(configure_result.get('router'), 'Mod.configure.router').get('router_routes')}")
 
         pong_events = []
         pong_lock = threading.Lock()
@@ -226,29 +206,44 @@ def main():
         }
         print(f"ping latency      -> {ping_latency}")
 
-        if mode == "debugger":
-            try:
-                version = expect_object(cdp.send("Browser.getVersion"), "Browser.getVersion")
-                if not isinstance(version.get("protocolVersion"), str) or not isinstance(version.get("product"), str):
-                    raise RuntimeError(f"unexpected Browser.getVersion result {version}")
-                print(f"Browser.getVersion -> {version}")
-            except Exception as e:
-                print(f"Browser.getVersion -> (debugger route rejected: {str(e).splitlines()[0]} )")
-            runtime_eval = expect_object(cdp.send("Runtime.evaluate", {"expression": "(() => 42)()", "returnByValue": True}), "Runtime.evaluate")
-            result = expect_object(runtime_eval.get("result"), "Runtime.evaluate.result")
-            if result.get("value") != 42:
-                raise RuntimeError(f"unexpected Runtime.evaluate result {runtime_eval}")
-            print(f"Runtime.evaluate -> {runtime_eval}")
-        else:
-            version = expect_object(cdp.send("Browser.getVersion"), "Browser.getVersion")
-            if not isinstance(version.get("protocolVersion"), str) or not isinstance(version.get("product"), str):
-                raise RuntimeError(f"unexpected Browser.getVersion result {version}")
-            print(f"Browser.getVersion -> {version}")
-
         modcdp_eval = expect_object(cdp.send("Mod.evaluate", {"expression": "({ extension_id: chrome.runtime.id })"}), "Mod.evaluate")
-        if not isinstance(modcdp_eval.get("extension_id"), str) or (cdp.extension_id and modcdp_eval.get("extension_id") != cdp.extension_id):
+        injector_extension_id = cdp.injector.extension_id if cdp.injector else None
+        if not isinstance(modcdp_eval.get("extension_id"), str) or (injector_extension_id and modcdp_eval.get("extension_id") != injector_extension_id):
             raise RuntimeError(f"unexpected Mod.evaluate result {modcdp_eval}")
         print(f"Mod.evaluate     -> {modcdp_eval}")
+
+        topology_checked = False
+        if mode != "direct":
+            topology = expect_object(cdp.Mod.getTopology(), "Mod.getTopology")
+            root_frame_id = topology.get("rootFrameId")
+            frames = expect_object(topology.get("frames"), "Mod.getTopology.frames")
+            roots = expect_object(topology.get("roots"), "Mod.getTopology.roots")
+            contexts = expect_object(topology.get("contexts"), "Mod.getTopology.contexts")
+            if (
+                not isinstance(root_frame_id, str)
+                or root_frame_id not in frames
+                or not any(_isObjectMap(root) and root.get("kind") == "document" for root in roots.values())
+                or not any(_isObjectMap(context) and context.get("world") == "piercer" for context in contexts.values())
+            ):
+                raise RuntimeError(f"unexpected Mod.getTopology result {topology}")
+            topology_checked = True
+            print(f"Mod.getTopology -> {{'rootFrameId': {root_frame_id!r}, 'frames': {len(frames)}, 'roots': {len(roots)}, 'contexts': {len(contexts)}}}")
+
+        response_middleware_registration = expect_object(cdp.send("Mod.addMiddleware", {
+            "name": "Custom.echo",
+            "phase": "response",
+            "expression": '''async (payload, next) => next({ ...payload, responseMiddleware: "ok" })''',
+        }), "Mod.addMiddleware response")
+        if response_middleware_registration.get("registered") is not True or response_middleware_registration.get("phase") != "response":
+            raise RuntimeError(f"unexpected response middleware registration {response_middleware_registration}")
+
+        event_middleware_registration = expect_object(cdp.send("Mod.addMiddleware", {
+            "name": "Custom.demoEvent",
+            "phase": "event",
+            "expression": '''async (payload, next) => next({ ...payload, eventMiddleware: "ok" })''',
+        }), "Mod.addMiddleware event")
+        if event_middleware_registration.get("registered") is not True or event_middleware_registration.get("phase") != "event":
+            raise RuntimeError(f"unexpected event middleware registration {event_middleware_registration}")
 
         echo_registration = expect_object(cdp.send("Mod.addCustomCommand", {
             "name": "Custom.echo",
@@ -257,55 +252,13 @@ def main():
         if echo_registration.get("registered") is not True or echo_registration.get("name") != "Custom.echo":
             raise RuntimeError(f"unexpected Custom.echo registration {echo_registration}")
         echo_result = expect_object(cdp.send("Custom.echo", {"value": "custom-command-ok"}), "Custom.echo")
-        if echo_result.get("echoed") != "custom-command-ok" or echo_result.get("method") != "Custom.echo":
+        if (
+            echo_result.get("echoed") != "custom-command-ok"
+            or echo_result.get("method") != "Custom.echo"
+            or echo_result.get("responseMiddleware") != "ok"
+        ):
             raise RuntimeError(f"unexpected Custom.echo result {echo_result}")
         print(f"Custom.echo      -> {echo_result}")
-
-        tab_command_registration = expect_object(cdp.send("Mod.addCustomCommand", {
-            "name": "Custom.TabIdFromTargetId",
-            "expression": '''async ({ targetId }) => {
-              const targets = await chrome.debugger.getTargets();
-              const target = targets.find(target => target.id === targetId);
-              return { tabId: target?.tabId ?? null };
-            }''',
-        }), "Mod.addCustomCommand Custom.TabIdFromTargetId")
-        if tab_command_registration.get("registered") is not True:
-            raise RuntimeError(f"unexpected TabIdFromTargetId registration {tab_command_registration}")
-        target_command_registration = expect_object(cdp.send("Mod.addCustomCommand", {
-            "name": "Custom.targetIdFromTabId",
-            "expression": '''async ({ tabId }) => {
-              const targets = await chrome.debugger.getTargets();
-              const target = targets.find(target => target.type === "page" && target.tabId === tabId);
-              return { targetId: target?.id ?? null };
-            }''',
-        }), "Mod.addCustomCommand Custom.targetIdFromTabId")
-        if target_command_registration.get("registered") is not True:
-            raise RuntimeError(f"unexpected targetIdFromTabId registration {target_command_registration}")
-        middleware_registered = False
-        for phase in ("response", "event"):
-            middleware_registration = expect_object(cdp.send("Mod.addMiddleware", {
-                "name": "*",
-                "phase": phase,
-                "expression": '''async (payload, next) => {
-                  const seen = new WeakSet();
-                  const visit = async value => {
-                    if (!value || typeof value !== "object" || seen.has(value)) return;
-                    seen.add(value);
-                    if (!Array.isArray(value) && typeof value.targetId === "string" && value.tabId == null) {
-                      const { tabId } = await cdp.send("Custom.TabIdFromTargetId", { targetId: value.targetId });
-                      if (tabId != null) value.tabId = tabId;
-                    }
-                    for (const child of Array.isArray(value) ? value : Object.values(value)) await visit(child);
-                  };
-                  await visit(payload);
-                  return next(payload);
-                }''',
-            }), f"Mod.addMiddleware {phase}")
-            if middleware_registration.get("registered") is not True or middleware_registration.get("phase") != phase:
-                raise RuntimeError(f"unexpected {phase} middleware registration {middleware_registration}")
-            middleware_registered = True
-        if not middleware_registered:
-            raise RuntimeError("middleware registration loop did not run")
 
         demo_events = []
         demo_lock = threading.Lock()
@@ -318,13 +271,45 @@ def main():
         if demo_event_registration.get("registered") is not True or demo_event_registration.get("name") != "Custom.demoEvent":
             raise RuntimeError(f"unexpected Custom.demoEvent registration {demo_event_registration}")
         cdp.on("Custom.demoEvent", on_demo_event)
-        emit_result = expect_object(cdp.send("Mod.evaluate", {"expression": '''async () => await ModCDP.emit("Custom.demoEvent", { value: "custom-event-ok" })'''}), "Custom.demoEvent emit")
+        emit_expression = (
+            """async () => {
+                await globalThis.__ModCDP_custom_event__(JSON.stringify({
+                  event: "Custom.demoEvent",
+                  data: { value: "custom-event-ok" },
+                  cdpSessionId: null,
+                }));
+                return { emitted: true };
+              }"""
+            if mode == "direct"
+            else """async () => {
+                const params = await ModCDP.runMiddleware("event", "Custom.demoEvent", { value: "custom-event-ok" }, {
+                  cdpSessionId,
+                  event: {
+                    method: "Custom.demoEvent",
+                    params: { value: "custom-event-ok" },
+                  },
+                });
+                const sent = downstream.sendEvent({
+                  method: "Custom.demoEvent",
+                  params,
+                });
+                return { emitted: sent > 0 };
+              }"""
+        )
+        emit_result = expect_object(cdp.send("Mod.evaluate", {"expression": emit_expression}), "Custom.demoEvent emit")
         if emit_result.get("emitted") is not True:
             raise RuntimeError(f"unexpected Custom.demoEvent emit result {emit_result}")
         deadline = time.monotonic() + 3.0
         while True:
             with demo_lock:
-                demo_event = next((event for event in demo_events if event.get("value") == "custom-event-ok"), None)
+                demo_event = next(
+                    (
+                        event
+                        for event in demo_events
+                        if event.get("value") == "custom-event-ok" and (mode == "direct" or event.get("eventMiddleware") == "ok")
+                    ),
+                    None,
+                )
             if demo_event or time.monotonic() >= deadline:
                 break
             time.sleep(0.02)
@@ -332,63 +317,14 @@ def main():
             raise RuntimeError("expected Custom.demoEvent")
         print(f"Custom.demoEvent -> {demo_event}")
 
-        page_target_event_registration = expect_object(cdp.send("Mod.addCustomEvent", {"name": "Custom.pageTargetUpdated"}), "Mod.addCustomEvent Custom.pageTargetUpdated")
-        if page_target_event_registration.get("registered") is not True:
-            raise RuntimeError(f"unexpected page target event registration {page_target_event_registration}")
-        cdp.on("Custom.pageTargetUpdated", on_page_target_updated)
+        runtime_eval = expect_object(cdp.send("Runtime.evaluate", {"expression": "(() => 42)()", "returnByValue": True}), "Runtime.evaluate")
+        result = expect_object(runtime_eval.get("result"), "Runtime.evaluate.result")
+        if result.get("value") != 42:
+            raise RuntimeError(f"unexpected Runtime.evaluate result {runtime_eval}")
+        print(f"Runtime.evaluate -> {runtime_eval}")
 
-        cdp.send("Target.setDiscoverTargets", {"discover": True})
-        created_target = expect_object(cdp.send("Target.createTarget", {"url": "https://example.com", "background": True}), "Target.createTarget")
-        created_target_id = created_target.get("targetId")
-        if not created_target_id:
-            raise RuntimeError(f"Target.createTarget returned no targetId: {created_target}")
-        deadline = time.monotonic() + 3.0
-        while True:
-            with events_lock:
-                matched_target_event = next((event for event in target_created_events if event.get("targetInfo", {}).get("targetId") == created_target_id), None)
-            if matched_target_event or time.monotonic() >= deadline:
-                break
-            time.sleep(0.02)
-        if not matched_target_event:
-            raise RuntimeError(f"expected Target.targetCreated for {created_target_id}")
-        print(f"normal event matched -> {created_target_id}")
-
-        tab_from_target = expect_object(cdp.send("Custom.TabIdFromTargetId", {"targetId": created_target_id}), "Custom.TabIdFromTargetId")
-        if not isinstance(tab_from_target.get("tabId"), int | float):
-            raise RuntimeError(f"unexpected Custom.TabIdFromTargetId result {tab_from_target}")
-        print(f"Custom.TabIdFromTargetId -> {tab_from_target}")
-
-        cdp.send("Target.activateTarget", {"targetId": created_target_id})
-        page_target_emit_result = expect_object(cdp.send("Mod.evaluate", {
-            "params": {"targetId": created_target_id},
-            "expression": '''async ({ targetId }) => {
-              const targets = await chrome.debugger.getTargets();
-              const target = targets.find(target => target.id === targetId);
-              if (!target?.id) throw new Error(`target ${targetId} not found`);
-              await cdp.emit("Custom.pageTargetUpdated", { targetId: target.id, url: target.url ?? null });
-              return { emitted: true, targetId: target.id };
-            }''',
-        }), "Custom.pageTargetUpdated emit")
-        if page_target_emit_result.get("emitted") is not True or page_target_emit_result.get("targetId") != created_target_id:
-            raise RuntimeError(f"unexpected Custom.pageTargetUpdated emit result {page_target_emit_result}")
-        deadline = time.monotonic() + 3.0
-        while True:
-            with events_lock:
-                page_target = next((event for event in page_target_events if event.get("targetId") == created_target_id), None)
-            if page_target or time.monotonic() >= deadline:
-                break
-            time.sleep(0.02)
-        if not page_target:
-            raise RuntimeError(f"expected Custom.pageTargetUpdated for {created_target_id}")
-        if tab_from_target.get("tabId") != page_target.get("tabId"):
-            raise RuntimeError(f"unexpected Custom.pageTargetUpdated result {page_target}")
-
-        target_from_tab = expect_object(cdp.send("Custom.targetIdFromTabId", {"tabId": page_target["tabId"]}), "Custom.targetIdFromTabId")
-        if target_from_tab.get("targetId") != created_target_id or target_from_tab.get("tabId") != page_target.get("tabId"):
-            raise RuntimeError(f"unexpected Custom.targetIdFromTabId/middleware result {target_from_tab}")
-        print(f"Custom.targetIdFromTabId -> {target_from_tab}")
-
-        print(f"\nSUCCESS ({mode}/{upstream_mode}): normal command, normal event, custom commands, custom event, and middleware all passed")
+        topology_label = "topology, " if topology_checked else ""
+        print(f"\nSUCCESS ({mode}/{upstream_mode}): native command, {topology_label}custom commands, custom event, and middleware all passed")
 
         # TTY-only: drop into a REPL where you can send live commands and
         # watch events as they print. Skip when run non-interactively so the
@@ -410,7 +346,7 @@ def run_repl(cdp, mode):
     print("Enter commands as Domain.method({...JSON params...}). Examples:")
     print('  Browser.getVersion({})')
     print('  Mod.evaluate({"expression": "chrome.tabs.query({active: true})"})')
-    print('  Custom.TabIdFromTargetId({"targetId": "..."})')
+    print('  Runtime.evaluate({"expression": "document.title", "returnByValue": true})')
     print("Type exit or quit to disconnect (browser keeps running).")
     cmd_re = re.compile(r"^([A-Za-z_]\w*\.[A-Za-z_]\w*)(?:\((.*)\))?$")
     while True:

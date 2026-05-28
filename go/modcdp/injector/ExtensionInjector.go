@@ -1,17 +1,11 @@
+// MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+// - ./js/src/injector/ExtensionInjector.ts
+// - ./python/modcdp/injector/ExtensionInjector.py
 package injector
 
 import (
-	"archive/zip"
-	"bytes"
-	"crypto/sha256"
-	_ "embed"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -30,17 +24,11 @@ const DefaultTargetSessionPollIntervalMS = 20
 var DefaultModCDPServiceWorkerURLSuffixes = []string{"/modcdp/service_worker.js"}
 var extIDFromURL = regexp.MustCompile(`^chrome-extension://([a-z]+)/`)
 
-//go:embed extension.zip
-var bundledExtensionZip []byte
-
-const modcdpReadyExpression = `Boolean(globalThis.ModCDP?.__ModCDPServerVersion >= 1 && globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)`
+const modcdpReadyExpression = `Boolean(globalThis.ModCDP?.handleCommand && globalThis.ModCDP?.addCustomEvent)`
 
 type SendCDP = types.SendCDP
-type SessionIDForTarget = types.SessionIDForTarget
-type AttachToTarget = types.AttachToTarget
-type WaitForExecutionContext = types.WaitForExecutionContext
-type LaunchOptions = types.LaunchOptions
-type ExtensionInjectorConfig = types.ExtensionInjectorConfig
+type LauncherConfig = types.LauncherConfig
+type InjectorConfig = types.InjectorConfig
 type ExtensionInjectionResult = types.ExtensionInjectionResult
 
 func boolPtr(value bool) *bool {
@@ -48,116 +36,139 @@ func boolPtr(value bool) *bool {
 }
 
 type ExtensionInjector struct {
-	Options           ExtensionInjectorConfig
-	UnusableTargetIDs map[string]bool
-	LastError         error
+	Config                   InjectorConfig
+	Source                   string
+	ExtensionID              string
+	ServiceWorkerExtensionID string
+	TargetID                 string
+	URL                      string
+	SessionID                string
+	UnusableTargetIDs        map[string]bool
+	ExtraArgs                []string
 }
 
-func NewExtensionInjector(options ExtensionInjectorConfig) ExtensionInjector {
-	if options.InjectorCDPSendTimeoutMS == 0 {
-		options.InjectorCDPSendTimeoutMS = DefaultCDPSendTimeoutMS
+func NewExtensionInjector(config InjectorConfig) ExtensionInjector {
+	if config.InjectorCDPSendTimeoutMS == 0 {
+		config.InjectorCDPSendTimeoutMS = DefaultCDPSendTimeoutMS
 	}
-	if options.InjectorExecutionContextTimeoutMS == 0 {
-		options.InjectorExecutionContextTimeoutMS = DefaultExecutionContextTimeoutMS
+	if config.InjectorExecutionContextTimeoutMS == 0 {
+		config.InjectorExecutionContextTimeoutMS = DefaultExecutionContextTimeoutMS
 	}
-	if options.InjectorServiceWorkerProbeTimeoutMS == 0 {
-		options.InjectorServiceWorkerProbeTimeoutMS = DefaultServiceWorkerProbeTimeoutMS
+	if config.InjectorServiceWorkerProbeTimeoutMS == 0 {
+		config.InjectorServiceWorkerProbeTimeoutMS = DefaultServiceWorkerProbeTimeoutMS
 	}
-	if options.InjectorServiceWorkerReadyTimeoutMS == 0 {
-		options.InjectorServiceWorkerReadyTimeoutMS = DefaultServiceWorkerReadyTimeoutMS
+	if config.InjectorServiceWorkerReadyTimeoutMS == 0 {
+		config.InjectorServiceWorkerReadyTimeoutMS = DefaultServiceWorkerReadyTimeoutMS
 	}
-	if options.InjectorServiceWorkerPollIntervalMS == 0 {
-		options.InjectorServiceWorkerPollIntervalMS = DefaultServiceWorkerPollIntervalMS
+	if config.InjectorServiceWorkerPollIntervalMS == 0 {
+		config.InjectorServiceWorkerPollIntervalMS = DefaultServiceWorkerPollIntervalMS
 	}
-	if options.InjectorTargetSessionPollIntervalMS == 0 {
-		options.InjectorTargetSessionPollIntervalMS = DefaultTargetSessionPollIntervalMS
+	if config.InjectorTargetSessionPollIntervalMS == 0 {
+		config.InjectorTargetSessionPollIntervalMS = DefaultTargetSessionPollIntervalMS
 	}
-	return ExtensionInjector{Options: options, UnusableTargetIDs: map[string]bool{}}
+	if config.InjectorBBBaseURL == "" {
+		config.InjectorBBBaseURL = DefaultBrowserbaseBaseURL
+	}
+	return ExtensionInjector{Config: config, UnusableTargetIDs: map[string]bool{}}
 }
 
-func (i *ExtensionInjector) Update(config ExtensionInjectorConfig) *ExtensionInjector {
+func (i *ExtensionInjector) Update(config InjectorConfig) *ExtensionInjector {
 	if config.Send != nil {
-		i.Options.Send = config.Send
+		i.Config.Send = config.Send
 	}
-	if config.SessionIDForTarget != nil {
-		i.Options.SessionIDForTarget = config.SessionIDForTarget
+	if config.InjectorCLIExtensionPath != "" {
+		i.Config.InjectorCLIExtensionPath = config.InjectorCLIExtensionPath
 	}
-	if config.AttachToTarget != nil {
-		i.Options.AttachToTarget = config.AttachToTarget
+	if config.InjectorCLIExtensionID != "" {
+		i.Config.InjectorCLIExtensionID = config.InjectorCLIExtensionID
 	}
-	if config.WaitForExecutionContext != nil {
-		i.Options.WaitForExecutionContext = config.WaitForExecutionContext
+	if config.InjectorCDPExtensionPath != "" {
+		i.Config.InjectorCDPExtensionPath = config.InjectorCDPExtensionPath
 	}
-	if config.InjectorExtensionPath != "" {
-		i.Options.InjectorExtensionPath = config.InjectorExtensionPath
+	if config.InjectorCDPExtensionID != "" {
+		i.Config.InjectorCDPExtensionID = config.InjectorCDPExtensionID
 	}
-	if config.InjectorExtensionID != "" {
-		i.Options.InjectorExtensionID = config.InjectorExtensionID
+	if config.InjectorBBExtensionPath != "" {
+		i.Config.InjectorBBExtensionPath = config.InjectorBBExtensionPath
+	}
+	if config.InjectorBBExtensionID != "" {
+		i.Config.InjectorBBExtensionID = config.InjectorBBExtensionID
+	}
+	if config.InjectorDiscoverExtensionPath != "" {
+		i.Config.InjectorDiscoverExtensionPath = config.InjectorDiscoverExtensionPath
+	}
+	if config.InjectorServiceWorkerExtensionID != "" {
+		i.Config.InjectorServiceWorkerExtensionID = config.InjectorServiceWorkerExtensionID
 	}
 	if config.InjectorServiceWorkerURLIncludes != nil {
-		i.Options.InjectorServiceWorkerURLIncludes = append([]string{}, config.InjectorServiceWorkerURLIncludes...)
+		i.Config.InjectorServiceWorkerURLIncludes = append([]string{}, config.InjectorServiceWorkerURLIncludes...)
 	}
 	if config.InjectorServiceWorkerURLSuffixes != nil {
-		i.Options.InjectorServiceWorkerURLSuffixes = append([]string{}, config.InjectorServiceWorkerURLSuffixes...)
+		i.Config.InjectorServiceWorkerURLSuffixes = append([]string{}, config.InjectorServiceWorkerURLSuffixes...)
 	}
 	if config.InjectorTrustServiceWorkerTarget {
-		i.Options.InjectorTrustServiceWorkerTarget = true
+		i.Config.InjectorTrustServiceWorkerTarget = true
 	}
 	if config.InjectorRequireServiceWorkerTarget {
-		i.Options.InjectorRequireServiceWorkerTarget = true
+		i.Config.InjectorRequireServiceWorkerTarget = true
 	}
 	if config.InjectorServiceWorkerReadyExpression != "" {
-		i.Options.InjectorServiceWorkerReadyExpression = config.InjectorServiceWorkerReadyExpression
+		i.Config.InjectorServiceWorkerReadyExpression = config.InjectorServiceWorkerReadyExpression
 	}
 	if config.InjectorCDPSendTimeoutMS != 0 {
-		i.Options.InjectorCDPSendTimeoutMS = config.InjectorCDPSendTimeoutMS
+		i.Config.InjectorCDPSendTimeoutMS = config.InjectorCDPSendTimeoutMS
 	}
 	if config.InjectorExecutionContextTimeoutMS != 0 {
-		i.Options.InjectorExecutionContextTimeoutMS = config.InjectorExecutionContextTimeoutMS
+		i.Config.InjectorExecutionContextTimeoutMS = config.InjectorExecutionContextTimeoutMS
 	}
 	if config.InjectorServiceWorkerProbeTimeoutMS != 0 {
-		i.Options.InjectorServiceWorkerProbeTimeoutMS = config.InjectorServiceWorkerProbeTimeoutMS
+		i.Config.InjectorServiceWorkerProbeTimeoutMS = config.InjectorServiceWorkerProbeTimeoutMS
 	}
 	if config.InjectorServiceWorkerReadyTimeoutMS != 0 {
-		i.Options.InjectorServiceWorkerReadyTimeoutMS = config.InjectorServiceWorkerReadyTimeoutMS
+		i.Config.InjectorServiceWorkerReadyTimeoutMS = config.InjectorServiceWorkerReadyTimeoutMS
 	}
 	if config.InjectorServiceWorkerPollIntervalMS != 0 {
-		i.Options.InjectorServiceWorkerPollIntervalMS = config.InjectorServiceWorkerPollIntervalMS
+		i.Config.InjectorServiceWorkerPollIntervalMS = config.InjectorServiceWorkerPollIntervalMS
 	}
 	if config.InjectorTargetSessionPollIntervalMS != 0 {
-		i.Options.InjectorTargetSessionPollIntervalMS = config.InjectorTargetSessionPollIntervalMS
+		i.Config.InjectorTargetSessionPollIntervalMS = config.InjectorTargetSessionPollIntervalMS
 	}
-	if config.InjectorBrowserbaseAPIKey != "" {
-		i.Options.InjectorBrowserbaseAPIKey = config.InjectorBrowserbaseAPIKey
+	if config.InjectorBBAPIKey != "" {
+		i.Config.InjectorBBAPIKey = config.InjectorBBAPIKey
 	}
-	if config.InjectorBrowserbaseBaseURL != "" {
-		i.Options.InjectorBrowserbaseBaseURL = config.InjectorBrowserbaseBaseURL
-	}
-	if config.UpstreamNativeMessagingHostName != "" {
-		i.Options.UpstreamNativeMessagingHostName = config.UpstreamNativeMessagingHostName
-	}
-	if config.UpstreamNATSURL != "" {
-		i.Options.UpstreamNATSURL = config.UpstreamNATSURL
-	}
-	if config.UpstreamNATSSubjectPrefix != "" {
-		i.Options.UpstreamNATSSubjectPrefix = config.UpstreamNATSSubjectPrefix
+	if config.InjectorBBBaseURL != "" {
+		i.Config.InjectorBBBaseURL = config.InjectorBBBaseURL
 	}
 	return i
 }
 
-func (i ExtensionInjector) GetInjectorConfig() ExtensionInjectorConfig {
-	return i.Options
-}
-
-func (i ExtensionInjector) GetLauncherConfig() LaunchOptions {
-	return LaunchOptions{}
-}
-
-func (i ExtensionInjector) GetTransportConfig() map[string]any {
-	if i.Options.InjectorExtensionID == "" {
-		return map[string]any{}
+func (i *ExtensionInjector) RecordInjectionResult(result *ExtensionInjectionResult) *ExtensionInjector {
+	i.Source = result.Source
+	i.ExtensionID = result.ExtensionID
+	if result.ExtensionID != "" {
+		i.ServiceWorkerExtensionID = result.ExtensionID
 	}
-	return map[string]any{"injector_extension_id": i.Options.InjectorExtensionID}
+	i.TargetID = result.TargetID
+	i.URL = result.URL
+	i.SessionID = result.SessionID
+	return i
+}
+
+func (i ExtensionInjector) ConfigForLauncher() LauncherConfig {
+	return LauncherConfig{
+		LauncherLocalExtraArgs: i.ExtraArgs,
+		LauncherBBExtensionID:  i.Config.InjectorBBExtensionID,
+	}
+}
+
+func (i ExtensionInjector) ConfigForUpstream() map[string]any {
+	return map[string]any{}
+}
+
+func (i ExtensionInjector) ToJSON() map[string]any {
+	config := i.Config
+	config.Send = nil
+	return types.ModCDPToJSON(i, types.ModCDPJSONConfig{Config: config})
 }
 
 func (i *ExtensionInjector) Prepare() error {
@@ -173,24 +184,24 @@ func (i *ExtensionInjector) Inject() (*ExtensionInjectionResult, error) {
 }
 
 func (i ExtensionInjector) readyExpression() string {
-	if i.Options.InjectorServiceWorkerReadyExpression == "" {
+	if i.Config.InjectorServiceWorkerReadyExpression == "" || i.Config.InjectorServiceWorkerReadyExpression == modcdpReadyExpression {
 		return modcdpReadyExpression
 	}
-	return fmt.Sprintf("(%s) && Boolean(%s)", modcdpReadyExpression, i.Options.InjectorServiceWorkerReadyExpression)
+	return fmt.Sprintf("(%s) && Boolean(%s)", modcdpReadyExpression, i.Config.InjectorServiceWorkerReadyExpression)
 }
 
 func (i ExtensionInjector) sendWithTimeout(method string, params map[string]any, sessionID string, timeoutMS int) (map[string]any, error) {
-	if i.Options.Send == nil {
+	if i.Config.Send == nil {
 		return nil, fmt.Errorf("%T requires a CDP send function", i)
 	}
 	if params == nil {
 		params = map[string]any{}
 	}
 	if timeoutMS == 0 {
-		timeoutMS = i.Options.InjectorCDPSendTimeoutMS
+		timeoutMS = i.Config.InjectorCDPSendTimeoutMS
 	}
 	if timeoutMS <= 0 {
-		return i.Options.Send(method, params, sessionID)
+		return i.Config.Send(method, params, sessionID)
 	}
 	type sendResult struct {
 		result map[string]any
@@ -198,7 +209,7 @@ func (i ExtensionInjector) sendWithTimeout(method string, params map[string]any,
 	}
 	done := make(chan sendResult, 1)
 	go func() {
-		result, err := i.Options.Send(method, params, sessionID)
+		result, err := i.Config.Send(method, params, sessionID)
 		done <- sendResult{result: result, err: err}
 	}()
 	select {
@@ -209,41 +220,8 @@ func (i ExtensionInjector) sendWithTimeout(method string, params map[string]any,
 	}
 }
 
-func (i ExtensionInjector) SendWithTimeout(method string, params map[string]any, sessionID string, timeoutMS int) (map[string]any, error) {
-	return i.sendWithTimeout(method, params, sessionID, timeoutMS)
-}
-
-func (i ExtensionInjector) sessionIDForTarget(targetID string, timeoutMS int) string {
-	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
-	for {
-		if i.Options.SessionIDForTarget != nil {
-			if sessionID := i.Options.SessionIDForTarget(targetID); sessionID != "" {
-				return sessionID
-			}
-		}
-		if timeoutMS <= 0 || time.Now().After(deadline) {
-			return ""
-		}
-		time.Sleep(time.Duration(i.Options.InjectorTargetSessionPollIntervalMS) * time.Millisecond)
-	}
-}
-
-func (i ExtensionInjector) ensureSessionIDForTarget(targetID string, timeoutMS int, allowAttach bool) string {
-	if i.Options.SessionIDForTarget != nil {
-		if sessionID := i.Options.SessionIDForTarget(targetID); sessionID != "" {
-			return sessionID
-		}
-	}
-	if allowAttach && i.Options.AttachToTarget != nil {
-		if sessionID := i.Options.AttachToTarget(targetID); sessionID != "" {
-			return sessionID
-		}
-	}
-	return i.sessionIDForTarget(targetID, timeoutMS)
-}
-
 func (i ExtensionInjector) targetInfos() ([]map[string]any, error) {
-	result, err := i.sendWithTimeout("Target.getTargets", map[string]any{}, "", i.Options.InjectorCDPSendTimeoutMS)
+	result, err := i.sendWithTimeout("Target.getTargets", map[string]any{}, "", i.Config.InjectorCDPSendTimeoutMS)
 	if err != nil {
 		return nil, err
 	}
@@ -264,22 +242,32 @@ func (i ExtensionInjector) probeTarget(target map[string]any, sessionTimeoutMS i
 	if targetID == "" || i.UnusableTargetIDs[targetID] {
 		return nil, nil
 	}
-	sessionID := i.ensureSessionIDForTarget(targetID, sessionTimeoutMS, allowAttach)
-	if sessionID == "" {
-		return nil, nil
+	attached, err := i.sendWithTimeout("Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true}, "", sessionTimeoutMS)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := i.sendWithTimeout("Runtime.enable", map[string]any{}, sessionID, i.Options.InjectorCDPSendTimeoutMS); err != nil {
+	sessionID, _ := attached["sessionId"].(string)
+	if sessionID == "" {
+		return nil, fmt.Errorf("Target.attachToTarget returned no sessionId for targetId=%s", targetID)
+	}
+	detach := func() {
+		_, _ = i.sendWithTimeout("Target.detachFromTarget", map[string]any{"sessionId": sessionID}, "", i.Config.InjectorCDPSendTimeoutMS)
+	}
+	if _, err := i.sendWithTimeout("Runtime.enable", map[string]any{}, sessionID, i.Config.InjectorCDPSendTimeoutMS); err != nil {
+		detach()
 		return nil, err
 	}
 	probe, err := i.sendWithTimeout("Runtime.evaluate", map[string]any{
 		"expression":    i.readyExpression(),
 		"returnByValue": true,
-	}, sessionID, i.Options.InjectorCDPSendTimeoutMS)
+	}, sessionID, i.Config.InjectorCDPSendTimeoutMS)
 	if err != nil {
+		detach()
 		return nil, err
 	}
 	result, _ := probe["result"].(map[string]any)
 	if ready, _ := result["value"].(bool); !ready {
+		detach()
 		return nil, nil
 	}
 	extensionID := ""
@@ -287,7 +275,7 @@ func (i ExtensionInjector) probeTarget(target map[string]any, sessionTimeoutMS i
 		extensionID = m[1]
 	}
 	return &ExtensionInjectionResult{
-		Source:      "discovered",
+		Source:      "discover",
 		ExtensionID: extensionID,
 		TargetID:    targetID,
 		URL:         targetURL,
@@ -300,12 +288,12 @@ func (i ExtensionInjector) discoverReadyServiceWorker(matchedOnly bool) (*Extens
 	if err != nil {
 		return nil, err
 	}
-	if i.Options.InjectorTrustServiceWorkerTarget {
+	if i.Config.InjectorTrustServiceWorkerTarget {
 		for _, target := range targets {
 			if !i.serviceWorkerTargetMatches(target) {
 				continue
 			}
-			probed, err := i.probeTarget(target, i.Options.InjectorServiceWorkerProbeTimeoutMS, true)
+			probed, err := i.probeTarget(target, i.Config.InjectorServiceWorkerProbeTimeoutMS, true)
 			if err != nil {
 				return nil, err
 			}
@@ -315,7 +303,7 @@ func (i ExtensionInjector) discoverReadyServiceWorker(matchedOnly bool) (*Extens
 			}
 		}
 	}
-	if i.Options.InjectorTrustServiceWorkerTarget || matchedOnly {
+	if i.Config.InjectorTrustServiceWorkerTarget || matchedOnly {
 		return nil, nil
 	}
 	for _, target := range targets {
@@ -324,7 +312,7 @@ func (i ExtensionInjector) discoverReadyServiceWorker(matchedOnly bool) (*Extens
 		if targetType != "service_worker" || !strings.HasPrefix(targetURL, "chrome-extension://") {
 			continue
 		}
-		probed, err := i.probeTarget(target, i.Options.InjectorServiceWorkerProbeTimeoutMS, false)
+		probed, err := i.probeTarget(target, i.Config.InjectorServiceWorkerProbeTimeoutMS, false)
 		if err == nil && probed != nil {
 			return probed, nil
 		}
@@ -339,13 +327,9 @@ func (i ExtensionInjector) waitForReadyServiceWorker(timeoutMS int, matchedOnly 
 		if err != nil || discovered != nil {
 			return discovered, err
 		}
-		time.Sleep(time.Duration(i.Options.InjectorServiceWorkerPollIntervalMS) * time.Millisecond)
+		time.Sleep(time.Duration(i.Config.InjectorServiceWorkerPollIntervalMS) * time.Millisecond)
 	}
 	return nil, nil
-}
-
-func (i ExtensionInjector) WaitForReadyServiceWorker(timeoutMS int, matchedOnly bool) (*ExtensionInjectionResult, error) {
-	return i.waitForReadyServiceWorker(timeoutMS, matchedOnly)
 }
 
 func (i ExtensionInjector) serviceWorkerTargetMatches(target map[string]any) bool {
@@ -354,18 +338,22 @@ func (i ExtensionInjector) serviceWorkerTargetMatches(target map[string]any) boo
 	if targetType != "service_worker" || !strings.HasPrefix(targetURL, "chrome-extension://") {
 		return false
 	}
-	hasExtensionID := i.Options.InjectorExtensionID != ""
-	if i.Options.InjectorExtensionID != "" && !strings.HasPrefix(targetURL, "chrome-extension://"+i.Options.InjectorExtensionID+"/") {
+	serviceWorkerExtensionID := i.Config.InjectorServiceWorkerExtensionID
+	if serviceWorkerExtensionID == "" {
+		serviceWorkerExtensionID = i.ServiceWorkerExtensionID
+	}
+	hasExtensionID := serviceWorkerExtensionID != ""
+	if serviceWorkerExtensionID != "" && !strings.HasPrefix(targetURL, "chrome-extension://"+serviceWorkerExtensionID+"/") {
 		return false
 	}
-	for _, part := range i.Options.InjectorServiceWorkerURLIncludes {
+	for _, part := range i.Config.InjectorServiceWorkerURLIncludes {
 		if !strings.Contains(targetURL, part) {
 			return false
 		}
 	}
-	if len(i.Options.InjectorServiceWorkerURLSuffixes) > 0 {
+	if len(i.Config.InjectorServiceWorkerURLSuffixes) > 0 {
 		matched := false
-		for _, suffix := range i.Options.InjectorServiceWorkerURLSuffixes {
+		for _, suffix := range i.Config.InjectorServiceWorkerURLSuffixes {
 			if strings.HasSuffix(targetURL, suffix) {
 				matched = true
 				break
@@ -375,186 +363,7 @@ func (i ExtensionInjector) serviceWorkerTargetMatches(target map[string]any) boo
 			return false
 		}
 	}
-	return hasExtensionID || len(i.Options.InjectorServiceWorkerURLIncludes) > 0 || len(i.Options.InjectorServiceWorkerURLSuffixes) > 0
-}
-
-func (i ExtensionInjector) ServiceWorkerTargetMatches(target map[string]any) bool {
-	return i.serviceWorkerTargetMatches(target)
-}
-
-func prepareUnpackedExtension(extensionPath string) (string, string, error) {
-	if extensionPath == "" {
-		dir, err := os.MkdirTemp("", "modcdp-extension-")
-		if err != nil {
-			return "", "", err
-		}
-		reader, err := zip.NewReader(bytes.NewReader(bundledExtensionZip), int64(len(bundledExtensionZip)))
-		if err != nil {
-			_ = os.RemoveAll(dir)
-			return "", "", err
-		}
-		if err := extractZipFiles(reader.File, dir); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", "", err
-		}
-		return extensionRoot(dir), dir, nil
-	}
-	if !strings.HasSuffix(extensionPath, ".zip") {
-		dir, err := os.MkdirTemp("", "modcdp-extension-")
-		if err != nil {
-			return "", "", err
-		}
-		if err := copyDir(extensionPath, dir); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", "", err
-		}
-		return dir, dir, nil
-	}
-	dir, err := os.MkdirTemp("", "modcdp-extension-")
-	if err != nil {
-		return "", "", err
-	}
-	reader, err := zip.OpenReader(extensionPath)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return "", "", err
-	}
-	defer reader.Close()
-	if err := extractZipFiles(reader.File, dir); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", "", err
-	}
-	return extensionRoot(dir), dir, nil
-}
-
-func extractZipFiles(files []*zip.File, dir string) error {
-	root, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		targetPath, err := safeZipTarget(root, file.Name)
-		if err != nil {
-			return err
-		}
-		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(targetPath, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return err
-		}
-		src, err := file.Open()
-		if err != nil {
-			return err
-		}
-		dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.FileInfo().Mode())
-		if err != nil {
-			_ = src.Close()
-			return err
-		}
-		_, copyErr := io.Copy(dst, src)
-		srcErr := src.Close()
-		dstErr := dst.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if srcErr != nil {
-			return srcErr
-		}
-		if dstErr != nil {
-			return dstErr
-		}
-	}
-	return nil
-}
-
-func safeZipTarget(root string, name string) (string, error) {
-	cleanName := filepath.Clean(name)
-	if filepath.IsAbs(cleanName) || cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("zip entry %q escapes extension extraction directory", name)
-	}
-	targetPath := filepath.Join(root, cleanName)
-	targetAbs, err := filepath.Abs(targetPath)
-	if err != nil {
-		return "", err
-	}
-	if targetAbs != root && !strings.HasPrefix(targetAbs, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("zip entry %q escapes extension extraction directory", name)
-	}
-	return targetAbs, nil
-}
-
-func extensionRoot(unpackedPath string) string {
-	if _, err := os.Stat(filepath.Join(unpackedPath, "manifest.json")); err == nil {
-		return unpackedPath
-	}
-	nested := filepath.Join(unpackedPath, "extension")
-	if _, err := os.Stat(filepath.Join(nested, "manifest.json")); err == nil {
-		return nested
-	}
-	return unpackedPath
-}
-
-func extensionIDFromManifestKey(extensionPath string) (string, error) {
-	manifestBytes, err := os.ReadFile(filepath.Join(extensionPath, "manifest.json"))
-	if err != nil {
-		return "", nil
-	}
-	var manifest map[string]any
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return "", err
-	}
-	key, _ := manifest["key"].(string)
-	if strings.TrimSpace(key) == "" {
-		return "", nil
-	}
-	keyBytes, err := base64.StdEncoding.DecodeString(key)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(keyBytes)
-	alphabet := "abcdefghijklmnop"
-	result := strings.Builder{}
-	for _, value := range digest[:16] {
-		result.WriteByte(alphabet[value>>4])
-		result.WriteByte(alphabet[value&0x0f])
-	}
-	return result.String(), nil
-}
-
-func copyDir(src string, dst string) error {
-	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		sourceFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer sourceFile.Close()
-		targetFile, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-		if err != nil {
-			return err
-		}
-		defer targetFile.Close()
-		_, err = io.Copy(targetFile, sourceFile)
-		return err
-	})
+	return hasExtensionID || len(i.Config.InjectorServiceWorkerURLIncludes) > 0 || len(i.Config.InjectorServiceWorkerURLSuffixes) > 0
 }
 
 func firstNonEmptyString(values ...string) string {

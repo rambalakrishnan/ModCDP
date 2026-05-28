@@ -1,53 +1,23 @@
+# MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+# Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+# - ./js/src/launcher/BrowserLauncher.ts
+# - ./go/modcdp/launcher/BrowserLauncher.go
 from __future__ import annotations
 
 import json
 import re
 import urllib.request
 from collections.abc import Callable
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypeAlias
 
-from typing_extensions import NotRequired
+from ..types.modcdp import LaunchedBrowser, ModCDPLauncherConfig
+from ..types.toJSON import modCDPToJSON
 
-
-class BrowserLaunchOptions(TypedDict, total=False):
-    executable_path: str | None
-    port: int | None
-    user_data_dir: str | None
-    headless: bool
-    sandbox: bool
-    args: list[str]
-    extra_args: list[str]
-    remote_debugging: str
-    loopback_cdp: bool
-    cleanup_user_data_dir: bool
-    chrome_ready_timeout_ms: int
-    chrome_ready_poll_interval_ms: int
-    cdp_url: str | None
-    browserbase_api_key: str | None
-    browserbase_base_url: str | None
-    browserbase_session_id: str | None
-    browserbase_keep_alive: bool
-    browserbase_close_session_on_close: bool
-    region: str | None
-    timeout: int | None
-    injector_extension_id: str | None
-    browserbase_browser_settings: dict[str, Any] | None
-    browserbase_user_metadata: dict[str, Any] | None
-    browserbase_session_create_params: dict[str, Any] | None
+if TYPE_CHECKING:
+    from ..transport.UpstreamTransport import UpstreamTransport
 
 
-class LaunchedBrowser(TypedDict):
-    # Effective CDP endpoint for the selected transport; launchers resolve HTTP discovery endpoints to ws:// before returning when they can.
-    cdp_url: str | None
-    # Extension-dialable loopback CDP endpoint when it differs from cdp_url, for example pipe:// primary transport.
-    loopback_cdp_url: NotRequired[str | None]
-    close: Callable[[], Any]
-    profile_dir: NotRequired[str | None]
-    pipe_read: NotRequired[Any]
-    pipe_write: NotRequired[Any]
-    browserbase_session_id: NotRequired[str | None]
-    browserbase_session_url: NotRequired[str | None]
-    browserbase_debug_url: NotRequired[str | None]
+LauncherConfig: TypeAlias = ModCDPLauncherConfig
 
 
 DEFAULT_CHROME_READY_TIMEOUT_MS = 45_000
@@ -58,48 +28,58 @@ CDP_URL_SCHEME_RE = re.compile(r"^[a-z][a-z\d+\-.]*://", re.I)
 class BrowserLauncher:
     launched: LaunchedBrowser | None
 
-    def __init__(self, options: BrowserLaunchOptions | None = None) -> None:
-        self.options = cast(BrowserLaunchOptions, dict(options or {}))
+    def __init__(self, config: LauncherConfig | dict[str, Any] | None = None) -> None:
+        self.config = _launcher_config(config)
         self.launched = None
 
-    def update(self, config: BrowserLaunchOptions | None = None) -> "BrowserLauncher":
-        config = cast(BrowserLaunchOptions, dict(config or {}))
-        self.options = cast(
-            BrowserLaunchOptions,
-            {
-                **self.options,
-                **config,
-                **({"args": merge_chrome_args(self.options.get("args"), config["args"])} if "args" in config else {}),
-                **(
-                    {"extra_args": merge_chrome_args(self.options.get("extra_args"), config["extra_args"])}
-                    if "extra_args" in config
-                    else {}
-                ),
-            },
-        )
+    def update(self, config: LauncherConfig | dict[str, Any] | None = None) -> "BrowserLauncher":
+        incoming = _launcher_config(config)
+        updates = incoming.model_dump(exclude_unset=True)
+        if "launcher_local_args" in incoming.model_fields_set:
+            updates["launcher_local_args"] = merge_chrome_args(self.config.launcher_local_args, incoming.launcher_local_args)
+        if "launcher_local_extra_args" in incoming.model_fields_set:
+            updates["launcher_local_extra_args"] = merge_chrome_args(self.config.launcher_local_extra_args, incoming.launcher_local_extra_args)
+        self.config = LauncherConfig.model_validate({**self.config.model_dump(), **updates})
         return self
 
-    def getTransportConfig(self) -> dict[str, Any]:
-        return {
-            "cdp_url": (self.launched or {}).get("cdp_url") or self.options.get("cdp_url"),
-            "user_data_dir": (self.launched or {}).get("profile_dir") or self.options.get("user_data_dir"),
-            "pipe_read": (self.launched or {}).get("pipe_read"),
-            "pipe_write": (self.launched or {}).get("pipe_write"),
-        }
+    def configForUpstream(self) -> dict[str, Any]:
+        config: dict[str, Any] = {}
+        upstream_ws_cdp_url = (self.launched.cdp_url if self.launched is not None else None) or self.config.launcher_remote_cdp_url
+        if upstream_ws_cdp_url:
+            config["upstream_ws_cdp_url"] = upstream_ws_cdp_url
+        return config
 
-    def getServerConfig(self) -> dict[str, Any]:
-        loopback_cdp_url = (self.launched or {}).get("loopback_cdp_url")
-        return {"server_loopback_cdp_url": loopback_cdp_url} if loopback_cdp_url else {}
+    def configForServer(self, upstream: UpstreamTransport) -> dict[str, Any]:
+        launcher_local_loopback_cdp_url = self.launched.loopback_cdp_url if self.launched is not None else None
+        if not launcher_local_loopback_cdp_url and upstream.config.upstream_mode == "ws" and upstream.config.upstream_ws_cdp_url:
+            launcher_local_loopback_cdp_url = upstream.config.upstream_ws_cdp_url
+        return {"upstream": {"upstream_mode": "ws", "upstream_ws_cdp_url": launcher_local_loopback_cdp_url}} if launcher_local_loopback_cdp_url else {}
 
-    def getInjectorConfig(self) -> dict[str, Any]:
-        return {
-            "injector_browserbase_api_key": self.options.get("browserbase_api_key"),
-            "injector_browserbase_base_url": self.options.get("browserbase_base_url"),
-            "injector_extension_id": self.options.get("injector_extension_id"),
-        }
-
-    def launch(self, options: BrowserLaunchOptions | None = None) -> LaunchedBrowser:
+    def launch(self, config: LauncherConfig | dict[str, Any] | None = None) -> LaunchedBrowser:
         raise NotImplementedError(f"{type(self).__name__}.launch is not implemented.")
+
+    def close(self) -> None:
+        launched = self.launched
+        self.launched = None
+        if launched is not None:
+            launched.close()
+
+    def toJSON(self) -> dict[str, object]:
+        return modCDPToJSON(
+            self,
+            {
+                "state": {
+                    "launched": self.launched is not None,
+                    "cdp_url": self.launched.cdp_url if self.launched is not None else None,
+                    "loopback_cdp_url": self.launched.loopback_cdp_url if self.launched is not None else None,
+                    "cdp_listen_port": self.launched.cdp_listen_port if self.launched is not None else None,
+                    "profile_dir": self.launched.profile_dir if self.launched is not None else None,
+                    "browserbase_session_id": self.launched.browserbase_session_id if self.launched is not None else None,
+                    "browserbase_session_url": self.launched.browserbase_session_url if self.launched is not None else None,
+                    "browserbase_debug_url": self.launched.browserbase_debug_url if self.launched is not None else None,
+                }
+            },
+        )
 
 
 def merge_chrome_args(existing: list[str] | None = None, incoming: list[str] | None = None) -> list[str]:
@@ -121,6 +101,12 @@ def merge_chrome_args(existing: list[str] | None = None, incoming: list[str] | N
         else:
             merged.insert(first_url_index, load_extension_arg)
     return merged
+
+
+def _launcher_config(config: LauncherConfig | dict[str, Any] | None = None) -> LauncherConfig:
+    if isinstance(config, LauncherConfig):
+        return config
+    return LauncherConfig.model_validate(config or {})
 
 
 def resolveCdpWebSocketUrl(endpoint: str, name: str = "cdp_url") -> str:

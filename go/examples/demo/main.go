@@ -4,10 +4,7 @@
 //   --live       Use the running Google Chrome enabled via chrome://inspect.
 //   --direct     *.* -> direct_cdp on the client.
 //   --loopback   *.* -> service_worker on client; *.* -> loopback_cdp on server. Default.
-//   --debugger   *.* -> service_worker on client; *.* -> chrome_debugger on server.
-//   --upstream   ws|pipe|reversews|nativemessaging|nats. Defaults to ws.
-//                reversews and nativemessaging use the fixed extension defaults:
-//                ws://127.0.0.1:29292 and com.modcdp.bridge.
+//   --upstream   ws. Defaults to ws.
 
 package main
 
@@ -22,43 +19,55 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	modcdp "github.com/browserbase/modcdp/go/modcdp"
 	"golang.org/x/term"
 )
 
-const reverseTransportWaitTimeoutMS = 60_000
+const demoCDPSendTimeoutMS = 60_000
+const demoExecutionContextTimeoutMS = 60_000
 
-func optionsFor(mode, upstreamMode, cdpURL, extensionPath string, launchOptions modcdp.LaunchOptions) modcdp.Options {
-	upstream := modcdp.UpstreamConfig{UpstreamMode: upstreamMode, UpstreamCDPURL: cdpURL}
-	if upstreamMode == "reversews" {
-		upstream.UpstreamReverseWSWaitTimeoutMS = reverseTransportWaitTimeoutMS
+func configFor(mode, upstreamMode, cdpURL, extensionPath string, launchConfig modcdp.LauncherConfig) modcdp.Config {
+	upstream := modcdp.UpstreamTransportConfig{UpstreamMode: upstreamMode, UpstreamWSCDPURL: cdpURL}
+	launcher := launchConfig
+	if cdpURL != "" {
+		launcher.LauncherMode = "remote"
+		launcher.LauncherRemoteCDPURL = cdpURL
+	} else {
+		launcher.LauncherMode = "local"
 	}
-	if upstreamMode == "nativemessaging" {
-		upstream.UpstreamNativeMessagingWaitTimeoutMS = reverseTransportWaitTimeoutMS
+	injector := modcdp.InjectorConfig{
+		InjectorMode:                      "cli",
+		InjectorCLIExtensionPath:          extensionPath,
+		InjectorExecutionContextTimeoutMS: demoExecutionContextTimeoutMS,
 	}
-	if upstreamMode == "nats" {
-		upstream.UpstreamNATSWaitTimeoutMS = reverseTransportWaitTimeoutMS
+	if cdpURL != "" {
+		injector.InjectorMode = "discover"
+		injector.InjectorDiscoverExtensionPath = extensionPath
 	}
 	if mode == "direct" {
-		return modcdp.Options{
-			Launcher: modcdp.LauncherConfig{LauncherMode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], LauncherOptions: launchOptions},
-			Upstream: upstream,
-			Injector: modcdp.InjectorConfig{InjectorMode: "auto", InjectorExtensionPath: extensionPath},
-			Client:   modcdp.ClientConfig{ClientRoutes: clientRoutesFor(mode)},
+		return modcdp.Config{
+			Launcher:     launcher,
+			Upstream:     upstream,
+			Injector:     injector,
+			Router:       modcdp.RouterConfig{RouterRoutes: clientRoutesFor(mode)},
+			ClientConfig: modcdp.ClientConfig{ClientCDPSendTimeoutMS: demoCDPSendTimeoutMS},
 		}
 	}
-	server := &modcdp.ServerConfig{
-		ServerRoutes: serverRoutesFor(mode, upstreamMode),
+	server_config := &modcdp.ServerConfig{
+		Router: modcdp.RouterConfig{
+			RouterRoutes:                      serverRoutesFor(mode, upstreamMode),
+			LoopbackExecutionContextTimeoutMS: demoExecutionContextTimeoutMS,
+		},
 	}
-	return modcdp.Options{
-		Launcher: modcdp.LauncherConfig{LauncherMode: map[bool]string{true: "remote", false: "local"}[cdpURL != ""], LauncherOptions: launchOptions},
-		Upstream: upstream,
-		Injector: modcdp.InjectorConfig{InjectorMode: "auto", InjectorExtensionPath: extensionPath},
-		Client:   modcdp.ClientConfig{ClientRoutes: clientRoutesFor(mode)},
-		Server:   server,
+	return modcdp.Config{
+		Launcher:     launcher,
+		Upstream:     upstream,
+		Injector:     injector,
+		Router:       modcdp.RouterConfig{RouterRoutes: clientRoutesFor(mode)},
+		ClientConfig: modcdp.ClientConfig{ClientCDPSendTimeoutMS: demoCDPSendTimeoutMS},
+		ServerConfig: server_config,
 	}
 }
 
@@ -67,32 +76,25 @@ func clientRoutesFor(mode string) map[string]string {
 	if mode == "direct" {
 		route = "direct_cdp"
 	}
-	return map[string]string{
-		"Mod.*":                     "service_worker",
-		"Custom.*":                  "service_worker",
-		"*.*":                       route,
-		"Target.setDiscoverTargets": "direct_cdp",
-		"Target.createTarget":       "direct_cdp",
-		"Target.activateTarget":     "direct_cdp",
+	routes := map[string]string{
+		"Mod.*":     "service_worker",
+		"Custom.*":  "service_worker",
+		"Runtime.*": "service_worker",
+		"*.*":       route,
 	}
+	return routes
 }
 
 func serverRoutesFor(mode, upstreamMode string) map[string]string {
+	_ = upstreamMode
 	serverRoute := "auto"
 	if mode == "loopback" {
 		serverRoute = "loopback_cdp"
-	} else if mode == "debugger" {
-		serverRoute = "chrome_debugger"
 	}
 	routes := map[string]string{
 		"Mod.*":    "service_worker",
 		"Custom.*": "service_worker",
 		"*.*":      serverRoute,
-	}
-	if mode == "loopback" || upstreamMode == "reversews" || upstreamMode == "nativemessaging" || upstreamMode == "nats" {
-		routes["Target.setDiscoverTargets"] = "loopback_cdp"
-		routes["Target.createTarget"] = "loopback_cdp"
-		routes["Target.activateTarget"] = "loopback_cdp"
 	}
 	return routes
 }
@@ -153,32 +155,24 @@ func parseArgs(argv []string) (string, string, bool, error) {
 			upstreamMode = strings.TrimPrefix(a, "--upstream=")
 		}
 	}
-	for _, mode := range []string{"ws", "pipe", "reversews", "nativemessaging", "nats"} {
+	for _, mode := range []string{"ws"} {
 		if flags[mode] {
 			upstreamMode = mode
 		}
 	}
 	switch upstreamMode {
-	case "ws", "pipe", "reversews", "nativemessaging", "nats":
+	case "ws":
 	default:
-		return "", "", false, fmt.Errorf("unknown --upstream=%s; expected ws|pipe|reversews|nativemessaging|nats", upstreamMode)
+		return "", "", false, fmt.Errorf("unknown --upstream=%s; expected ws", upstreamMode)
 	}
 	live := flags["live"]
 	mode := "loopback"
-	if flags["debugger"] {
-		mode = "debugger"
-	} else if flags["direct"] {
+	if flags["direct"] {
 		mode = "direct"
 	} else if flags["loopback"] {
 		mode = "loopback"
 	} else if live {
 		mode = "direct"
-	}
-	if live && upstreamMode == "pipe" {
-		return "", "", false, fmt.Errorf("--live cannot be combined with --upstream=pipe because pipe handles only exist for launched browsers")
-	}
-	if mode == "direct" && (upstreamMode == "reversews" || upstreamMode == "nativemessaging" || upstreamMode == "nats") {
-		return "", "", false, fmt.Errorf("--direct cannot be combined with --upstream=%s; reverse transports terminate at ModCDPServer", upstreamMode)
 	}
 	return mode, upstreamMode, live, nil
 }
@@ -197,7 +191,7 @@ func main() {
 	root, _ := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
 	extensionPath := filepath.Join(root, "dist", "extension")
 	var cdpURL string
-	launchOptions := modcdp.LaunchOptions{}
+	launchConfig := modcdp.LauncherConfig{}
 	if live {
 		var err error
 		cdpURL, err = waitForLiveCDPURL()
@@ -210,49 +204,36 @@ func main() {
 		if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" {
 			headless = true
 		}
-		launchOptions = modcdp.LaunchOptions{
-			ExecutablePath:       chromePath,
-			ChromeReadyTimeoutMS: 60_000,
-			Headless:             &headless,
-			Sandbox:              &sandbox,
+		launchConfig = modcdp.LauncherConfig{
+			LauncherLocalExecutablePath:       chromePath,
+			LauncherLocalChromeReadyTimeoutMS: 60_000,
+			LauncherLocalHeadless:             &headless,
+			LauncherLocalSandbox:              &sandbox,
 		}
 	}
 
-	cdp := modcdp.New(optionsFor(mode, upstreamMode, cdpURL, extensionPath, launchOptions))
-	var (
-		eventsMu            sync.Mutex
-		targetCreatedEvents []modcdp.TargetTargetCreatedEvent
-		pageTargetEvents    []map[string]any
-	)
-	cdp.Target.On.TargetCreated(func(event modcdp.TargetTargetCreatedEvent) {
-		fmt.Printf("Target.targetCreated -> %s\n", event.TargetID())
-		eventsMu.Lock()
-		targetCreatedEvents = append(targetCreatedEvents, event)
-		eventsMu.Unlock()
-	})
+	cdp := modcdp.New(configFor(mode, upstreamMode, cdpURL, extensionPath, launchConfig))
 
 	if err := cdp.Connect(); err != nil {
 		log.Fatalf("connect: %v", err)
 	}
 	defer cdp.Close()
 	fmt.Println("upstream cdp:", cdp.CDPURL)
-	fmt.Printf("connected; ext %s session %s\n", cdp.ExtensionID, cdp.ExtSessionID)
+	fmt.Printf("connected; ext %s session %s\n", cdp.Injector.ExtensionID, cdp.Injector.SessionID)
 	if b, err := json.Marshal(cdp.ConnectTiming); err == nil {
 		fmt.Println("connect timing    ->", string(b))
 	}
 
-	serverConfig := map[string]any{"server_routes": serverRoutesFor(mode, upstreamMode)}
 	configureParams := map[string]any{
-		"upstream": map[string]any{"upstream_mode": upstreamMode},
-		"client":   map[string]any{"client_routes": clientRoutesFor(mode)},
-		"server":   serverConfig,
+		"router": map[string]any{"router_routes": serverRoutesFor(mode, upstreamMode), "loopback_execution_context_timeout_ms": demoExecutionContextTimeoutMS},
 	}
 	configureRaw, err := cdp.Mod.Configure(configureParams)
 	if err != nil {
 		log.Fatalf("Mod.configure: %v", err)
 	}
 	configure := mustMap(configureRaw, "Mod.configure")
-	configureRoutes := mustMap(configure["routes"], "Mod.configure.routes")
+	configureRouter := mustMap(configure["router"], "Mod.configure.router")
+	configureRoutes := mustMap(configureRouter["router_routes"], "Mod.configure.router.router_routes")
 	if configureRoutes["*.*"] != serverRoutesFor(mode, upstreamMode)["*.*"] {
 		log.Fatalf("unexpected Mod.configure result: %v", configure)
 	}
@@ -289,32 +270,6 @@ func main() {
 		fmt.Println("ping latency      ->", string(b))
 	}
 
-	if mode == "debugger" {
-		if version, err := cdp.Browser.GetVersion(); err == nil {
-			b, _ := json.Marshal(version)
-			fmt.Println("Browser.getVersion ->", string(b))
-		} else {
-			fmt.Println("Browser.getVersion -> (debugger route rejected:", err, ")")
-		}
-		runtimeEval := mustMap(mustSend(cdp, "Runtime.evaluate", map[string]any{
-			"expression":    "(() => 42)()",
-			"returnByValue": true,
-		}), "Runtime.evaluate")
-		runtimeResult := mustMap(runtimeEval["result"], "Runtime.evaluate.result")
-		if runtimeResult["value"] != float64(42) && runtimeResult["value"] != 42 {
-			log.Fatalf("unexpected Runtime.evaluate result: %v", runtimeEval)
-		}
-		b, _ := json.Marshal(runtimeEval)
-		fmt.Println("Runtime.evaluate ->", string(b))
-	} else {
-		version, err := cdp.Browser.GetVersion()
-		if err != nil {
-			log.Fatalf("Browser.getVersion: %v", err)
-		}
-		b, _ := json.Marshal(version)
-		fmt.Println("Browser.getVersion ->", string(b))
-	}
-
 	if r, err := cdp.Mod.Evaluate(map[string]any{
 		"expression": "({ extension_id: chrome.runtime.id })",
 	}); err != nil {
@@ -322,11 +277,78 @@ func main() {
 	} else {
 		modcdpEval, _ := r.(map[string]any)
 		extensionID, _ := modcdpEval["extension_id"].(string)
-		if extensionID == "" || (cdp.ExtensionID != "" && extensionID != cdp.ExtensionID) {
+		if extensionID == "" || (cdp.Injector.ExtensionID != "" && extensionID != cdp.Injector.ExtensionID) {
 			log.Fatalf("unexpected Mod.evaluate result: %v", modcdpEval)
 		}
 		b, _ := json.Marshal(r)
 		fmt.Println("Mod.evaluate     ->", string(b))
+	}
+
+	topologyChecked := false
+	if mode != "direct" {
+		topologyRaw, err := cdp.Mod.GetTopology(nil)
+		if err != nil {
+			log.Fatalf("Mod.getTopology: %v", err)
+		}
+		topology := mustMap(topologyRaw, "Mod.getTopology")
+		rootFrameID := mustString(topology["rootFrameId"], "Mod.getTopology.rootFrameId")
+		frames := mustMap(topology["frames"], "Mod.getTopology.frames")
+		roots := mustMap(topology["roots"], "Mod.getTopology.roots")
+		contexts := mustMap(topology["contexts"], "Mod.getTopology.contexts")
+		if _, ok := frames[rootFrameID]; !ok {
+			log.Fatalf("Mod.getTopology frames missing root frame %s: %v", rootFrameID, frames)
+		}
+		hasDocumentRoot := false
+		for _, root := range roots {
+			rootMap, ok := root.(map[string]any)
+			if ok && rootMap["kind"] == "document" {
+				hasDocumentRoot = true
+			}
+		}
+		hasPiercerContext := false
+		for _, context := range contexts {
+			contextMap, ok := context.(map[string]any)
+			if ok && contextMap["world"] == "piercer" {
+				hasPiercerContext = true
+			}
+		}
+		if !hasDocumentRoot || !hasPiercerContext {
+			log.Fatalf("unexpected Mod.getTopology result: %v", topology)
+		}
+		topologyChecked = true
+		b, _ := json.Marshal(map[string]any{
+			"rootFrameId": rootFrameID,
+			"frames":      len(frames),
+			"roots":       len(roots),
+			"contexts":    len(contexts),
+		})
+		fmt.Println("Mod.getTopology ->", string(b))
+	}
+
+	responseMiddlewareRegistrationRaw, err := cdp.Mod.AddMiddleware(modcdp.CustomMiddleware{
+		Name:       "Custom.echo",
+		Phase:      "response",
+		Expression: `async (payload, next) => next({ ...payload, responseMiddleware: "ok" })`,
+	})
+	if err != nil {
+		log.Fatalf("Mod.addMiddleware response: %v", err)
+	}
+	responseMiddlewareRegistration := mustMap(responseMiddlewareRegistrationRaw, "Mod.addMiddleware response")
+	if responseMiddlewareRegistration["registered"] != true || responseMiddlewareRegistration["phase"] != "response" {
+		log.Fatalf("unexpected response middleware registration: %v", responseMiddlewareRegistration)
+	}
+
+	eventMiddlewareRegistrationRaw, err := cdp.Mod.AddMiddleware(modcdp.CustomMiddleware{
+		Name:       "Custom.demoEvent",
+		Phase:      "event",
+		Expression: `async (payload, next) => next({ ...payload, eventMiddleware: "ok" })`,
+	})
+	if err != nil {
+		log.Fatalf("Mod.addMiddleware event: %v", err)
+	}
+	eventMiddlewareRegistration := mustMap(eventMiddlewareRegistrationRaw, "Mod.addMiddleware event")
+	if eventMiddlewareRegistration["registered"] != true || eventMiddlewareRegistration["phase"] != "event" {
+		log.Fatalf("unexpected event middleware registration: %v", eventMiddlewareRegistration)
 	}
 
 	echoRegistrationRaw, err := cdp.Mod.AddCustomCommand(modcdp.CustomCommand{
@@ -341,69 +363,11 @@ func main() {
 		log.Fatalf("unexpected Custom.echo registration: %v", echoRegistration)
 	}
 	echoResult := mustMap(mustSend(cdp, "Custom.echo", map[string]any{"value": "custom-command-ok"}), "Custom.echo")
-	if echoResult["echoed"] != "custom-command-ok" || echoResult["method"] != "Custom.echo" {
+	if echoResult["echoed"] != "custom-command-ok" || echoResult["method"] != "Custom.echo" || echoResult["responseMiddleware"] != "ok" {
 		log.Fatalf("unexpected Custom.echo result: %v", echoResult)
 	}
-	b, _ := json.Marshal(echoResult)
-	fmt.Println("Custom.echo      ->", string(b))
-
-	tabCommandRegistrationRaw, err := cdp.Mod.AddCustomCommand(modcdp.CustomCommand{
-		Name: "Custom.TabIdFromTargetId",
-		Expression: `async ({ targetId }) => {
-          const targets = await chrome.debugger.getTargets();
-          const target = targets.find(target => target.id === targetId);
-          return { tabId: target?.tabId ?? null };
-        }`,
-	})
-	if err != nil {
-		log.Fatalf("Mod.addCustomCommand Custom.TabIdFromTargetId: %v", err)
-	}
-	tabCommandRegistration := mustMap(tabCommandRegistrationRaw, "Mod.addCustomCommand Custom.TabIdFromTargetId")
-	if tabCommandRegistration["registered"] != true {
-		log.Fatalf("unexpected TabIdFromTargetId registration: %v", tabCommandRegistration)
-	}
-	targetCommandRegistrationRaw, err := cdp.Mod.AddCustomCommand(modcdp.CustomCommand{
-		Name: "Custom.targetIdFromTabId",
-		Expression: `async ({ tabId }) => {
-          const targets = await chrome.debugger.getTargets();
-          const target = targets.find(target => target.type === "page" && target.tabId === tabId);
-          return { targetId: target?.id ?? null };
-        }`,
-	})
-	if err != nil {
-		log.Fatalf("Mod.addCustomCommand Custom.targetIdFromTabId: %v", err)
-	}
-	targetCommandRegistration := mustMap(targetCommandRegistrationRaw, "Mod.addCustomCommand Custom.targetIdFromTabId")
-	if targetCommandRegistration["registered"] != true {
-		log.Fatalf("unexpected targetIdFromTabId registration: %v", targetCommandRegistration)
-	}
-	for _, phase := range []string{"response", "event"} {
-		middlewareRegistrationRaw, err := cdp.Mod.AddMiddleware(modcdp.CustomMiddleware{
-			Name:  "*",
-			Phase: phase,
-			Expression: `async (payload, next) => {
-              const seen = new WeakSet();
-              const visit = async value => {
-                if (!value || typeof value !== "object" || seen.has(value)) return;
-                seen.add(value);
-                if (!Array.isArray(value) && typeof value.targetId === "string" && value.tabId == null) {
-                  const { tabId } = await cdp.send("Custom.TabIdFromTargetId", { targetId: value.targetId });
-                  if (tabId != null) value.tabId = tabId;
-                }
-                for (const child of Array.isArray(value) ? value : Object.values(value)) await visit(child);
-              };
-              await visit(payload);
-              return next(payload);
-            }`,
-		})
-		if err != nil {
-			log.Fatalf("Mod.addMiddleware %s: %v", phase, err)
-		}
-		middlewareRegistration := mustMap(middlewareRegistrationRaw, "Mod.addMiddleware "+phase)
-		if middlewareRegistration["registered"] != true || middlewareRegistration["phase"] != phase {
-			log.Fatalf("unexpected %s middleware registration: %v", phase, middlewareRegistration)
-		}
-	}
+	echoJSON, _ := json.Marshal(echoResult)
+	fmt.Println("Custom.echo      ->", string(echoJSON))
 
 	demoEventCh := make(chan map[string]any, 16)
 	cdp.On("Custom.demoEvent", func(data any) {
@@ -419,8 +383,32 @@ func main() {
 	if demoEventRegistration["registered"] != true || demoEventRegistration["name"] != "Custom.demoEvent" {
 		log.Fatalf("unexpected Custom.demoEvent registration: %v", demoEventRegistration)
 	}
+	emitExpression := `async () => {
+                await globalThis.__ModCDP_custom_event__(JSON.stringify({
+                  event: "Custom.demoEvent",
+                  data: { value: "custom-event-ok" },
+                  cdpSessionId: null,
+                }));
+                return { emitted: true };
+              }`
+	if mode != "direct" {
+		emitExpression = `async () => {
+                const params = await ModCDP.runMiddleware("event", "Custom.demoEvent", { value: "custom-event-ok" }, {
+                  cdpSessionId,
+                  event: {
+                    method: "Custom.demoEvent",
+                    params: { value: "custom-event-ok" },
+                  },
+                });
+                const sent = downstream.sendEvent({
+                  method: "Custom.demoEvent",
+                  params,
+                });
+                return { emitted: sent > 0 };
+              }`
+	}
 	emitRaw, err := cdp.Mod.Evaluate(map[string]any{
-		"expression": `async () => await ModCDP.emit("Custom.demoEvent", { value: "custom-event-ok" })`,
+		"expression": emitExpression,
 	})
 	if err != nil {
 		log.Fatalf("Custom.demoEvent emit: %v", err)
@@ -430,128 +418,26 @@ func main() {
 		log.Fatalf("unexpected Custom.demoEvent emit result: %v", emitResult)
 	}
 	demoEvent := waitForEvent(demoEventCh, "Custom.demoEvent", func(event map[string]any) bool {
-		return event["value"] == "custom-event-ok"
+		return event["value"] == "custom-event-ok" && (mode == "direct" || event["eventMiddleware"] == "ok")
 	})
 	fmt.Println("Custom.demoEvent ->", demoEvent)
 
-	pageTargetEventRegistrationRaw, err := cdp.Mod.AddCustomEvent(modcdp.CustomEvent{Name: "Custom.pageTargetUpdated"})
-	if err != nil {
-		log.Fatalf("Mod.addCustomEvent Custom.pageTargetUpdated: %v", err)
+	runtimeEval := mustMap(mustSend(cdp, "Runtime.evaluate", map[string]any{
+		"expression":    "(() => 42)()",
+		"returnByValue": true,
+	}), "Runtime.evaluate")
+	runtimeResult := mustMap(runtimeEval["result"], "Runtime.evaluate.result")
+	if runtimeResult["value"] != float64(42) && runtimeResult["value"] != 42 {
+		log.Fatalf("unexpected Runtime.evaluate result: %v", runtimeEval)
 	}
-	pageTargetEventRegistration := mustMap(pageTargetEventRegistrationRaw, "Mod.addCustomEvent Custom.pageTargetUpdated")
-	if pageTargetEventRegistration["registered"] != true {
-		log.Fatalf("unexpected page target event registration: %v", pageTargetEventRegistration)
-	}
-	cdp.On("Custom.pageTargetUpdated", func(p any) {
-		event, _ := p.(map[string]any)
-		fmt.Printf("Custom.pageTargetUpdated -> %v\n", event)
-		eventsMu.Lock()
-		pageTargetEvents = append(pageTargetEvents, event)
-		eventsMu.Unlock()
-	})
+	runtimeJSON, _ := json.Marshal(runtimeEval)
+	fmt.Println("Runtime.evaluate ->", string(runtimeJSON))
 
-	if _, err := cdp.Target.SetDiscoverTargets(modcdp.TargetSetDiscoverTargetsParams{Discover: true}); err != nil {
-		log.Fatal(err)
+	topologyLabel := ""
+	if topologyChecked {
+		topologyLabel = "topology, "
 	}
-	createdTarget, err := cdp.Target.CreateTarget(modcdp.TargetCreateTargetParams{
-		URL:        "https://example.com",
-		Background: modcdp.Bool(true),
-	})
-	if err != nil {
-		log.Fatalf("Target.createTarget: %v", err)
-	}
-	createdTargetID := string(createdTarget.TargetID)
-	if createdTargetID == "" {
-		log.Fatalf("Target.createTarget returned no targetId: %v", createdTarget)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	var matchedTargetEvent *modcdp.TargetTargetCreatedEvent
-	for time.Now().Before(deadline) {
-		eventsMu.Lock()
-		for i := range targetCreatedEvents {
-			if targetCreatedEvents[i].TargetID() == createdTargetID {
-				matchedTargetEvent = &targetCreatedEvents[i]
-				break
-			}
-		}
-		eventsMu.Unlock()
-		if matchedTargetEvent != nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if matchedTargetEvent == nil {
-		log.Fatalf("expected Target.targetCreated for %s", createdTargetID)
-	}
-	fmt.Println("normal event matched ->", createdTargetID)
-
-	tabFromTargetRaw, err := cdp.Send("Custom.TabIdFromTargetId", map[string]any{"targetId": createdTargetID})
-	if err != nil {
-		log.Fatalf("Custom.TabIdFromTargetId: %v", err)
-	}
-	tabFromTarget, _ := tabFromTargetRaw.(map[string]any)
-	b, _ = json.Marshal(tabFromTarget)
-	fmt.Println("Custom.TabIdFromTargetId ->", string(b))
-
-	if _, err := cdp.Target.ActivateTarget(modcdp.TargetActivateTargetParams{TargetID: modcdp.TargetTargetID(createdTargetID)}); err != nil {
-		log.Fatalf("Target.activateTarget: %v", err)
-	}
-	pageTargetEmitRaw, err := cdp.Mod.Evaluate(map[string]any{
-		"params": map[string]any{"targetId": createdTargetID},
-		"expression": `async ({ targetId }) => {
-          const targets = await chrome.debugger.getTargets();
-          const target = targets.find(target => target.id === targetId);
-          if (!target?.id) throw new Error(` + "`target ${targetId} not found`" + `);
-          await cdp.emit("Custom.pageTargetUpdated", { targetId: target.id, url: target.url ?? null });
-          return { emitted: true, targetId: target.id };
-        }`,
-	})
-	if err != nil {
-		log.Fatalf("Custom.pageTargetUpdated emit: %v", err)
-	}
-	pageTargetEmit := mustMap(pageTargetEmitRaw, "Custom.pageTargetUpdated emit")
-	if pageTargetEmit["emitted"] != true || pageTargetEmit["targetId"] != createdTargetID {
-		log.Fatalf("unexpected Custom.pageTargetUpdated emit result: %v", pageTargetEmit)
-	}
-	deadline = time.Now().Add(3 * time.Second)
-	var pageTarget map[string]any
-	for time.Now().Before(deadline) {
-		eventsMu.Lock()
-		for _, event := range pageTargetEvents {
-			if event["targetId"] == createdTargetID {
-				pageTarget = event
-				break
-			}
-		}
-		eventsMu.Unlock()
-		if pageTarget != nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if pageTarget == nil {
-		log.Fatalf("expected Custom.pageTargetUpdated for %s", createdTargetID)
-	}
-
-	pageTargetTabID, _ := pageTarget["tabId"].(float64)
-	tabID, _ := tabFromTarget["tabId"].(float64)
-	if tabID != pageTargetTabID {
-		log.Fatalf("unexpected Custom.TabIdFromTargetId result: %v", tabFromTarget)
-	}
-
-	targetFromTabRaw, err := cdp.Send("Custom.targetIdFromTabId", map[string]any{"tabId": pageTarget["tabId"]})
-	if err != nil {
-		log.Fatalf("Custom.targetIdFromTabId: %v", err)
-	}
-	targetFromTab, _ := targetFromTabRaw.(map[string]any)
-	middlewareTabID, _ := targetFromTab["tabId"].(float64)
-	if targetFromTab["targetId"] != createdTargetID || middlewareTabID != pageTargetTabID {
-		log.Fatalf("unexpected Custom.targetIdFromTabId/middleware result: %v", targetFromTab)
-	}
-	b, _ = json.Marshal(targetFromTab)
-	fmt.Println("Custom.targetIdFromTabId ->", string(b))
-
-	fmt.Printf("\nSUCCESS (%s/%s): normal command, normal event, custom commands, custom event, and middleware all passed\n", mode, upstreamMode)
+	fmt.Printf("\nSUCCESS (%s/%s): native command, %scustom commands, custom event, and middleware all passed\n", mode, upstreamMode, topologyLabel)
 
 	// TTY-only REPL. Lets you poke at the live browser interactively;
 	// subscribed events print as they arrive. Skip when stdin is not a tty
@@ -622,7 +508,7 @@ func runRepl(cdp *modcdp.ModCDPClient, mode string) {
 	fmt.Println("Enter commands as Domain.method({...JSON params...}). Examples:")
 	fmt.Println(`  Browser.getVersion({})`)
 	fmt.Println(`  Mod.evaluate({"expression": "chrome.tabs.query({active: true})"})`)
-	fmt.Println(`  Custom.TabIdFromTargetId({"targetId": "..."})`)
+	fmt.Println(`  Runtime.evaluate({"expression": "document.title", "returnByValue": true})`)
 	fmt.Println("Type exit or quit to disconnect (browser keeps running).")
 	cmdRE := regexp.MustCompile(`^([A-Za-z_]\w*\.[A-Za-z_]\w*)(?:\((.*)\))?$`)
 	sc := bufio.NewScanner(os.Stdin)

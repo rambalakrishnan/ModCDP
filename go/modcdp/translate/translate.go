@@ -1,10 +1,15 @@
+// MODCDP_TRANSLATE: KEEP THIS FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// Keep all shapes, signatures, behavior, and tests 1:1 in sync with:
+// - ./js/src/translate/translate.ts
+// - ./python/modcdp/translate/translate.py
 package translate
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
+
+	"github.com/browserbase/modcdp/go/modcdp/types"
 )
 
 const UpstreamEventBindingName = "__ModCDP_event_from_upstream__"
@@ -43,30 +48,6 @@ func RouteFor(method string, routes map[string]string) string {
 	return "direct_cdp"
 }
 
-type rawStep struct {
-	Method    string
-	Params    map[string]any
-	Unwrap    string
-	SessionID string
-}
-
-type rawCommand struct {
-	Route  string
-	Target string
-	Steps  []rawStep
-}
-
-type RawStep = rawStep
-type RawCommand = rawCommand
-
-var routeFor = RouteFor
-var wrapCommandIfNeeded = WrapCommandIfNeeded
-var unwrapResponseIfNeeded = UnwrapResponseIfNeeded
-var unwrapEventIfNeeded = UnwrapEventIfNeeded
-
-const upstreamEventBindingName = UpstreamEventBindingName
-const customEventBindingName = CustomEventBindingName
-
 func stringValue(value any) string {
 	if typed, ok := value.(string); ok {
 		return typed
@@ -82,121 +63,35 @@ func callFunctionParams(functionDeclaration string) map[string]any {
 	}
 }
 
-func wrapModCDPEvaluate(params map[string]any, sessionID string) map[string]any {
-	expr, _ := params["expression"].(string)
-	userParams := params["params"]
-	if userParams == nil {
-		userParams = map[string]any{}
-	}
-	cdpSessionID, _ := params["cdpSessionId"].(string)
-	if cdpSessionID == "" {
-		cdpSessionID = sessionID
-	}
-	up, _ := json.Marshal(userParams)
-	sid, _ := json.Marshal(cdpSessionID)
-	return callFunctionParams(fmt.Sprintf(
-		`async function() { const params = %s; const cdp = globalThis.ModCDP.attachToSession(%s); const ModCDP = globalThis.ModCDP; const chrome = globalThis.chrome; const value = (%s); return typeof value === 'function' ? await value(params) : value; }`,
-		string(up), string(sid), expr,
-	))
-}
-
-func wrapModCDPAddCustomCommand(params map[string]any) map[string]any {
-	name, _ := json.Marshal(params["name"])
-	expr, _ := params["expression"].(string)
-	exprJSON, _ := json.Marshal(expr)
-	return callFunctionParams(fmt.Sprintf(
-		`function() { return globalThis.ModCDP.addCustomCommand({ name: %s, params_schema: null, result_schema: null, expression: %s, handler: async (params, cdpSessionId, method) => { const cdp = globalThis.ModCDP.attachToSession(cdpSessionId); const ModCDP = globalThis.ModCDP; const chrome = globalThis.chrome; const handler = (%s); return await handler(params || {}, method); }, }); }`,
-		string(name), string(exprJSON), expr,
-	))
-}
-
-func wrapModCDPAddCustomEvent(params map[string]any) map[string]any {
-	rawName, _ := params["name"].(string)
-	name, _ := json.Marshal(rawName)
-	return callFunctionParams(fmt.Sprintf(
-		`function() { return globalThis.ModCDP.addCustomEvent({ name: %s, event_schema: null }); }`,
-		string(name),
-	))
-}
-
-func wrapModCDPAddMiddleware(params map[string]any) map[string]any {
-	name := params["name"]
-	if name == nil {
-		name = "*"
-	}
-	rawExpr, _ := params["expression"].(string)
-	nameJSON, _ := json.Marshal(name)
-	phaseJSON, _ := json.Marshal(params["phase"])
-	exprJSON, _ := json.Marshal(rawExpr)
-	return callFunctionParams(fmt.Sprintf(
-		`function() { return globalThis.ModCDP.addMiddleware({ name: %s, phase: %s, expression: %s, handler: async (payload, next, context = {}) => { const cdp = globalThis.ModCDP.attachToSession(context.cdpSessionId ?? null); const ModCDP = globalThis.ModCDP; const chrome = globalThis.chrome; const middleware = (%s); return await middleware(payload, next, context); }, }); }`,
-		string(nameJSON), string(phaseJSON), string(exprJSON), rawExpr,
-	))
-}
-
-func wrapCustomCommand(method string, params map[string]any, sessionID string) map[string]any {
+func wrapCustomCommand(method string, params map[string]any, sessionID any) map[string]any {
 	p, _ := json.Marshal(params)
 	runtimeParams := callFunctionParams(`async function(method, paramsJson, cdpSessionId) { return JSON.stringify(await globalThis.ModCDP.handleCommand(method, JSON.parse(paramsJson), cdpSessionId)); }`)
 	runtimeParams["arguments"] = []map[string]any{{"value": method}, {"value": string(p)}, {"value": sessionID}}
 	return runtimeParams
 }
 
-func wrapServiceWorkerCommand(method string, params map[string]any, sessionID string, targetSessionID string) []rawStep {
+func wrapServiceWorkerCommand(method string, params map[string]any, sessionID string) []types.TranslatedStep {
 	if params == nil {
 		params = map[string]any{}
 	}
-	if targetSessionID == "" {
-		targetSessionID = sessionID
+	var cdpSessionID any
+	if paramsSessionID, _ := params["cdpSessionId"].(string); paramsSessionID != "" {
+		cdpSessionID = paramsSessionID
+	} else if sessionID != "" {
+		cdpSessionID = sessionID
 	}
-	if method == "Mod.ping" {
-		if _, ok := params["sent_at"]; !ok {
-			next := map[string]any{}
-			for key, value := range params {
-				next[key] = value
-			}
-			next["sent_at"] = time.Now().UnixMilli()
-			params = next
-		}
-	}
-
-	if method == "Mod.addCustomEvent" {
-		return []rawStep{
-			{Method: "Runtime.callFunctionOn", Params: wrapModCDPAddCustomEvent(params), Unwrap: "runtime"},
-		}
-	}
-	runtimeParams := map[string]any{}
-	unwrap := "runtime"
-	switch method {
-	case "Mod.evaluate":
-		runtimeParams = wrapModCDPEvaluate(params, targetSessionID)
-	case "Mod.addCustomCommand":
-		runtimeParams = wrapModCDPAddCustomCommand(params)
-	case "Mod.addMiddleware":
-		runtimeParams = wrapModCDPAddMiddleware(params)
-	default:
-		cdpSessionID, _ := params["cdpSessionId"].(string)
-		if cdpSessionID == "" {
-			cdpSessionID = targetSessionID
-		}
-		runtimeParams = wrapCustomCommand(method, params, cdpSessionID)
-		unwrap = "runtime_json"
-	}
-	return []rawStep{{Method: "Runtime.callFunctionOn", Params: runtimeParams, Unwrap: unwrap}}
+	return []types.TranslatedStep{{Method: "Runtime.callFunctionOn", Params: wrapCustomCommand(method, params, cdpSessionID), Unwrap: "runtime_json"}}
 }
 
-func WrapCommandIfNeeded(method string, params map[string]any, routes map[string]string, sessionID string, targetSessionID ...string) (rawCommand, error) {
-	targetSession := ""
-	if len(targetSessionID) > 0 {
-		targetSession = targetSessionID[0]
-	}
+func WrapCommandIfNeeded(method string, params map[string]any, routes map[string]string, sessionID string) (types.TranslatedCommand, error) {
 	route := RouteFor(method, routes)
 	if route == "direct_cdp" {
-		return rawCommand{Route: route, Target: "direct_cdp", Steps: []rawStep{{Method: method, Params: params, SessionID: targetSession}}}, nil
+		return types.TranslatedCommand{Route: route, Target: "direct_cdp", Steps: []types.TranslatedStep{{Method: method, Params: params, SessionID: sessionID}}}, nil
 	}
 	if route == "service_worker" {
-		return rawCommand{Route: route, Target: "service_worker", Steps: wrapServiceWorkerCommand(method, params, sessionID, targetSession)}, nil
+		return types.TranslatedCommand{Route: route, Target: "service_worker", Steps: wrapServiceWorkerCommand(method, params, sessionID)}, nil
 	}
-	return rawCommand{}, fmt.Errorf("unsupported client route %q for %s", route, method)
+	return types.TranslatedCommand{}, fmt.Errorf("unsupported client route %q for %s", route, method)
 }
 
 func UnwrapResponseIfNeeded(result map[string]any, unwrap string) (any, error) {
@@ -234,31 +129,55 @@ func UnwrapResponseIfNeeded(result map[string]any, unwrap string) (any, error) {
 	return value, nil
 }
 
-func UnwrapEventIfNeeded(method string, params map[string]any, sessionID string, ourSessionID string) (string, any, bool) {
+func UnwrapEventIfNeeded(method string, params map[string]any, sessionID string, ourSessionID string) (*types.UnwrappedModCDPEvent, bool) {
 	if method != "Runtime.bindingCalled" {
-		return "", nil, false
+		return nil, false
 	}
 	name, _ := params["name"].(string)
 	payloadStr, _ := params["payload"].(string)
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil || payload == nil {
-		return "", nil, false
+		return nil, false
 	}
 	isUpstreamEventBinding := name == UpstreamEventBindingName
 	isCustomEventBinding := name == CustomEventBindingName
 	if !isUpstreamEventBinding && !isCustomEventBinding {
-		return "", nil, false
+		return nil, false
 	}
 	payloadEvent, _ := payload["event"].(string)
 	if payloadEvent == "" {
-		return "", nil, false
+		return nil, false
 	}
 	resolvedEvent := payloadEvent
 	if resolvedEvent == UpstreamEventBindingName || resolvedEvent == CustomEventBindingName {
-		return "", nil, false
+		return nil, false
+	}
+	sourceSessionID := sessionID
+	if payloadSessionID, ok := payload["cdpSessionId"].(string); ok {
+		sourceSessionID = payloadSessionID
+	}
+	var sourceSessionIDPtr *string
+	if sourceSessionID != "" {
+		sourceSessionIDPtr = &sourceSessionID
 	}
 	if data, ok := payload["data"]; ok {
-		return resolvedEvent, data, true
+		return &types.UnwrappedModCDPEvent{Event: resolvedEvent, Data: data, SessionID: sourceSessionIDPtr}, true
 	}
-	return resolvedEvent, payload, true
+	return &types.UnwrappedModCDPEvent{Event: resolvedEvent, Data: payload, SessionID: sourceSessionIDPtr}, true
+}
+
+func EncodeBindingPayload(payload types.ModCDPBindingPayload) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Event        string  `json:"event"`
+		Data         any     `json:"data"`
+		CDPSessionID *string `json:"cdpSessionId"`
+	}{
+		Event:        payload.Event,
+		Data:         payload.Data,
+		CDPSessionID: payload.CDPSessionID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }

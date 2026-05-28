@@ -1,3 +1,9 @@
+// MODCDP_TRANSLATE_TEST: KEEP THIS TEST FILE TRANSLATED ACROSS TYPESCRIPT, PYTHON, AND GO.
+// All test cases, descriptions, covered edge cases, and setup should be kept perfectly 1:1 in sync between:
+// - ./python/tests/test_ExtensionInjector.py
+// - ./go/modcdp/injector/ExtensionInjector_test.go
+// NO MOCKING, NO MONKEY PATCHING, NO SIMULATING, NO FAKING, NO SKIPPING ALLOWED.
+// USE REAL USER-FACING CODE PATHS WITH REAL BROWSERS, REAL CLASSES, REAL URLS, etc. Hard fail if keys or other env requirements are missing.
 import assert from "node:assert/strict";
 import { test } from "vitest";
 
@@ -11,13 +17,13 @@ class ProbeExtensionInjector extends ExtensionInjector {
 
 test("ExtensionInjector owns shared injector config", async () => {
   const injector = new ProbeExtensionInjector({
-    injector_extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    injector_service_worker_extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     injector_service_worker_url_suffixes: ["/modcdp/service_worker.js"],
   });
 
   try {
-    assert.deepEqual(injector.getTransportConfig(), { injector_extension_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
-    assert.deepEqual(injector.getLauncherConfig(), {});
+    assert.equal(injector.config.injector_service_worker_extension_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert.deepEqual(injector.extra_args, []);
     assert.equal(
       injector.matches({
         type: "service_worker",
