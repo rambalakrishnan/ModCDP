@@ -30710,10 +30710,14 @@ PING\r
       void this.readWebSocketData(event.data);
     });
     ws.addEventListener("error", () => {
+      console.error("[ModCDP Debug] NATS connection error");
+      fetch("http://127.0.0.1:9223/debug-report", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({type: "nats_error", url: endpoint, timestamp: Date.now()})}).catch(() => {});
       if (this.socket === ws) this.socket = null;
       this.scheduleReconnect();
     });
     ws.addEventListener("close", () => {
+      console.error("[ModCDP Debug] NATS connection closed");
+      fetch("http://127.0.0.1:9223/debug-report", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({type: "nats_closed", url: endpoint, timestamp: Date.now()})}).catch(() => {});
       if (this.socket === ws) this.socket = null;
       this.scheduleReconnect();
     });
@@ -31010,9 +31014,9 @@ var ModCDPServer = class {
     if (this.started_at === null) {
       this.started_at = (/* @__PURE__ */ new Date()).toISOString();
       for (const transport of [
-        new ReverseWSDownstreamTransport(),
-        new NativeMessagingDownstreamTransport(),
-        new NATSDownstreamTransport()
+        new ReverseWSDownstreamTransport()
+        // NATSDownstreamTransport removed - we use ReverseWS mode
+        // NativeMessagingDownstreamTransport removed - not available in ChromeOS
       ]) {
         this.downstream.add(transport);
       }
