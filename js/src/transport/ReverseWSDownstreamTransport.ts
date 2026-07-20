@@ -12,6 +12,16 @@ import { z } from "zod";
 const DEFAULT_REVERSE_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
 const DEFAULT_REVERSE_BRIDGE_URL = "wss://penguin.linux.test:29292";
 
+// Debug helper: Report errors to help diagnose connection issues
+function reportReverseWSError(type: string, url: string, error?: string) {
+  try {
+    // Log to console (visible in Chrome's extension error page)
+    console.log(`[ModCDP Debug] ${type}: ${url}`, error ? `Error: ${error}` : "");
+  } catch {
+    // Ignore errors in reporting
+  }
+}
+
 const ReverseWSDownstreamTransportConfigSchema = z
   .object({
     downstream_reversews_url: z.string().default(DEFAULT_REVERSE_BRIDGE_URL),
@@ -165,11 +175,16 @@ class ReverseWSDownstreamTransport extends DownstreamTransport {
     ws.addEventListener("message", (event) => {
       void this.handleMessage(ws, event.data);
     });
-    ws.addEventListener("error", () => {
+    ws.addEventListener("error", (event) => {
+      console.error("ReverseWS error:", event?.type || "unknown", endpoint);
+      // Report error to help debug
+      reportReverseWSError("connection_failed", endpoint, event?.message || "unknown");
       if (this.socket === ws) this.socket = null;
       this.scheduleReconnect();
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
+      console.error("ReverseWS closed:", event?.code, event?.reason, endpoint);
+      reportReverseWSError("connection_closed", endpoint, event?.reason || `code=${event?.code}`);
       if (this.socket === ws) this.socket = null;
       this.scheduleReconnect();
     });
