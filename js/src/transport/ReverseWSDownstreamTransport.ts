@@ -17,6 +17,12 @@ function reportReverseWSError(type: string, url: string, error?: string) {
   try {
     // Log to console (visible in Chrome's extension error page)
     console.log(`[ModCDP Debug] ${type}: ${url}`, error ? `Error: ${error}` : "");
+    // Also report via HTTP to proxy debug endpoint (fire and forget)
+    fetch("http://127.0.0.1:9223/debug-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, url, error, extension: "reversews", timestamp: Date.now() })
+    }).catch(() => {});
   } catch {
     // Ignore errors in reporting
   }
