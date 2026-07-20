@@ -87,6 +87,8 @@ class ReverseWSDownstreamTransport extends DownstreamTransport {
       );
     }
     this.started = true;
+    // Report connection attempt
+    console.log("[ModCDP] Attempting to connect to:", this.config.downstream_reversews_url);
     void this.connect(this.config.downstream_reversews_url).catch(() => {
       this.scheduleReconnect();
     });

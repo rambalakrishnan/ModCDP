@@ -1,6 +1,7 @@
 // MODCDP_TS_ONLY: DO NOT TRANSLATE THIS FILE TO OTHER LANGUAGES.
 // Reason: only runs in Node.
 import http from "node:http";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RawData, WebSocket } from "ws";
@@ -118,7 +119,29 @@ async function startProxy({
     }
     res.writeHead(404);
     res.end("Not found.");
-  });
+    return;
+  }
+  // Debug endpoint: extension can report connection status here
+  if (req.url === "/debug-report" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const data = JSON.parse(body);
+        console.log("[Extension Report]", JSON.stringify(data));
+        // Write to status file for monitoring
+        fs.writeFileSync(
+          path.join(process.cwd(), "js/proxy/extension-status.json"),
+          JSON.stringify({ ...data, timestamp: Date.now() }, null, 2)
+        );
+      } catch (e) {
+        console.error("[Extension Report] Parse error:", e);
+      }
+      res.writeHead(200);
+      res.end("OK");
+    });
+    return;
+  }
   const wss = new WebSocketServer({ noServer: true });
   http_server.on("upgrade", (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
