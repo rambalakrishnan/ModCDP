@@ -42,7 +42,7 @@ upstream_transport_constructors.set("reversews", ReverseWSUpstreamTransport);
 upstream_transport_constructors.set("nativemessaging", NativeMessagingUpstreamTransport);
 upstream_transport_constructors.set("nats", NATSUpstreamTransport);
 
-const DEFAULT_HOST = "127.0.0.1";
+const DEFAULT_HOST = "0.0.0.0"; // Changed to 0.0.0.0 for ChromeOS localhost forwarding
 const DEFAULT_PORT = 9223;
 const DEFAULT_UPSTREAM = "http://127.0.0.1:9222";
 const DEFAULT_UPSTREAM_MONITOR_INTERVAL_MS = 1_000;
@@ -78,6 +78,23 @@ async function startProxy({
 }: StartProxyConfig = {}) {
   const { WebSocketServer } = await loadWsForProxy();
   const active_clients = new Set<ModCDPClient>();
+  
+  // PRECONNECT HACK: For reversews mode, create shared upstream listener so extension can connect immediately
+  // This prevents the race condition where downstream clients can't connect until the extension does
+  let shared_upstream_transport: ReverseWSUpstreamTransport | null = null;
+  
+  if (upstream.upstream_mode === "reversews") {
+    // Create a shared transport for all downstream clients
+    shared_upstream_transport = new ReverseWSUpstreamTransport(upstream);
+    
+    // Pre-start the listener (don't wait for peer)
+    shared_upstream_transport.connect().then(() => {
+      console.log("Upstream reversews listener ready on " + (upstream.upstream_reversews_bind || "127.0.0.1:29292"));
+    }).catch((e) => {
+      console.error("Failed to start reversews listener:", e?.message || e);
+    });
+  }
+  
   const http_server = http.createServer((req, res) => {
     const request_url = req.url === "/json/version/" ? "/json/version" : req.url;
     if (request_url === "/json/version") {
@@ -124,6 +141,7 @@ async function startProxy({
         server_config,
       },
       active_clients,
+      shared_upstream_transport,
     );
   });
   await new Promise<void>((resolve) => http_server.listen(proxy_listen_port, proxy_listen_host, () => resolve()));
@@ -142,13 +160,22 @@ async function startProxy({
   };
 }
 
-async function connectDownstream(socket: WebSocket, config: ModCDPClientConfig, active_clients: Set<ModCDPClient>) {
+async function connectDownstream(
+  socket: WebSocket,
+  config: ModCDPClientConfig,
+  active_clients: Set<ModCDPClient>,
+  shared_upstream_transport: ReverseWSUpstreamTransport | null = null,
+) {
   const queued_raw_messages: RawData[] = [];
   let connected = false;
+  
+  // Create ModCDPClient, using shared upstream transport if provided
   const cdp = new ModCDPClient({
     ...config,
     client_config: { client_hydrate_aliases: false, ...(config.client_config ?? {}) },
+    _existing_upstream: shared_upstream_transport ?? undefined,
   });
+  
   active_clients.add(cdp);
   socket.on("message", (raw) => {
     if (!connected) {
@@ -161,6 +188,45 @@ async function connectDownstream(socket: WebSocket, config: ModCDPClientConfig, 
     active_clients.delete(cdp);
     void cdp.close().catch(() => {});
   });
+  
+  // For shared transport, we still need to connect but the transport is already listening
+  // We need to wait for the extension peer to connect
+  if (shared_upstream_transport) {
+    try {
+      // Wait for the extension peer (this is what cdp.connect() does for reversews)
+      // But since we're using shared transport, we just wait for it to have a peer
+      await shared_upstream_transport.waitForPeer({ connected_after_ms: Date.now() });
+      connected = true;
+      for (const raw of queued_raw_messages.splice(0)) void handleDownstreamMessage(socket, cdp, raw);
+    } catch (error) {
+      // Peer timeout - wait and retry a bit
+      console.error(`[ModCDP proxy] waiting for extension peer: ${errorMessage(error)}`);
+      // Keep connection open and wait for peer, don't close socket immediately
+      shared_upstream_transport.on("*", (event_name, payload, session_id) => {
+        if (socket.readyState !== socket.OPEN) return;
+        socket.send(
+          JSON.stringify({
+            method: String(event_name),
+            params: payload ?? {},
+            ...(session_id ? { sessionId: session_id } : {}),
+          }),
+        );
+      });
+      
+      // Try to connect the shared transport if not already
+      try {
+        await shared_upstream_transport.connect();
+      } catch {}
+      
+      // Wait for peer in background
+      shared_upstream_transport.waitForPeer().then(() => {
+        connected = true;
+        for (const raw of queued_raw_messages.splice(0)) void handleDownstreamMessage(socket, cdp, raw);
+      }).catch(() => {});
+    }
+    return;
+  }
+  
   try {
     await cdp.connect();
   } catch (error) {

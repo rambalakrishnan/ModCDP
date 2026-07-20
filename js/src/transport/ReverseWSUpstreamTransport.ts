@@ -7,13 +7,17 @@ import type { CdpCommandMessage, ProtocolPayload, ProtocolResult } from "../type
 import { DEFAULT_CLIENT_CDP_SEND_TIMEOUT_MS } from "../types/modcdp.js";
 import { parseHostPort, UpstreamTransport, type UpstreamPeerWaitConfig } from "./UpstreamTransport.js";
 import type { TargetRoute } from "./UpstreamTransport.js";
+import fs from "node:fs";
+import https from "node:https";
 
-const DEFAULT_UPSTREAM_REVERSEWS_BIND = "127.0.0.1:29292";
+const DEFAULT_UPSTREAM_REVERSEWS_BIND = "0.0.0.0:29292"; // Listen on all interfaces for ChromeOS
+const DEFAULT_UPSTREAM_REVERSEWS_CERT_DIR = "/home/kiersten/code/ModCDP/js/proxy"; // Cert directory for WSS
 const DEFAULT_UPSTREAM_REVERSEWS_WAIT_TIMEOUT_MS = 10_000;
 
 const ReverseWSUpstreamTransportConfigSchema = z.object({
   upstream_mode: z.literal("reversews").default("reversews"),
   upstream_reversews_bind: z.string().default(DEFAULT_UPSTREAM_REVERSEWS_BIND),
+  upstream_reversews_cert_dir: z.string().optional(),
   upstream_reversews_wait_timeout_ms: z.number().positive().default(DEFAULT_UPSTREAM_REVERSEWS_WAIT_TIMEOUT_MS),
   upstream_cdp_send_timeout_ms: z.number().positive().default(DEFAULT_CLIENT_CDP_SEND_TIMEOUT_MS),
 });
@@ -103,13 +107,36 @@ class ReverseWSUpstreamTransport extends UpstreamTransport {
 
   async connect() {
     const { WebSocketServer } = await import("ws");
-    const { host, port } = parseHostPort(this.endpoint_url, "127.0.0.1", 29292);
-    const reversews_listener = new WebSocketServer({ host, port });
-    this.reversews_listener = reversews_listener;
-    reversews_listener.on("connection", (socket) => this.accept(socket));
+    const { host, port } = parseHostPort(this.config.upstream_reversews_bind, "127.0.0.1", 29292);
+    
+    // Support WSS if cert directory is provided or default cert exists
+    const certDir = this.config.upstream_reversews_cert_dir ?? DEFAULT_UPSTREAM_REVERSEWS_CERT_DIR;
+    if (certDir && fs.existsSync(`${certDir}/cert.pem`)) {
+      try {
+        const cert = fs.readFileSync(`${certDir}/cert.pem`);
+        const key = fs.readFileSync(`${certDir}/key.pem`);
+        this.endpoint_url = `wss://${host}:${port}`;
+        const httpsServer = https.createServer({ cert, key });
+        await new Promise<void>((resolve, reject) => {
+          httpsServer.listen(port, host, (err) => err ? reject(err) : resolve());
+        });
+        const reversews_listener = new WebSocketServer({ server: httpsServer });
+        this.reversews_listener = reversews_listener;
+      } catch (e) {
+        console.warn("Failed to create HTTPS server, falling back to WS", e);
+      }
+    }
+    
+    if (!this.reversews_listener) {
+      this.endpoint_url = `ws://${host}:${port}`;
+      const reversews_listener = new WebSocketServer({ host, port });
+      this.reversews_listener = reversews_listener;
+    }
+    
+    this.reversews_listener.on("connection", (socket) => this.accept(socket));
     await new Promise<void>((resolve, reject) => {
-      reversews_listener.once("listening", () => resolve());
-      reversews_listener.once("error", reject);
+      this.reversews_listener!.once("listening", () => resolve());
+      this.reversews_listener!.once("error", reject);
     });
   }
 

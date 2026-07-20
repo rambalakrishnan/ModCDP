@@ -10,7 +10,7 @@ import { DownstreamTransport } from "./DownstreamTransport.js";
 import { z } from "zod";
 
 const DEFAULT_REVERSE_BRIDGE_RECONNECT_INTERVAL_MS = 2_000;
-const DEFAULT_REVERSE_BRIDGE_URL = "ws://127.0.0.1:29292";
+const DEFAULT_REVERSE_BRIDGE_URL = "wss://penguin.linux.test:29292";
 
 const ReverseWSDownstreamTransportConfigSchema = z
   .object({

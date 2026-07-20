@@ -76,6 +76,8 @@ type ModCDPClientConfig<TCommands extends CDPCommandMap = {}, TEvents extends CD
   client_config?: z.input<typeof ModCDPClientConfigSchema>;
   server_config?: z.input<typeof ModCDPServerConfigSchema> | null;
   types?: CDPTypesConfig<TCommands, TEvents> | CDPTypes<TCommands, TEvents>;
+  /** @internal Use existing upstream transport instead of creating one */
+  _existing_upstream?: UpstreamTransport;
 };
 type UpstreamTransportConstructor = new (config?: Record<string, unknown>) => UpstreamTransport;
 type ExtensionInjectorConstructor = new (config?: Record<string, unknown>) => ExtensionInjector;
@@ -186,9 +188,15 @@ export class ModCDPClient<
     const upstream_mode = upstream_config.upstream_mode as string;
     const launcher_mode = launcher_config.launcher_mode;
     const injector_mode = injector_config.injector_mode as string;
-    const Upstream = upstream_transport_constructors.get(upstream_mode);
-    if (!Upstream) throw new Error(`unknown upstream_mode=${upstream_mode}`);
-    this.upstream = new Upstream(upstream_config);
+    
+    // Use existing upstream transport if provided (for sharing in proxy mode)
+    if ((config as any)._existing_upstream) {
+      this.upstream = (config as any)._existing_upstream;
+    } else {
+      const Upstream = upstream_transport_constructors.get(upstream_mode);
+      if (!Upstream) throw new Error(`unknown upstream_mode=${upstream_mode}`);
+      this.upstream = new Upstream(upstream_config);
+    }
 
     const Launcher = browser_launcher_constructors.get(launcher_mode);
     if (!Launcher) throw new Error(`unknown launcher_mode=${launcher_mode}`);
